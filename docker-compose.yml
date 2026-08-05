@@ -1,0 +1,165 @@
+# Single entrypoint for local multi-service development (`make dev`).
+# Four services from AGENT_GUIDE — api, worker, caddy, redis — plus the frontend
+# dev server. There is NO standalone `pipeline` service: the pipeline runs inside
+# `worker` (decision D-15) and via the CLI. Redis is BOTH the RQ broker and the
+# per-dataset commit lock backend (decision D-19) — required by api and worker.
+name: image-viz
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      # Bind to the loopback interface only (T2-78): host-local tooling still
+      # reaches Redis at 127.0.0.1:6379, but the unauthenticated broker is not
+      # exposed on any external interface. Services reach it over the compose
+      # network (redis:6379) regardless of this publish.
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot: make the three writable roots under DATA_ROOT owned by the app user,
+  # then exit. This exists ONLY because collections moved from a named volume to a
+  # BIND MOUNT (2026-08-03). Dockerfile.api already creates those three dirs owned
+  # by `app` in the IMAGE, and an empty NAMED volume is seeded from the image path
+  # — contents AND ownership — which is why this was invisible until now. A bind
+  # mount is never seeded: it masks the image's /data and keeps whatever ownership
+  # the host directory already has. api and worker run as uid 10001
+  # (docker/Dockerfile.{api,worker}), so on Linux — where the checkout is owned by
+  # the invoking user, not 10001 — the api cannot create its app-state SQLite and
+  # dies at boot with `sqlite3.OperationalError: unable to open database file`.
+  # Docker Desktop on Windows/macOS hides this: its filesystem translation layer
+  # reports every bind-mounted path as world-writable, so the same compose file
+  # works there and fails on Linux. The render gate caught it on `main`.
+  #
+  # Scope is deliberately narrow:
+  #   * The three D-30 roots only (datasets/, users/, app-state/) — NOT /data
+  #     itself, so the folder the operator sees in their file browser keeps its
+  #     own ownership. Nothing creates a fourth top-level dir under DATA_ROOT.
+  #   * NON-recursive. A `chown -R` across a baked collection is minutes of I/O on
+  #     every `up` for no gain: the worker already writes its trees as 10001.
+  # Uses the api image (already built, so no extra pull) with the USER directive
+  # overridden back to root — the one thing that must be root here is the chown.
+  data-init:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    user: "0:0"
+    command: >
+      sh -c 'mkdir -p /data/datasets /data/users /data/app-state
+      && chown 10001:10001 /data/datasets /data/users /data/app-state'
+    volumes:
+      - ${DATA_DIR:-./data}:/data
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    environment:
+      DATA_ROOT: /data
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./packages/api:/app                                   # dev: live source for --reload
+      - ${DATA_DIR:-./data}:/data                                        # DATA_ROOT (worker writes, api reads); trees under /data/datasets/, jails under /data/users/ (D-30)
+      - ./tests/fixtures/golden_dataset_v2:/data/datasets/golden_dataset_v2:ro  # committed fixture under the datasets/ root (D-30), ready to serve
+      - ./tests/fixtures/golden_dataset_full_v2:/data/datasets/golden_dataset_full_v2:ro  # comprehensive all-layouts fixture (grid/datetime/scatter/categorical/tags, z_cap>=1)
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      # Must complete BEFORE the api boots: the lifespan (api/main.py) calls
+      # setup_appstate(), which creates /data/app-state/appstate.db on first run.
+      data-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    environment:
+      DATA_ROOT: /data
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./packages/pipeline:/app                              # dev: live source (RQ dotted-path resolution)
+      - ./schemas:/schemas:ro                                 # live schemas over the baked copy (IMAGE_VIZ_SCHEMA_DIR=/schemas/v2, set in docker/Dockerfile.worker; D-25/D-33)
+      - ${DATA_DIR:-./data}:/data                                        # DATA_ROOT; the worker writes dataset trees under /data/datasets/ (D-30)
+      - ./tests/fixtures/golden_dataset_v2:/data/datasets/golden_dataset_v2:ro  # committed fixture under the datasets/ root (D-30)
+      - ./tests/fixtures/golden_dataset_full_v2:/data/datasets/golden_dataset_full_v2:ro  # comprehensive all-layouts fixture (grid/datetime/scatter/categorical/tags, z_cap>=1)
+    depends_on:
+      redis:
+        condition: service_healthy
+      # Same reason as the api: the worker writes /data/datasets/.staging-<job>/
+      # (pipeline/worker.py) as uid 10001 on the first ingest.
+      data-init:
+        condition: service_completed_successfully
+
+  caddy:
+    image: caddy:2.8-alpine
+    # Serve datasets from /srv/datasets, NOT /data — the caddy image uses /data
+    # as its own writable storage (XDG_DATA_HOME), so the dataset mount must not
+    # collide with it.
+    environment:
+      DATA_ROOT: /srv/datasets
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Shared edge snippets imported by every Caddyfile (T2-76). Must sit beside
+      # the Caddyfile at /etc/caddy/ — a Caddyfile `import` cannot see an unmounted
+      # file. The https/prod overrides replace the Caddyfile mount by container
+      # target but INHERIT this one, so all three profiles get the snippets.
+      - ./docker/Caddyfile.edge-snippets:/etc/caddy/Caddyfile.edge-snippets:ro
+      - ${DATA_DIR:-./data}:/srv/datasets:ro
+      # The Caddyfile serves from {DATA_ROOT}/datasets/ (D-30), i.e.
+      # /srv/datasets/datasets/ — so the committed fixture mounts there too.
+      - ./tests/fixtures/golden_dataset_v2:/srv/datasets/datasets/golden_dataset_v2:ro
+      - ./tests/fixtures/golden_dataset_full_v2:/srv/datasets/datasets/golden_dataset_full_v2:ro  # comprehensive all-layouts fixture (grid/datetime/scatter/categorical/tags, z_cap>=1)
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+      - frontend
+
+  # Dev-only vite server. No `dev` script exists in package.json (owned by the
+  # frontend seam), so vite is invoked directly via npx. Needs the repo root
+  # mounted because scripts/gen-types.mjs reads schemas/v2/ (D-33).
+  frontend:
+    # node >= 22.6: the renderer/UI unit tests run `node --test
+    # --experimental-strip-types` inside this service (PR26-10, 2026-06-12).
+    # Pinned to the node MINOR per docker/README.md conventions (T2-77) — the
+    # major-only node:22 tag floated. 22.22 tracks the latest 22.22.x patch.
+    image: node:22.22-bookworm-slim
+    working_dir: /repo/packages/frontend
+    volumes:
+      - .:/repo
+      - frontend_node_modules:/repo/packages/frontend/node_modules
+    command: sh -c "npm install && npx vite --host 0.0.0.0 --port 5173"
+    ports:
+      - "5173:5173"
+      # 5174: the renderer perf harness (`npm run perf`, packages/frontend/perf/)
+      # — the recurring 100k acceptance tool (seam 11 DoD §1.8 / DP-6). Note that
+      # `docker compose run` ignores service ports; use `docker compose run --rm
+      # --no-deps -p 5174:5174 frontend sh -c "npm install && npm run perf"`, or
+      # `exec` into the long-running service where this mapping applies.
+      - "5174:5174"
+
+volumes:
+  # NOTE: there is deliberately no `datasets` volume. Ingested collections live in a
+  # BIND MOUNT at ${DATA_DIR:-./data}, not a Docker volume, so that `docker compose
+  # down -v` cannot destroy them — `-v` removes named volumes and never touches a bind
+  # mount. That is the whole reason for the change: a collection costs hours to bake and
+  # a stray flag was one keystroke from deleting every one.
+  #
+  # node_modules STAYS a named volume on purpose: it is disposable (npm install
+  # regenerates it) and keeping ~10k small files out of a Windows/macOS bind mount is a
+  # large speed difference. So `down -v` now discards only regenerable data, which is
+  # what "clean" should have meant all along.
+  frontend_node_modules:

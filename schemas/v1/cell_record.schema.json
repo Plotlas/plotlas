@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/v1/cell_record.schema.json",
+  "title": "CellRecord",
+  "description": "Describes one image cell in a layout. The on-disk transport is an Arrow IPC (Feather) table where each column is one of the fields below; this JSON Schema validates a single record (one row) of that table and pins the Arrow logical type of each column via the 'arrowType' annotation. The pipeline's tile_writer shards these records into a quadtree of Feather tiles; the renderer reads tiles directly into GPU buffers with no per-frame parsing. Schema version 1.0. Versioning rule: adding a new NULLABLE column is a MINOR version bump (forward-compatible — old readers ignore it). Removing, renaming, or changing the type/nullability of ANY field is a MAJOR version bump requiring schemas/v2/.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "x",
+    "y",
+    "w",
+    "h",
+    "atlas_page",
+    "atlas_u",
+    "atlas_v",
+    "atlas_w",
+    "atlas_h",
+    "lod"
+  ],
+  "properties": {
+    "id": {
+      "description": "Stable pipeline-assigned integer index (cells are ordered by filename; users never supply ids). The join key against metadata.parquet and the unique cell identity used for GPU picking.",
+      "arrowType": "int64",
+      "type": "integer"
+    },
+    "x": {
+      "description": "Normalized world X position of the cell, in [0,1]. Explicit world-space float — never an implicit grid column index.",
+      "arrowType": "float32",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "y": {
+      "description": "Normalized world Y position of the cell, in [0,1]. Explicit world-space float — never an implicit grid row index.",
+      "arrowType": "float32",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "w": {
+      "description": "Cell width in normalized world units, in [0,1].",
+      "arrowType": "float32",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "h": {
+      "description": "Cell height in normalized world units, in [0,1].",
+      "arrowType": "float32",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "atlas_page": {
+      "description": "Index of the atlas WebP page holding this cell's thumbnail (0-indexed), at the LOD given by the 'lod' field.",
+      "arrowType": "int32",
+      "type": "integer",
+      "minimum": 0
+    },
+    "atlas_u": {
+      "description": "UV X offset of this cell within its atlas page, in [0,1].",
+      "arrowType": "float32",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "atlas_v": {
+      "description": "UV Y offset of this cell within its atlas page, in [0,1].",
+      "arrowType": "float32",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "atlas_w": {
+      "description": "UV width of this cell within its atlas page, in [0,1].",
+      "arrowType": "float32",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "atlas_h": {
+      "description": "UV height of this cell within its atlas page, in [0,1].",
+      "arrowType": "float32",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "lod": {
+      "description": "LOD level this record's atlas coordinates refer to: 0 (32px), 1 (128px), 2 (512px).",
+      "arrowType": "int8",
+      "type": "integer",
+      "enum": [0, 1, 2]
+    },
+    "color": {
+      "description": "RESERVED, nullable. Packed RGBA (8 bits per channel) for per-cell coloring. May be all-null in v1. Present in the schema from day one so per-cell coloring does not require a breaking change.",
+      "arrowType": "int32",
+      "type": ["integer", "null"]
+    },
+    "cluster_id": {
+      "description": "RESERVED, nullable. Cluster assignment for categorical/network layouts. May be all-null in v1.",
+      "arrowType": "int32",
+      "type": ["integer", "null"]
+    },
+    "edge_count": {
+      "description": "RESERVED, nullable. Number of edges incident to this cell in a network layout. May be all-null in v1.",
+      "arrowType": "int32",
+      "type": ["integer", "null"]
+    },
+    "embedding_dim": {
+      "description": "RESERVED, nullable. Dimensionality of the source embedding that produced this cell's coordinates (for UMAP layouts). May be all-null in v1.",
+      "arrowType": "int32",
+      "type": ["integer", "null"]
+    }
+  }
+}

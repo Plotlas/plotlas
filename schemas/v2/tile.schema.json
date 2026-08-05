@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/v2/tile.schema.json",
+  "$comment": "LOCKED / IN-FORCE (2026-06-29) — schemas/v2 (MAJOR). This is the in-force cross-package contract (decision D-33), landed via the coordinated PR chain #63/#66/#68/#69/#72 and enforced by api/db.py SUPPORTED_MANIFEST_MAJOR=2. New in v2: describes the HYBRID tile types of a layout's spatial pyramid. There was no equivalent in v1.x (v1 had no self-contained tiles — pixels lived in one shared global atlas and tiles were pointer-only quadfeather index shards; v1 and v1.1 are now frozen-historical). This file documents the on-disk shape of the two tile bands so producer (pipeline tiler/mosaic-baker) and consumer (renderer tile loader) agree on what a {z}/{x}/{y} range request returns from the PMTiles container.",
+  "title": "PyramidTile",
+  "description": "One tile in a layout's spatial pyramid, addressed {layout}/{z}/{x}/{y} and served as a range within the layout's PMTiles container (layout_manifest pyramid.path). A tile is one of TWO kinds (decision D-33 hybrid), selected by its z relative to the manifest's `pyramid.z_cap`: a COARSE tile (z < z_cap) is a single down-rendered MOSAIC composite image; a FINE tile (z >= z_cap) is a self-contained MINI-ATLAS image PLUS a per-cell record list. This schema is a DOCUMENTATION contract describing both payloads; the FINE tile's record list rows are validated by cell_record.schema.json. Schema version 2.1.\n\nTILE BODY BYTE FRAMING (what one {z}/{x}/{y} PMTiles range request returns; documented here in v2.1 — was previously undocumented):\n  * COARSE tile body = the raw WebP image bytes, with NO length prefix and NO trailing data (the whole body is the mosaic composite image; format per pyramid tileImage).\n  * FINE tile body = a length-prefixed bundle: [uint32 BIG-ENDIAN image_len][WebP mini-atlas bytes (image_len bytes)][Arrow IPC (Feather) record table bytes (the remainder of the body)]. The 4-byte big-endian unsigned prefix gives the WebP image length; the Arrow IPC record table (uncompressed per D-29, rows validated by cell_record.schema.json) is everything after the image. One range request thus yields BOTH the mini-atlas pixels and the per-cell records (resolved Q4 — bundled). The producer that writes this framing is pipeline.tiler._pack_fine_body; pipeline.tiler.unpack_fine_body is its inverse for consumers/the contract gate.",
+  "oneOf": [
+    { "$ref": "#/$defs/coarseTile" },
+    { "$ref": "#/$defs/fineTile" }
+  ],
+  "$defs": {
+    "coarseTile": {
+      "description": "COARSE (mosaic-composite) tile — the overview bands, z < pyramid.z_cap. Built by recursively shrinking the 4 child tiles into 1 parent (mip-style down-render), so a coarse tile is pure pixels: a single tile_px x tile_px composite image of everything in its region. It carries NO per-cell record list — at coarse zoom individual cells are sub-pixel and not separately pickable; picking at this band is a spatial-index query (resolve screen point -> world point -> the fine tile/cell), not a per-cell GPU hit. The renderer draws a coarse tile as one textured quad and uses it as the PARENT FALLBACK while finer tiles load. ALPHA PAD (Seam A, decision D-iv; PR #111): the coarse mosaic WebP is RGBA — cell pixels are OPAQUE (alpha 255) and pad/background pixels are fully TRANSPARENT (alpha 0), with RGB kept STRAIGHT (un-premultiplied). A consumer MUST composite the coarse tile with straight-alpha over-blending OVER the layout ground (so a sparse overview reads as ground-with-content, not an opaque black void), NOT paint it as an opaque image. This is a pixel-format refinement, not a shape change — still a WebP per `tileImage`, and manifest_version is unchanged (a consumer keys this on the tile bytes, alpha present or not, never on the manifest); a fully-opaque coarse tile (a legacy 3-band bake, or a dense layout whose pad is fully covered) renders identically because the straight over-blend degenerates to passthrough at alpha 1. The FINE mini-atlas stays 3-band opaque (its pad slots are never sampled). Producer: pipeline.tiler._build_spatial_render / _shrink_children_to_parent; consumer: frontend renderer drawOverview + decodeImageTextureReal (createImageBitmap premultiplyAlpha none + NormalBlending straight over-blend).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "image"],
+      "properties": {
+        "kind": { "const": "coarse" },
+        "image": {
+          "description": "The composite image payload: a single square image of edge pyramid.tile_px in the pyramid's tile image format. This image IS the entire coarse tile body — raw image bytes, no length prefix and no trailing data (see the TILE BODY BYTE FRAMING note in this file's top-level description).",
+          "$ref": "#/$defs/tileImage"
+        }
+      }
+    },
+    "fineTile": {
+      "description": "FINE (mini-atlas) tile — the interactive bands, z >= pyramid.z_cap. Self-contained: it packs up to pyramid.cap cell thumbnails (each thumb_px x thumb_px) into one tile_px x tile_px MINI-ATLAS image, AND carries the per-cell record list the instanced renderer consumes (id, x, y, w, h, u, v, uw, uh per cell_record.schema.json), where the UV sub-rect (u,v,uw,uh) indexes into THIS tile's mini-atlas. The renderer feeds these straight into the existing struct-of-arrays CellBuffers (ids/positions/sizes/atlasUv/visibility) — texture-source-agnostic per Phase-0 T-4. When the tile's cell count would exceed cap, the pipeline subdivides; at max depth (exact-coincident points, e.g. degenerate scatter) it in-tile subsamples and records `subsampled`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "mini_atlas", "cells"],
+      "properties": {
+        "kind": { "const": "fine" },
+        "mini_atlas": {
+          "description": "The packed mini-atlas image: a single square image of edge pyramid.tile_px holding this tile's cell thumbnails in a grid sized by pyramid.cap.",
+          "$ref": "#/$defs/tileImage"
+        },
+        "cells": {
+          "description": "Per-cell record list for this tile, each row validated by cell_record.schema.json. At most pyramid.cap entries. Transport is an Arrow IPC (Feather) table (struct-of-arrays), written UNCOMPRESSED per D-29 so apache-arrow JS can decode it. The PMTiles tile body bundles the mini-atlas image and this record table (the [uint32-BE image_len][webp][arrow] framing — see the TILE BODY BYTE FRAMING note in this file's top-level description) so one {z}/{x}/{y} range request yields both.",
+          "type": "array",
+          "items": { "$ref": "cell_record.schema.json" },
+          "minItems": 0
+        },
+        "subsampled": {
+          "description": "Optional. Present only when the tile is at the pyramid's deepest level and held MORE than pyramid.cap (near-)coincident cells, so the pipeline decimated to <= cap (the surplus cells are not drawable at this tile but keep their dense id + metadata row and are reachable at the detail tier). Records the count dropped so the renderer/UI can note 'N more here'. THIS BLOCK IS THE DOCUMENTED HOME for the per-tile dropped count and is the v2.1 reconciliation of subsampling with the dense-id contract (cell_record.id / image_count): the dropped ids are absent from every fine tile but remain in [0, image_count). ON-DISK CHANNEL (where a consumer reads the count): the dropped count is written into the FINE tile's Arrow IPC (Feather) record table at the SCHEMA LEVEL (table.schema.metadata) under the bytes key `subsampled.dropped` with the decimal-string count as its value; absent that key the tile dropped nothing (equivalent to subsampled: null). The producer is pipeline.tiler (_fine_records stamps the schema metadata; _group_fine_tiles computes the per-tile drop count). The contract gate sums these over all fine tiles and asserts |distinct fine-tile ids| + sum(dropped) == image_count.",
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["dropped"],
+          "properties": {
+            "dropped": {
+              "description": "Number of cells in this tile's region beyond pyramid.cap that were not packed into this tile (>= 1 when the block is present). On disk this is the value of the `subsampled.dropped` key in the fine tile's Arrow record-table schema-level metadata (decimal string).",
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
+    "tileImage": {
+      "description": "An encoded square tile image of edge pyramid.tile_px. Phase-1 format is WebP (renderer-decodable, matches the existing pipeline encoder). The image bytes are framed into the tile body per the TILE BODY BYTE FRAMING note in this file's top-level description (raw for a coarse tile; length-prefixed ahead of the Arrow records for a fine tile). KTX2/Basis (GPU-compressed, 4-8x VRAM) is the reserved Phase-2 lever (spike S4); listing it from day one keeps its later adoption an additive enum change, not a breaking one.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format"],
+      "properties": {
+        "format": {
+          "description": "Encoded format of the tile image. webp = Phase 1; ktx2 = reserved Phase-2 GPU-compressed (spike S4).",
+          "type": "string",
+          "enum": ["webp", "ktx2"]
+        }
+      }
+    }
+  }
+}

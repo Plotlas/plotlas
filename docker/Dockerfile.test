@@ -1,0 +1,35 @@
+# syntax=docker/dockerfile:1
+# Combined TEST image for the repo-level regression net (tests/contract +
+# tests/smoke) and the per-package skeleton/api tests. NOT a runtime service —
+# never in docker-compose; built and run only by `make test-py`.
+#
+# Why a dedicated image: the smoke test imports BOTH `pipeline.worker` and
+# `api.main` in one interpreter, which neither split service image provides
+# (api: no pipeline deps; worker: no api deps). Source is mounted at /repo at
+# run time via PYTHONPATH (no editable install), so editing a test needs no
+# rebuild.
+#
+# Deps installed from the compiled lock (single source of resolved versions —
+# regenerate with `make locks` on any pyproject dep change; T2-74). The lock
+# folds the api runtime + [test] extras (pytest, httpx for TestClient) with the
+# repo-net extras this image adds: numpy (layout plugin imports),
+# jsonschema[format] (contract tests with full format-checker), pmtiles (v2
+# contract gate — pure-Python; reads the layouts' PMTiles tile bodies to validate
+# the fine-tile cell records + the contiguous-dense id union, decision D-33), and
+# mypy (the CI type-check gate over both packages — T2-81 / decision D-v; runs in
+# the test-py CI job alongside pytest).
+# pyvips is absent by design — no test here decodes images (the v2 fixtures are
+# committed; build_fixture runs in the worker image). Native-dep pipeline tests
+# run in the worker image via `make test-pipeline`. Both packages are imported
+# from the mounted source via PYTHONPATH below; the api package is also installed
+# (--no-deps) to mirror the previous `api[test]` install without re-resolving.
+FROM python:3.12-slim-bookworm
+
+COPY docker/locks/test.lock.txt /tmp/test.lock.txt
+RUN pip install --no-cache-dir -r /tmp/test.lock.txt
+COPY packages/api /tmp/api
+RUN pip install --no-cache-dir --no-deps /tmp/api
+
+# Both packages importable from the mounted source (no editable install).
+ENV PYTHONPATH=/repo/packages/pipeline:/repo/packages/api
+WORKDIR /repo

@@ -1,0 +1,390 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/v2/layout_manifest.schema.json",
+  "$comment": "LOCKED / IN-FORCE (2026-06-29) — schemas/v2 (MAJOR). This is the in-force cross-package contract (decision D-33), landed via the coordinated PR chain #63/#66/#68/#69/#72 and enforced by api/db.py SUPPORTED_MANIFEST_MAJOR=2. Supersedes schemas/v1.1/layout_manifest.schema.json (v1 and v1.1 are now frozen-historical). The renderer-rework plan (docs/plan/renderer-rework-plan.md, PR #60) is the design source; this file encodes the locked decisions from the v2 proposal (docs/plan/v2-schema-proposal.md). The v2.2 MINOR added the optional per-layout `positions_ref` (the id->(x,y,w,h) position table for pick-at-any-zoom; T2-66/T2-48).",
+  "title": "LayoutManifest",
+  "description": "Root document the frontend renderer fetches first for a dataset. Written by the pipeline's manifest.py, served read-only by the API. Declares the dataset, its available layouts, and — PER LAYOUT — a SELF-DESCRIBING SPATIAL TILE PYRAMID (web-map XYZ model). v2 replaces the v1.x shared id-ordered atlas + per-LOD quadtree-index model: there is no longer a single global `atlas` block with a fixed 3-level LOD ceiling. Instead each layout carries its own pyramid descriptor whose level list, tile_px, thumb_px, and cap are recorded here so the renderer adapts to whatever each dataset baked. Pixels are baked per layout into one PMTiles container per layer; tiles are addressed {layout}/{z}/{x}/{y}. Schema version 2.7 (the v2.7 MINOR added the datetime axis's `annotations.axes[].interval` — the {kind, step} calendar bucketing rung the producer actually binned at, so the renderer draws ticks at bin boundaries it was TOLD about instead of re-deriving a second ladder that has to be kept in sync by discipline, T2-142 / D-36 seam H3; the v2.6 MINOR added the per-layout `missing_count` COUNT of cells the layout could not place, emitted by EVERY family on every fresh entry INCLUDING 0 — the datetime layout's undated images, now drawn in an unplaced strip rather than parked on a real date, the scatter/geographic families' non-finite-coordinate cells, and the categorical family's structurally-missing band, T2-140 / D-36 seam U1; the v2.5 MINOR added the optional per-layout `annotations` block — categorical band labels {text, extent, count, missing?} rendered in the empty gaps beside their group, plus a datetime x-axis {orientation, scale, domain, range, label} carrying the time domain the plugin computes then otherwise discards — together with the full-precision `bbox_exact` and `pyramid.dropped_total` emitted on every FRESH 2.5 layoutEntry (append_manifest_layouts carries pre-2.5 entries forward unchanged under the re-stamped version, so readers gate on FIELD PRESENCE, never on manifest_version) — T2-69/T2-72 Seam 2; the v2.4 MINOR added the `\"geographic\"` layout type + the `options.projection` echo — real-world lon/lat projected to a map, D-35 Seam G2; the v2.3 MINOR added the optional per-layout `options` echo recording the scatter scale/normalize/overlap knobs applied at bake time — D-35 Seam G1; the v2.2 MINOR added the optional per-layout `positions_ref` id->(x,y,w,h) position table; the v2.1 MINOR reconciled coincident-point subsampling with the dense-id contract; none removed or retyped a field).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifest_version",
+    "dataset_id",
+    "dataset_version",
+    "layouts",
+    "dataset_metadata"
+  ],
+  "properties": {
+    "manifest_version": {
+      "description": "Version of THIS manifest schema (not the dataset). The renderer rejects manifests whose MAJOR version it does not understand rather than silently misbehaving. Format MAJOR.MINOR. v2 is a CLEAN BREAK: v1.x manifests are NOT accepted (no back-compat — datasets are re-ingested, decision D-33). The pipeline writes '2.7' (the v2.7 MINOR added the datetime `annotations.axes[].interval` bucketing rung — T2-142 / D-36 seam H3; the v2.6 MINOR added the per-layout `missing_count` unplaced-cell count, on every fresh entry including 0 — T2-140 / D-36 seam U1; the v2.5 MINOR added the optional per-layout `annotations` block — categorical band labels + a datetime axis domain, T2-69/T2-72 Seam 2; the v2.4 MINOR added the `\"geographic\"` layout type + the `options.projection` echo — D-35 Seam G2; the v2.3 MINOR added the optional per-layout `options` echo — D-35 Seam G1; the v2.2 MINOR added the optional per-layout `positions_ref` position table; the v2.1 MINOR reconciled coincident-point subsampling with the dense-id contract). A v2-major reader accepts any '2.MINOR' (the pattern matches the whole 2.x line); SUPPORTED_MANIFEST_MAJOR stays 2.",
+      "type": "string",
+      "pattern": "^2\\.(0|[1-9][0-9]*)$"
+    },
+    "dataset_id": {
+      "description": "Stable identifier for the dataset. Matches the {ds_id} path segment in every API route and the /datasets/{ds_id}/ directory name.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+$",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "dataset_version": {
+      "description": "Monotonically increasing integer bumped on every re-ingest of this dataset. Used for static-asset cache invalidation: PMTiles container filenames embed this value so a re-ingest produces fresh, immutably-cacheable URLs.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "layouts": {
+      "description": "All layouts available for this dataset. Order is the display order in the layout switcher. At least one layout is required; the first is the default. Each layout owns its own spatial tile pyramid (decision D-33) — there is no shared global atlas in v2.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/layoutEntry" }
+    },
+    "column_roles": {
+      "description": "Optional column-role mapping for this dataset, conforming to column_roles.schema.json (carried forward UNCHANGED from v1.1 — the metadata join is preserved by D-33). Present only when the dataset carries a metadata source; absent => images-only dataset (the renderer shows a filename-only metadata panel and disabled tag controls). Embedded directly so the renderer and metadata panel know which columns to display and how, without a second fetch.",
+      "$ref": "column_roles.schema.json"
+    },
+    "tags": {
+      "description": "Optional per-dataset tag sidecar declaration (decision D-14, carried forward from v1.1). Null or absent when the dataset has no tag-role columns. Points to a single file projected from metadata.parquet containing the cell `id` plus the tag list<string> columns, used by the frontend for layout-independent, zero-network tag filtering. The filename embeds the dataset version (e.g. 'tags/tags_v3.arrow') so it is safe to serve with an immutable cache. Distinct from the per-layout tile pyramids, which carry rendering data.",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["path", "format"],
+      "properties": {
+        "path": {
+          "description": "Path to the tag sidecar file, relative to the dataset root, with the dataset version embedded (e.g. 'tags/tags_v3.arrow').",
+          "type": "string",
+          "minLength": 1
+        },
+        "format": {
+          "description": "On-disk format of the tag sidecar file. Arrow IPC (Feather) only, written UNCOMPRESSED (decision D-29) — the frontend decodes Arrow via apache-arrow JS, which cannot read Parquet and cannot decode compressed record batches.",
+          "type": "string",
+          "enum": ["arrow"]
+        }
+      }
+    },
+    "dataset_metadata": { "$ref": "#/$defs/datasetMetadata" }
+  },
+  "$defs": {
+    "layoutEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["layout_id", "label", "type", "bbox", "pyramid"],
+      "properties": {
+        "layout_id": {
+          "description": "Identifier for this layout, unique within the dataset. Matches the {layout_id} path segment in API routes.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "label": {
+          "description": "Human-readable label shown in the layout switcher (e.g. 'By date', 'Grid').",
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "description": "Layout kind. Phase 1 implements grid, datetime, categorical, scatter (user-supplied pre-computed coordinates, decision D-26), and geographic (real-world lon/lat projected to a map — equirectangular or Web Mercator — then placed through the shared scatter machinery; D-35 Seam G2). umap stays reserved for Phase-2 COMPUTED embeddings; network and custom are likewise reserved for Phase 2 and are valid values from day one so adding them later is not a breaking schema change. The renderer never branches on this (every layout renders identically from its pyramid + bbox); it is UI-display + underlay-dispatch data.",
+          "type": "string",
+          "enum": ["grid", "datetime", "categorical", "scatter", "geographic", "umap", "network", "custom"]
+        },
+        "bbox": {
+          "description": "World-coordinate bounding box of all cells in this layout, as [x_min, y_min, x_max, y_max]. Always within normalized [0,1]^2 space. Drives the renderer's initial camera framing AND anchors the pyramid: tile {z}/{x}/{y} covers the sub-rect of this bbox given by the standard XYZ subdivision at level z (2^z tiles per axis at level z). ROUNDED to 6 decimals for tidiness — a consumer that must reproduce the tiler's exact cell→tile binning uses `bbox_exact` (v2.5) instead.",
+          "type": "array",
+          "items": { "type": "number", "minimum": 0, "maximum": 1 },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "bbox_exact": {
+          "description": "Optional FULL-PRECISION (unrounded float64) copy of `bbox` (the v2.5 MINOR; T2-72 Seam 2). `bbox` is rounded to 6 decimals, but the tiler binned cell CENTRES against the UNROUNDED layout bbox — so a consumer replicating that binning (the aggregate count chips re-derive each pile's occupancy over `positions_ref` by transcribing `tiler._tile_xy`) drifts by up to a few cells per boundary tile when it bins over the 6-dp `bbox` (PR #179 adversarial verification, ground-truthed: rijks scatter 17,403 re-derived vs 17,405 baked; ≈5 % worst-tile boundary-attribution drift, every counted cell real). This field carries the EXACT bbox the tiler used, so a 2.5-aware consumer bins IDENTICALLY to the bake (the chip counts then drop their ~ approximation). Same [x_min, y_min, x_max, y_max] semantics and [0,1] range as `bbox`; ABSENT on a pre-2.5 bake — the consumer falls back to the rounded `bbox` and keeps the honest approximation (graceful degradation). NOT used for camera framing (that reads `bbox`); this is the binning-exactness field only.",
+          "type": "array",
+          "items": { "type": "number", "minimum": 0, "maximum": 1 },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "pyramid": { "$ref": "#/$defs/pyramidDescriptor" },
+        "positions_ref": {
+          "description": "Optional per-layout POSITION TABLE declaration (T2-66 / T2-48; the v2.2 MINOR). The dataset-relative path of an UNCOMPRESSED Arrow IPC (Feather) file (decision D-29 — the frontend decodes Arrow via apache-arrow JS, which cannot read Parquet or decode compressed record batches) holding this layout's per-cell world rects as four float32 columns `x, y, w, h` — the SAME normalized [0,1]^2 cell rects the fine-tier cell records carry (sourced from the layout result, not re-derived). There is NO `id` column: the row index IS the dense cell id (row i == cell id i, over the contiguous-dense [0, image_count) id space the v2 cell_record contract pins), which is both smaller on disk and unambiguous. The renderer loads it once per layout and, on a coarse/overview view where the fine tier has no per-cell geometry to hit-test, scans it to resolve which cell a click lands on — so picking works at ANY zoom, not only near the finest level (T2-66). Absent (or null) when this layout baked no position table (e.g. a dataset baked before this MINOR) — the renderer then falls back to fine-tier-only picking with no error (graceful absence). The filename embeds the dataset version (e.g. 'positions/grid_v3.arrow') so it is safe to serve with an immutable cache, exactly like the tag sidecar and the pyramid container. Distinct from the per-layout tile pyramid (which carries rendering pixels) and the tag sidecar (one per dataset, not per layout): a position table is authored per layout because each layout places the same cell at a different (x,y). A future spatial index would replace the renderer's linear scan without a schema change (the on-disk table shape is unchanged).",
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "options": {
+          "description": "Optional ECHO of the layout-shaping options that were APPLIED when this layout was baked (D-35 Seam G1/G2). Lets the UI EXPLAIN an existing bake (which scale / normalization / projection / overlap produced these positions), not only configure the next one. EMISSION: a SCATTER layout emits this object ONLY when a NON-DEFAULT knob was declared (a default scatter bake omits it — minProperties enforces never-empty — so pre-G1 manifests and default scatter bakes are byte-identical, no field appears); a GEOGRAPHIC layout (D-35 Seam G2) ALWAYS emits it, carrying the applied `projection` (+ `overlap`) — the projection is load-bearing, so every geographic bake is self-describing for the map explainer and a future underlay. The property set is a SUPERSET shared across layout families: a SCATTER layout echoes `x_scale` / `y_scale` / `normalize` / `overlap`; a GEOGRAPHIC layout echoes `projection` / `overlap`. All keys are optional; a layout echoes only the keys relevant to its family. Shaped to reconcile with the deep-dive spike's `fit_transform` direction — this is the MODE-NAME echo (the spike §3 `fit_transform.kind`, reconstructible from `type` + these fields: a GEOGRAPHIC layout's kind IS `options.projection` (mercator|equirectangular), a SCATTER layout's is `options.normalize` (none => identity, fit => aspect_fit; a default scatter with no `options` is aspect_fit)). The fully PARAMETERIZED transform record itself (kind/domain/scale/offset) lands as its own later work, and it is that record, not this mode-name echo, that gives the T2-86 continent underlay by-construction alignment.",
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "x_scale": {
+              "description": "The X-axis scale applied before the scatter fit: 'linear' or 'log' (mirrors column_roles scatterRoleEntry.x_scale). Scatter layouts only.",
+              "type": "string",
+              "enum": ["linear", "log"]
+            },
+            "y_scale": {
+              "description": "The Y-axis scale applied before the scatter fit: 'linear' or 'log' (mirrors column_roles scatterRoleEntry.y_scale). Scatter layouts only.",
+              "type": "string",
+              "enum": ["linear", "log"]
+            },
+            "normalize": {
+              "description": "The scatter placement applied: 'fit' (aspect-preserving, median-centred auto-fit + north-up) or 'none' (pass-through — the author's already-normalized [0,1]^2 coordinates preserved exactly up to one uniform x0.95 scale into the placed band) (mirrors column_roles scatterRoleEntry.normalize). Scatter layouts only; doubles as the scatter family's fit_transform.kind (fit => aspect_fit, none => identity).",
+              "type": "string",
+              "enum": ["fit", "none"]
+            },
+            "projection": {
+              "description": "The map projection applied to a GEOGRAPHIC layout's lon/lat before the shared fit: 'equirectangular' or 'mercator' (mirrors column_roles geographicRoleEntry.projection; D-35 Seam G2). This IS the geographic family's `fit_transform.kind` (spike §3), so a future T2-86 continent underlay can dispatch its own projection from it (the fully parameterized fit_transform record that yields by-construction alignment is later work — see the `options` description). Present on geographic layouts (always emitted); absent on other families.",
+              "type": "string",
+              "enum": ["equirectangular", "mercator"]
+            },
+            "overlap": {
+              "description": "The co-located-image handling applied: 'overdraw' today ('jitter' / 'aggregate' are reserved for D-35 Seam G4 and emittable here without a schema bump once implemented) (mirrors the scatter/geographic overlap knob).",
+              "type": "string",
+              "enum": ["overdraw", "jitter", "aggregate"]
+            }
+          }
+        },
+        "annotations": { "$ref": "#/$defs/layoutAnnotations" },
+        "missing_count": {
+          "description": "COUNT (the v2.6 MINOR; T2-140 / D-36 seam U1) of THIS LAYOUT's cells it could not place from the column it arranges by. EVERY family reports it and EVERY FRESH 2.6 entry carries it, INCLUDING the value 0 — the same always-emit rule `pyramid.dropped_total` has used since 2.5. It is `optional` in this schema for exactly one reason: `append_manifest_layouts` carries PRE-2.6 entries forward byte-preserved under a re-stamped version. So the presence gate decides one thing and decides it cleanly — `0` means 'this producer counted and found none', ABSENT means 'this entry predates 2.6, nothing was counted'. (An earlier draft of this MINOR omitted the key at zero while claiming that same distinction; omitting is precisely what collapses those two cases, so a reader must never treat an absent key as a positive claim of zero.) WHAT COUNTS AS UNPLACEABLE, per family: the datetime layout's images whose datetime column was null, absent, or UNPARSEABLE; the scatter/geographic families' cells whose coordinates are not FINITE floats (a null coordinate and a NaN both count — `_placement.partition_placed` gates on finiteness, not on nullity); the categorical layout's structurally-missing band (the cells whose category column was null/absent — the same population `annotations.labels[].missing` flags). Note this is WIDER than 'no value recorded': a malformed date string or a NaN coordinate is data that is present but unusable, which is a different thing for a user to act on. These cells are still DRAWN — nothing is ever dropped, the id set is identical across a dataset's layouts (D-10). The count says HOW MANY, and deliberately NOT WHERE: usually they are drawn OFF the arrangement in the UNPLACED STRIP (world y in [0.96, 1], `_placement.band_strip`), but scatter's `normalize: \"none\"` pass-through uses a data-adjacent block that can sit anywhere in the canvas, the categorical family gives them a labelled band inside the treemap, and the datetime layout's LEGACY fallback grid (reached only when it also declines its axis — an all-equal/all-missing span, or a calendar-unrepresentable extreme, where no x maps to an instant at all) still parks them mid-canvas. A consumer that wants to point at those cells must read the layout `type` and `annotations`, not this number alone. Before v2.6 an undated image was parked in the dated column nearest the middle of the datetime placement line, i.e. drawn AT a real date. It rides on the LAYOUT ENTRY, not on an annotation, precisely so it survives an axis the producer DECLINES (the `annotations.axes: []` marker) — a single-occupied-column decline strips its undated cells exactly as a drawn axis does — and so the families that emit no annotations at all (scatter, geographic) can report it too. DELIBERATELY NOT `annotations.labels[].missing`: that one is a BOOLEAN FLAG meaning 'this categorical band IS the structurally-missing bucket'; this is an INTEGER COUNT of cells this layout could not place. Different name, different object, different type — do not conflate them.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "detail": {
+          "description": "Optional deepest DETAIL tier descriptor (backlog T2-26): below the pyramid's finest level the renderer serves individual full-resolution images instead of baked tiles (PixPlot lightbox model — at deep zoom only a handful of cells are visible). Null or absent when the dataset has no detail tier baked. IMPLEMENTED resolution (mode='image_ref'): the originals are named `{cell_id}.{format}`, and the renderer resolves the lightbox by DENSE cell id at the fixed API route GET /api/datasets/{ds}/detail/{cell_id}.{ext} — it reads only `format` (the URL extension) from this block. The API composes the on-disk path `{path_prefix}/{cell_id}.{ext}` server-side. The cell record's `detail_ref` field is RESERVED/unused by the current consumer (see cell_record.schema.json).",
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["mode"],
+          "properties": {
+            "mode": {
+              "description": "How a cell's full-resolution image is resolved. 'image_ref' => originals named `{cell_id}.{format}`: the renderer requests the fixed API route /api/datasets/{ds}/detail/{cell_id}.{ext} by DENSE cell id, and the API composes `{path_prefix}/{cell_id}.{ext}` server-side (the cell record's `detail_ref` is NOT consulted in Phase 1 — it is reserved for a future arbitrary-path mode). 'pmtiles' => a per-layout deep-zoom PMTiles container (reserved for very large originals, e.g. gigapixel) at `path`. Phase-1 implements 'image_ref'.",
+              "type": "string",
+              "enum": ["image_ref", "pmtiles"]
+            },
+            "path_prefix": {
+              "description": "SERVER-SIDE storage prefix (relative to dataset root, e.g. 'detail/' or version-stamped 'detail/v{N}/') under which the detail originals `{cell_id}.{format}` live. Consumed by the API's detail route to compose the on-disk path `{path_prefix}/{cell_id}.{ext}`. The lightbox / click-through consumer does NOT read it — it uses the fixed API route /api/datasets/{ds}/detail/{cell_id}.{ext} (see `mode`). The T2-26 renderer detail OVERLAY, however, DOES read it: it composes the DB-free static-edge burst URL `/datasets/{ds}/{path_prefix}/{cell_id}.{ext}` (api-client `staticDetailUrl`) so a viewport of per-cell fetches skips the per-request auth lookup. Required when mode='image_ref'.",
+              "type": "string",
+              "minLength": 1
+            },
+            "path": {
+              "description": "Path to the deep-zoom PMTiles container (relative to dataset root, version-embedded) when mode='pmtiles'. Required when mode='pmtiles'.",
+              "type": "string",
+              "minLength": 1
+            },
+            "format": {
+              "description": "Encoded format of the per-image originals when mode='image_ref'. Renderer-decodable in the browser.",
+              "type": "string",
+              "enum": ["webp", "jpeg", "png"]
+            }
+          }
+        },
+        "edges": {
+          "description": "Optional edge-list declaration for this layout (decision D-20, carried forward from v1.1). Declared per layout because edges are a property of a network layout, and a dataset may carry more than one network layout. Null or absent for non-network layouts. Two network layouts may point their edges.path at the same file to share an edge set.",
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["path", "format"],
+          "properties": {
+            "path": {
+              "description": "Path to the edge-list file, relative to the dataset root (e.g. 'edges/edges.arrow'). Each record is (src int64, dst int64, weight float32).",
+              "type": "string",
+              "minLength": 1
+            },
+            "format": {
+              "description": "On-disk format of the edge-list file. Arrow IPC (Feather) only, written UNCOMPRESSED (decision D-29) — the frontend decodes Arrow via apache-arrow JS, which cannot read Parquet and cannot decode compressed record batches.",
+              "type": "string",
+              "enum": ["arrow"]
+            }
+          }
+        }
+      }
+    },
+    "layoutAnnotations": {
+      "description": "Optional per-layout OVERLAY ANNOTATIONS (the v2.5 MINOR; T2-69/T2-72 Seam 2). Non-tile vector marks the renderer draws in the DOM overlay substrate (spike docs/spikes/spike_overlay_substrate.md §4a), spatially locked to the pan/zoom canvas. Purely additive and OPTIONAL. ABSENT means the layout predates this MINOR or its family emits none (grid/scatter/geographic this seam) — a reader may then fall back to its own client-side derivations (e.g. the datetime getMetadata shim). PRESENT-BUT-DECLINED is distinct: a 2.5 datetime layout that refuses its axis emits `{\"axes\": []}` (see `axes`), and a reader must respect the refusal. `minProperties: 1` keeps the object itself never empty — a CATEGORICAL layout emits `labels`, a DATETIME layout emits `axes` (possibly the declined `[]`). Readers MUST gate on the presence of these fields, never on `manifest_version` — `append_manifest_layouts` carries pre-2.5 entries forward unchanged under a re-stamped version. The producer emits the DATA (label text + world extent + member count; axis domain + world range), never pre-rendered marks — the renderer derives rank, greedy-culls collisions per camera, and re-nices axis ticks on zoom, so a re-style needs no re-bake (spike §4a 'reflow, restyle, no re-bake').",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "labels": {
+          "description": "CATEGORICAL band labels (T2-69). One entry per distinct category band the categorical treemap laid out — CAPPED at 500 (maxItems, mirrored by the producer's _MAX_LABELS): a high-cardinality column emits its top-500 bands by member count (the structurally-missing band is always kept) with a loud bake-time warning, because an uncapped list ballooned the manifest ~1 MB at 10k distinct values and the renderer draws at most a few dozen per view anyway (PR-180 review). Each entry carries the band's `text`, its world-space `extent`, and its member `count`. The renderer places each label IN THE EMPTY GAP adjacent to its band (never over the images — the ratified 2026-07-21 placement rule), reveals small bands' labels only as you zoom to a legible size (the map convention: small labels wait), and greedy-culls collisions per camera ranking by area/count. The structurally-MISSING bucket carries `missing: true` so the renderer styles it as a muted 'no label', while real string values like 'anonymous'/'Unknown' rank honestly.",
+          "type": "array",
+          "maxItems": 500,
+          "items": { "$ref": "#/$defs/labelAnnotation" }
+        },
+        "axes": {
+          "description": "DATETIME axis descriptors (T2-69). Carries the time DOMAIN + world RANGE the layout computed then otherwise discards, so the renderer draws nice-tick marks along the visible sub-range per camera event (storing the domain, not pre-rendered ticks) — and, since v2.7, the `interval` rung it binned at, so those ticks can be the producer's own bin boundaries instead of a separately-maintained ladder. How many cells the layout could NOT place on that axis is the layout entry's `missing_count` (v2.6), NOT a field here — a DECLINED axis still strips its undated cells, so the count cannot live on an object a producer may refuse to emit. The datetime layout emits exactly one x-axis — OR the EXPLICIT EMPTY ARRAY `[]`, the DECLINED-AXIS marker (PR-180 review): the producer considered an axis and refused (degenerate span, single occupied column, or a calendar-overflow domain), and a reader MUST NOT substitute its own derived axis (the pre-2.5 getMetadata shim applies only when `annotations` itself is absent — otherwise the shim resurrects exactly the axis the producer refused, e.g. year-52,000 ticks from a malformed unix_seconds role). Other layout families emit no `axes`.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/axisAnnotation" }
+        }
+      }
+    },
+    "labelAnnotation": {
+      "description": "One categorical band label (v2.5). LEAN priority contract (ratified 2026-07-21): the producer emits `text` + `extent` + `count`; the renderer DERIVES the display rank from area/count and greedy-culls collisions per camera — there is no per-zoom producer recompute. The optional `priority` override is reserved for future curation.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "extent", "count"],
+      "properties": {
+        "text": {
+          "description": "The band's category value, verbatim (data is king). MAY be the empty string for the structurally-missing bucket (paired with `missing: true`) — the renderer then shows its own muted placeholder; real values (including 'anonymous'/'Unknown') are emitted as-is and rank honestly.",
+          "type": "string"
+        },
+        "extent": {
+          "description": "The band's world-space bounding rectangle as [x_min, y_min, x_max, y_max] in normalized [0,1]^2 (the treemap region the band occupies, INCLUDING its inter-group gutter — the renderer derives the empty gap-slot for the label from this extent). Clamped to [0,1]; the images themselves fill only the inner sub-grid, so the extent's margins are guaranteed image-free.",
+          "type": "array",
+          "items": { "type": "number", "minimum": 0, "maximum": 1 },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "count": {
+          "description": "The band's member count (how many cells carry this category value). The renderer's default declutter rank (band area == member count for the treemap, by construction) and the source of the optional counts-in-label-text viewer toggle ('Rembrandt (247)').",
+          "type": "integer",
+          "minimum": 0
+        },
+        "missing": {
+          "description": "True ONLY for the structurally-MISSING bucket — the band of cells whose category value was null/absent in the metadata (pipeline-known missingness, NOT value-sniffing; the categorical plugin's own sentinel). The renderer styles this band's label as a muted grey 'no label'. Absent/false for every real-valued band.",
+          "type": "boolean"
+        },
+        "priority": {
+          "description": "OPTIONAL explicit declutter-rank override (reserved for future curation). Absent by default — the renderer ranks by area/count. Higher shows first.",
+          "type": "number"
+        }
+      }
+    },
+    "axisAnnotation": {
+      "description": "One layout axis (v2.5). Currently only the datetime x-axis: a time DOMAIN mapped onto a world RANGE, from which the renderer computes nice-tick marks across the visible sub-range per camera event. Since v2.7 it also carries `interval`, the calendar bucketing rung the producer binned at, so those tick marks can be BIN BOUNDARIES the renderer was told about rather than a second ladder kept in sync by discipline. The cells the layout could not place on it are counted by the layout entry's `missing_count` (v2.6), not here.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["orientation", "scale", "domain", "range", "label"],
+      "properties": {
+        "orientation": {
+          "description": "Which world axis this describes. The datetime layout maps time to x, so it emits `\"x\"`.",
+          "type": "string",
+          "enum": ["x", "y"]
+        },
+        "scale": {
+          "description": "The axis scale kind. `\"time\"` (the only value this seam) means `domain` is a pair of datetimes and the renderer draws calendar-nice year/era ticks. FORWARD-COMPAT RULE (PR-180 review): this enum constrains the PRODUCER's emissions at write time; a READER encountering an unrecognized scale value (a later MINOR, e.g. a future \"linear\") must SKIP that axis entry — never reject the manifest — per the version promise that a v2-major reader accepts any 2.MINOR.",
+          "type": "string",
+          "enum": ["time"]
+        },
+        "domain": {
+          "description": "The axis endpoints as a [start, end] pair of ISO-8601 UTC datetime strings (e.g. [\"1100-01-01T00:00:00+00:00\", \"2020-12-31T00:00:00+00:00\"]) — chosen over an epoch number for manifest readability (ancient years included). `start` maps to `range[0]`, `end` to `range[1]`; the renderer parses them (Date.parse handles the full range) and interpolates tick positions.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "range": {
+          "description": "The world-x sub-interval [lo, hi] in normalized [0,1] onto which `domain` maps linearly. Since T2-138 the datetime plugin buckets cells on NICE CALENDAR boundaries (an auto-picked interval: second/minute/hour/day/month/quarter/year/decade/...) and places each bucket at its floored calendar START, so `domain` = [first bucket start, LAST bucket start] and `range` describe EXACTLY the line the placement used. WHAT A TICK MARKS, since D-36 seam H2: a bin is `k` images WIDE (uniform `k`, cells wrapped row-major from the bottom), and its tick is the LEFT EDGE of that block — where a histogram bar's boundary belongs — NOT a column centre. A cell sits at `tick + (col + 0.5)*p_c` for its 0-based column `col` in [0, k), so cells extend to the RIGHT of their tick, and the LAST bin's cells extend `k*p_c` to the right of `range[1]`. Before H2 every bin was one image wide and the tick was that single column's centre; a reader that assumes the old meaning mis-places every tick by half a cell at k=1 and by up to k/2 cells above it. `range` is NOT the full placement band: it is [margin + x_offset, margin + x_offset + k_time*denom], where `x_offset` is the D-36 seam H5 CENTRING translation — half of whatever band width the drawn histogram does not use, `max(0, (usable - drawn)/2)` for `drawn = k_time*denom + min(N_last, k)*p_c`. Before H5 the line started at `margin` unconditionally and all the slack sat on the RIGHT (measured on nasa, 224,990 rows over 106.3 yr at rung month/1: x = [0.040, 0.626], 58.5 % of the box, left-aligned). `x_offset` is 0 exactly when the ink already fills the band, which leaves such a bake bit-for-bit unchanged; note this is NOT the same as `the width term bound the pitch` — a width-bound bake whose LAST bin holds fewer than `k` images does not fill the trailing block the width bound budgeted for, and genuinely centres (measured: 41/37/1 images over three month bins solves k=4 width-bound yet draws 70.94 % of the box, shifting 0.105). A consumer needs no special handling: `domain`→`range` interpolation already carries the shift, because BOTH descriptions of the line translate together, where the world-units-per-second scale is `k_time = (k + gutter)*p_c/min_interval` — `p_c` the per-image CELL pitch (in x AND in y), `min_interval` the SHORTEST real interval the chosen rung can produce (a non-leap February for months, so a `k`-wide block provably fits EVERY bin, not the average one), and `gutter` a fraction of a cell (0.25 today) of RESIDUAL space left unfilled at each block's RIGHT end so a bin boundary never looks like the gap between two images inside a bin. `k` and `p_c` are solved jointly: `p_c = min(usable/((k+gutter)*denom/min_interval + k), box_h/max_i ceil(N_i/k))` — the WIDTH bound (the line plus the trailing block must fit the band) against the HEIGHT bound (the tallest bar must fit the box) — maximised over `k`, ties to the smaller `k`. `box_h` is the histogram's usable HEIGHT, 0.96 since v2.6 (seam U1) — the band y in [0.96, 1] is reserved unconditionally for the unplaced strip that holds the UNDATED images, so the geometry does not depend on how many images have no date, nor on whether any do; the bin populations `N_i` likewise count DATED cells only. Before v2.6 `box_h` was 1 and undated cells were parked into a dated column and counted into the deepest stack, so the number of undated images set the scale of the time axis (measured on the pre-v2.6 producer: adding 2000 undated images to 3000 photos over 900 days took `range` from [0.04, 0.273693611] to [0.04, 0.053865075], compressing the drawn extent 16.9x; to 4000 works over 250 uniform years, from [0.04, 0.96] to [0.04, 0.163511385], 7.4x). `range[1] + min(N_last, k)*p_c` equals `1 - margin - x_offset` — so it reaches 1-margin exactly when `x_offset` is 0, i.e. when the ink already fills the band (before H5 this read `range[1] + k*p_c` equals 1-margin when the WIDTH term binds, which is now wrong twice over: centring moved the right edge in by `x_offset`, and the trailing block reserves `min(N_last, k)` pitches, not `k` — the same correction the CONTAINMENT paragraph below already made). `range[1]` ITSELF never reaches 1-margin, because the last bin's block always sits to its right. It falls further short when the cell size sets the pitch instead — a peaked histogram wraps its deep bins into wide blocks and packs them tight (one `(k+gutter)`-cell pitch per shortest interval, so buckets m intervals apart sit m of those apart) rather than spreading a few hairlines across a mostly empty box. Which term binds is about PEAKEDNESS, not span; real clustered collections are commonly the peaked case, so DO NOT assume a broad-span dataset is unaffected. Consequence (unchanged since T2-138): EVERY bin lands on its own tick, not merely the endpoints — the pre-T2-138 residual (interior ticks up to half a ceil(sqrt(n)) column pitch from their column, because columns were equal-width-in-TIME and cells sat at bucket CENTRES) is GONE. CONTAINMENT, changed by H2: `range` is NO LONGER inside `bbox_exact`. `range[0]` sits `0.5*p_c - side/2` to the LEFT of `bbox_exact[0]` — the first block's left edge is a bar boundary, while the bbox starts at the first IMAGE's drawn edge, half a cell pitch in and then half a drawn side back out — and `range[1]` sits inside `bbox_exact[2]` by `(min(N_last, k) - 0.5)*p_c + side/2` — `min(N_last, k)`, NOT `k`: the LAST bin only reserves as many pitches as it holds images, so on a sparse-tailed collection (the ordinary shape) the `k` form over-states the gap by up to a factor of `k`. Both are stated in terms of the DRAWN `side`, which is `fill*p_c` only when nothing caps it: the side is separately capped at `2*margin` on a small shallow corpus, and at the tightest real bin spacing where `_floor_interval`'s year clamp makes a bucket shorter than its rung's minimum — measured, writing the lower gap as `(0.5 - fill/2)*p_c` is wrong by 5.6x on a two-cells-one-second-apart bake and 3.1x on a year-clamp bake. Both gaps are small (fractions of a cell, times `k` at the upper end); a consumer that framed the union of `bbox` and `range` before is still correct, one that asserted containment is not. `range` is emitted at 9 dp (NOT the 6 dp `bbox` uses): the consumer reconstructs the placement line FROM these two numbers, so their rounding lands directly in the alignment error — at 6 dp that was up to 5e-7 (measured 3.2e-7 on a packed layout), which is most of the 1e-6 reproduction budget; at 9 dp it is <= 5e-10 and the residual is float32 cell-coord storage alone (measured 4.05e-8 on a bake reaching x ~ 0.95, where one float32 ULP is 6.0e-8). The renderer maps a datetime t to world-x by linear interpolation of `domain` -> `range`.",
+          "type": "array",
+          "items": { "type": "number", "minimum": 0, "maximum": 1 },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "interval": {
+          "description": "The CALENDAR BUCKETING RUNG this axis's layout actually binned at (the v2.7 MINOR; T2-142 / D-36 seam H3) — `{kind, step}`, e.g. `{\"kind\": \"month\", \"step\": 3}` for quarters. WHY IT EXISTS: the producer owns a 25-rung interval ladder and the renderer owned a years-only nice-step list, maintained separately with nothing checking one against the other, so T2-138's guarantee that a bin's block left edge lands on its own tick only BIT where the two lists happened to coincide — a dataset binned by month or day got a correct but unlabelled axis. Emitting the rung makes lock-step STRUCTURAL: the renderer draws ticks at bin boundaries it was TOLD about instead of re-deriving a ladder that has to be kept in sync by discipline. It does NOT constrain the tick rung the renderer picks — tick density is a screen-space decision and a COARSER tick rung simply falls inside a bin, which is what a weekly histogram with monthly gridlines does (D-36 §7.4); it is the FINEST rung that is guaranteed to land on bin boundaries. HOW TO USE IT: a bucket start is `floor(instant)` at this rung, anchored at year 0 / month 1 / midnight (the producer's `_floor_interval`), and `domain[0]` IS the first occupied bucket start — so successive bin boundaries are `domain[0]` advanced by `step` `kind`s, mapped through `domain`→`range` (CAVEAT: on a multi-year rung whose FIRST occupied bucket is in years 1..step-1 CE, `_floor_interval` clamps that start to year 1 — OFF the step grid — so the first stride is short and a uniform walk from `domain[0]` drifts after it; boundaries past the first are on the natural grid, so floor each candidate to the rung rather than striding from `domain[0]`). Do NOT convert the rung to a fixed number of seconds and step linearly: months and years vary in length, `range` is linear in SECONDS, and the two disagree by up to ~3 % within a month rung. ALWAYS EMITTED WITH THE AXIS — there is no default and it is never omitted-when-default, so its ABSENCE means exactly one thing: the entry was baked BEFORE 2.7 (a fresh pre-2.7 bake, or a pre-2.7 entry `add-layouts` carried forward byte-preserved under a re-stamped version), and a reader must then fall back to its own tick ladder. Readers gate on FIELD PRESENCE, never on `manifest_version`. It rides on the AXIS rather than the layout entry — the opposite placement from `missing_count` — because it describes the tick line and has no meaning without one. Note that is a statement about TICKS, not about bucketing: of the three causes that make the producer DECLINE its axis, `degenerate span` and `calendar overflow` take the legacy equal-time grid and never choose a rung at all, but `single occupied bucket` runs the calendar branch and DOES choose one (measured 2026-07-29: 256 images inside 0.255 s pick `('second', 1)` and still emit `{\"axes\": []}`). It is dropped there because a one-bucket histogram has no drawable extent and therefore nothing to tick, not because nothing was binned.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "step"],
+          "properties": {
+            "kind": {
+              "description": "The calendar unit of the rung. These are exactly the kinds the producer's `_INTERVAL_LADDER` can select (`pipeline/layout_plugins/datetime_layout.py`, measured off the ladder 2026-07-29: 25 rungs over six kinds — second x4, minute x4, hour x4, day x1, month x2, year x10). There is deliberately NO `week` rung (it is the only sub-month unit that does not nest under its parent, and D-36 designs it out) and no `millennium` (the coarsest rung is `year`/1000). FORWARD-COMPAT RULE, close to but NOT identical to the one `scale` carries: this enum constrains the PRODUCER at write time, and a READER meeting an unrecognized kind from a later MINOR must never reject the manifest. But an unknown kind is NOT a reason to skip the axis — unlike an unknown `scale`, which makes the axis uninterpretable, an unknown rung only costs the bin-boundary tick refinement, and the axis is still fully drawable from `domain`/`range`. Degrade EXACTLY as for an ABSENT interval: fall back to the reader's own (years-only) tick ladder, axis still drawn. Per the promise that a v2-major reader accepts any 2.MINOR.",
+              "type": "string",
+              "enum": ["second", "minute", "hour", "day", "month", "year"]
+            },
+            "step": {
+              "description": "How many `kind` units one bucket spans — the second half of the ladder rung (1 for `('month', 1)`, 3 for quarters, 1000 for the coarsest year rung). Always >= 1; a step of 1 is emitted explicitly, never omitted as a default.",
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "label": {
+          "description": "Human-readable axis label (the datetime role's label, e.g. 'Captured' / 'date').",
+          "type": "string"
+        }
+      }
+    },
+    "pyramidDescriptor": {
+      "description": "SELF-DESCRIBING spatial tile pyramid for one layout (the v2 core change, decision D-33). REPLACES v1.1's fixed `atlas.lod_levels` (minItems=maxItems=3) and `cell_record.lod in {0,1,2}`. The renderer reads `levels`, `tile_px`, `thumb_px`, and `cap` and adapts to whatever this dataset baked — the level count is VARIABLE per dataset, never hardcoded. Tiles are addressed {layout}/{z}/{x}/{y} and served from a single PMTiles container per layout.",
+      "$comment": "Cross-field invariants JSON Schema cannot express numerically and which a CONTRACT TEST must therefore assert (tests/contract/test_fixture_conforms_schemas.py): (1) thumb_px <= tile_px (a thumbnail must fit in the tile); (2) cap == floor(tile_px / thumb_px)^2 (the mini-atlas grid is exactly floor(tile_px/thumb_px) per axis). These are derivable from tile_px+thumb_px, recorded explicitly for the renderer, and gate-enforced because the schema keywords below only bound each field independently.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["container", "path", "tile_px", "thumb_px", "cap", "levels", "z_cap"],
+      "properties": {
+        "container": {
+          "description": "On-disk transport for this layout's whole pyramid. PMTiles (decision D-33): one range-served single file per layout-pyramid, addressed by {z}/{x}/{y}. Loose {z}/{x}/{y} files were the REJECTED alternative — at 1M images x ~10 layouts the file-count explodes (the 512px tier alone was 156k files at 1M; see renderer-rework-plan §4). PMTiles serves any tile via an HTTP Range request against the one immutable file.",
+          "type": "string",
+          "enum": ["pmtiles"]
+        },
+        "path": {
+          "description": "Path to this layout's PMTiles container, relative to the dataset root, with the dataset version embedded so it is safe to serve with an immutable cache (e.g. 'tiles/grid/grid_v3.pmtiles'). The renderer addresses a tile by issuing a range request for {z}/{x}/{y} within this file.",
+          "type": "string",
+          "minLength": 1
+        },
+        "tile_px": {
+          "description": "Edge length in pixels of every square tile in this pyramid (default 512). For a FINE tile this is the edge of the mini-atlas image that packs the tile's cell thumbnails; for a COARSE tile it is the edge of the down-rendered mosaic composite. The renderer falls back to a smaller GPU texture at runtime if the device MAX_TEXTURE_SIZE is smaller, but tiles are authored at this size.",
+          "type": "integer",
+          "enum": [256, 512, 1024, 2048]
+        },
+        "thumb_px": {
+          "description": "Mid-tier per-cell thumbnail resolution in pixels (default 64). MUST be <= tile_px (a thumbnail must fit inside the tile it is packed into) — a cross-field invariant the schema cannot express numerically, asserted by the contract test (see pyramidDescriptor $comment). PER-DATASET BAKE-TIME parameter (decision D-33): the pixels are baked, so this is NOT a runtime toggle — it is fixed for this dataset version and recorded here so the renderer adapts to whatever was baked. The pipeline default comes from the env var IMAGE_VIZ_TILE_THUMB_PX (default 64). WHO may set it (power-user/env vs user-locked-on-upload) is future API APP-STATE/authz, NOT this schema (project rule: authz lives in app-state, never in schemas). In a FINE tile, up to `cap` cell thumbnails of this edge are packed into one tile_px x tile_px mini-atlas.",
+          "type": "integer",
+          "minimum": 8,
+          "maximum": 512
+        },
+        "cap": {
+          "description": "Maximum number of cell thumbnails packed into one FINE (mini-atlas) tile. By construction cap = floor(tile_px / thumb_px)^2 (e.g. 512/64 => 8x8 => 64). The pipeline subdivides a tile until its cell count <= cap; for exact-coincident points (degenerate scatter) it stops at the pyramid's deepest level and in-tile subsamples (drops/decimates the surplus, recorded per tile). Recorded explicitly so the renderer can size the per-tile sub-rect grid and validate parity without recomputing.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "levels": {
+          "description": "Ordered list of pyramid levels, coarsest first (index 0 = the overview level, the smallest z written). VARIABLE LENGTH (replaces v1.1's fixed 3-element lod_levels) — the dataset self-describes how deep its pyramid goes. Each entry declares the level's z and its tile count. Whether a level is COARSE (mosaic) or FINE (mini-atlas) is NOT stored per level — it is determined by z relative to `z_cap` (coarse iff z < z_cap, fine iff z >= z_cap), which is the single source of truth for the boundary. The renderer enumerates the visible tiles at the level its zoom selects, and on a miss draws the parent tile from the next-coarser level (the single web-map fallback rule that replaces ~6 v1 guards).",
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/pyramidLevel" }
+        },
+        "z_cap": {
+          "description": "REQUIRED. The SINGLE SOURCE OF TRUTH for the HYBRID coarse/fine boundary (decision D-33): the level z at and above which tiles are FINE (self-contained mini-atlas tiles carrying per-cell records); below z_cap tiles are COARSE (down-rendered mosaic composites). A level's tile type is DERIVED from this scalar (coarse iff z < z_cap, fine iff z >= z_cap), so it is not stored redundantly per level — there is no `band` field to keep consistent and therefore no z_cap/band partition for a contract test to police. An all-fine pyramid sets z_cap to its smallest z; an all-coarse pyramid is degenerate (no cell records) and not emitted in Phase 1. Must equal the z of one of `levels` (or, for an all-fine pyramid, levels[0].z).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "dropped_total": {
+          "description": "OPTIONAL (the v2.5 MINOR). The bake's TOTAL count of cells subsampled out across ALL fine tiles (the sum of every tile's coincident-point drop — the tiler always computed this and previously discarded it manifest-side). 0 means NO fine tile is over cap, which lets a viewer skip its render-time pile re-derivation entirely (the aggregate count chips scan the position table only when piles can exist). Absent on a pre-2.5 bake — the viewer then derives without the shortcut. Dropped ids keep their dense numbering + metadata rows (the v2.1 reconciliation).",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "pyramidLevel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["z", "tile_count"],
+      "properties": {
+        "z": {
+          "description": "Web-map XYZ zoom (z) of this pyramid level. The number of tiles per axis at this level is 2^z within the layout bbox. Levels are listed coarsest (smallest z) first; z values are contiguous and strictly increasing across the list. The level's tile type (COARSE mosaic vs FINE mini-atlas) is not stored here — it is derived from z relative to the pyramid's `z_cap` (coarse iff z < z_cap, fine iff z >= z_cap).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "tile_count": {
+          "description": "Number of tiles actually written at this level (sparse — empty regions of the bbox write no tile). Informational/validation: the renderer requests tiles by {z}/{x}/{y} and treats a 404/absent range as 'draw the parent'.",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "datasetMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image_count", "ingest_timestamp"],
+      "properties": {
+        "image_count": {
+          "description": "Number of RENDERABLE cells in this dataset version: images that successfully DECODED and were ASSIGNED a dense id. image_count = the decoded + id-assigned cell count, and the cell ids form a CONTIGUOUS DENSE range [0, image_count) with no holes in the integer space — image_count is BOTH the count and the exclusive upper bound of the id space (see cell_record.id). Images that failed to decode do NOT consume an id and are NOT counted here, even though their metadata row is retained in metadata.parquet for the filename join (the renderer never indexes those rows). NOTE (v2.1 reconciliation): image_count counts every id-assigned cell, NOT only the cells placed in a fine tile. When coincident-point subsampling occurred (tile.schema.json fineTile.subsampled), the UNION of fine-tile ids is a STRICT SUBSET of [0, image_count) — the subsampled cells keep their dense id and metadata row but carry no fine-tile record (they are reachable via the detail tier). With no subsampling the two coincide. The renderer sizes its id-indexed dense GPU/CPU buffers to exactly image_count (frontend/src/renderer/layout.ts cellCount) and initializes any id with no fine-tile record as invisible; image_count MUST equal the number of distinct dense ids assigned and the id NUMBERING must have no holes.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "ingest_timestamp": {
+          "description": "UTC timestamp when this dataset version finished ingesting, ISO 8601.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "source": {
+          "description": "Optional provenance of the metadata source at ingest time (e.g. a CSV path or other source identifier), kept source-format-agnostic. Informational only; not read at runtime. Absent for images-only datasets.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

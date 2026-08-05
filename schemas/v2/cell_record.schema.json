@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/v2/cell_record.schema.json",
+  "$comment": "LOCKED / IN-FORCE (2026-06-29) — schemas/v2 (MAJOR). This is the in-force cross-package contract (decision D-33), landed via the coordinated PR chain #63/#66/#68/#69/#72 and enforced by api/db.py SUPPORTED_MANIFEST_MAJOR=2. Supersedes schemas/v1.1/cell_record.schema.json (v1 and v1.1 are now frozen-historical). Phase-0 spike T-4 (renderer-rework-plan §5/§8) confirmed the instanced renderer consumes exactly: id, position (x,y), size (w,h), uvRect (sub-rect into the tile's mini-atlas), and visibility — texture-source-agnostic. This schema encodes that record for the FINE (mini-atlas) tile.",
+  "title": "CellRecord",
+  "description": "Describes one image cell as carried INSIDE a FINE (mini-atlas) tile of a layout's spatial pyramid. v2 CHANGE: in v1.x a cell record pointed into a single shared, id-ordered global atlas (atlas_page + atlas_uv + lod in {0,1,2}); in v2 each FINE tile is SELF-CONTAINED — it packs its own cells' thumbnails into one mini-atlas image and carries this per-cell record list, so the UV sub-rect is relative to THAT tile's mini-atlas and there is no global page index. COARSE (mosaic) tiles carry no cell records (they are composite pixels only; picking at coarse zoom is a spatial-index query). The on-disk transport for a fine tile's record list is an Arrow IPC (Feather) table where each column is one of the fields below; this JSON Schema validates a single record (one row) and pins the Arrow logical type of each column via the 'arrowType' annotation. The renderer reads these directly into GPU buffers (the existing struct-of-arrays CellBuffers: ids/positions/sizes/atlasUv/visibility) with no per-frame parsing. Schema version 2.1 (v2.1 MINOR: reconciled the coincident-point subsampling path with the dense-id contract — the id NUMBERING stays a hole-free [0,image_count) range while fine-tile PLACEMENT is relaxed for recorded subsampled drops; no field added or removed). Versioning rule (resumes from the v2 lock): adding a new NULLABLE column is a MINOR bump (forward-compatible); removing, renaming, or changing the type/nullability of any field is a MAJOR bump (schemas/v3/).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "x",
+    "y",
+    "w",
+    "h",
+    "u",
+    "v",
+    "uw",
+    "uh"
+  ],
+  "properties": {
+    "id": {
+      "description": "Stable pipeline-assigned integer index (cells are ordered by filename; users never supply ids). The join key against metadata.parquet and the tag sidecar, and the unique cell identity used for GPU picking. UNCHANGED from v1.x — the metadata join is preserved (decision D-33). TWO DISTINCT INVARIANTS apply (reconciled in v2.1): (1) id NUMBERING is HARD — the id set is a CONTIGUOUS DENSE integer range [0, image_count) with NO HOLES in the integer space: every integer in [0, dataset_metadata.image_count) is exactly one cell, and image_count counts those renderable cells. This is a hard contract, not a convention: the renderer allocates id-indexed dense typed arrays of length image_count and scatters by id (frontend/src/renderer/layout.ts: evaluateTagSelection allocates Uint8Array(cellCount) and writes out[id]; buildTargetField allocates Float32Array(cellCount*2) and guards id<0||id>=cellCount), so a baker that left a HOLE in the id numbering (or counted a scanned-but-unpacked image) would corrupt these buffers — every cell at a higher id would be mis-indexed. Decode-failed images therefore must NOT consume an id (they are excluded from the id range entirely, only their metadata.parquet row is retained for the filename join). (2) Fine-tile PLACEMENT is RELAXED — an id MAY be absent from EVERY fine tile, but ONLY if the tile that would have held it recorded the cell among its `subsampled.dropped` count (coincident-point subsampling at the pyramid's deepest level, tile.schema.json fineTile.subsampled). A subsampled id keeps its dense numbering and its metadata.parquet row, and remains reachable via the detail tier (cell still has an originals transcode); it simply has no fine-tile record, so the renderer initializes such a cell as INVISIBLE (unpositioned), not visible at (0,0). Absent the recorded drop, every id in [0, image_count) MUST appear in at least one fine tile (a missing-without-being-dropped id is the corruption the contract gate catches). A cell's id may appear in this list in MORE THAN ONE tile across the pyramid (the same cell is packed into a fine tile at each fine level whose region covers it); id is unique WITHIN a single tile's record list.",
+      "arrowType": "int64",
+      "type": "integer"
+    },
+    "x": {
+      "description": "Normalized world X position of the cell, in [0,1]. Explicit world-space float — never an implicit grid column index. UNCHANGED from v1.x.",
+      "arrowType": "float32",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "y": {
+      "description": "Normalized world Y position of the cell, in [0,1]. Explicit world-space float — never an implicit grid row index. UNCHANGED from v1.x.",
+      "arrowType": "float32",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "w": {
+      "description": "Cell width in normalized world units, in [0,1]. UNCHANGED from v1.x.",
+      "arrowType": "float32",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "h": {
+      "description": "Cell height in normalized world units, in [0,1]. UNCHANGED from v1.x.",
+      "arrowType": "float32",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "u": {
+      "description": "UV X offset of this cell's thumbnail within ITS OWN TILE's mini-atlas, in [0,1]. v2 RENAME/RE-SCOPE of v1.1 `atlas_u`: the sub-rect is into the tile's self-contained mini-atlas (tile_px x tile_px), not into a shared global atlas page. There is no atlas_page in v2 — the tile IS the texture.",
+      "arrowType": "float32",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "v": {
+      "description": "UV Y offset of this cell's thumbnail within its own tile's mini-atlas, in [0,1]. v2 rename/re-scope of v1.1 `atlas_v`.",
+      "arrowType": "float32",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "uw": {
+      "description": "UV width of this cell's thumbnail within its own tile's mini-atlas, in [0,1]. v2 rename/re-scope of v1.1 `atlas_w`. For a uniform mini-atlas of cap = (tile_px/thumb_px)^2 cells, uw = thumb_px / tile_px.",
+      "arrowType": "float32",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "uh": {
+      "description": "UV height of this cell's thumbnail within its own tile's mini-atlas, in [0,1]. v2 rename/re-scope of v1.1 `atlas_h`.",
+      "arrowType": "float32",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "level": {
+      "description": "RESERVED, nullable, UNBOUNDED int. The pyramid level (z) this record's tile sits at. v2 REPLACEMENT for v1.1 `lod` (int8, enum {0,1,2}): there is no fixed 3-level ceiling — the level count is variable per dataset (it is self-described by layout_manifest pyramid.levels). NULLABLE because a fine tile's record list is already implicitly at one known level (the tile's own z), so per-row redundancy is optional; pin it when a flattened multi-level record table is materialized. When present, must match a `z` declared in the manifest's pyramid.levels at or above `pyramid.z_cap` (i.e. a fine level).",
+      "arrowType": "int32",
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "detail_ref": {
+      "description": "RESERVED, nullable, and NOT read by the current consumer. Reference to this cell's individual full-resolution original for the deepest DETAIL tier (backlog T2-26). The IMPLEMENTED `detail.mode='image_ref'` resolution does NOT use this field: detail originals are named `{cell_id}.{format}` and the renderer resolves the lightbox by DENSE cell id at the fixed API route GET /api/datasets/{ds}/detail/{cell_id}.{ext} (api/routers/tiles.py composes `{detail.path_prefix}/{cell_id}.{ext}` server-side; the renderer never reads detail_ref or path_prefix). This field stays reserved for a FUTURE mode that resolves an arbitrary per-image path (e.g. 'a1b2/img_000123.webp') relative to `detail.path_prefix` — keeping it in the record from day one means that mode needs no breaking change. May be all-null (and is, in Phase 1).",
+      "arrowType": "utf8",
+      "type": ["string", "null"]
+    },
+    "color": {
+      "description": "RESERVED, nullable. Packed RGBA (8 bits per channel) for per-cell coloring. Carried forward from v1.x. May be all-null in v2.",
+      "arrowType": "int32",
+      "type": ["integer", "null"]
+    },
+    "cluster_id": {
+      "description": "RESERVED, nullable. Cluster assignment for categorical/network layouts. Carried forward from v1.x. May be all-null in v2.",
+      "arrowType": "int32",
+      "type": ["integer", "null"]
+    },
+    "edge_count": {
+      "description": "RESERVED, nullable. Number of edges incident to this cell in a network layout. Carried forward from v1.x. May be all-null in v2.",
+      "arrowType": "int32",
+      "type": ["integer", "null"]
+    },
+    "embedding_dim": {
+      "description": "RESERVED, nullable. Dimensionality of the source embedding that produced this cell's coordinates (for UMAP layouts). Carried forward from v1.x. May be all-null in v2.",
+      "arrowType": "int32",
+      "type": ["integer", "null"]
+    }
+  }
+}

@@ -1,0 +1,3 @@
+# Mount point for the opt-in local HTTPS cert pair (docs/https-local.md).
+# Place mkcert output here as localhost.pem + localhost-key.pem.
+# Everything in this directory except this file is git-ignored — never commit certs/keys.

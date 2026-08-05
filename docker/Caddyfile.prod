@@ -1,0 +1,64 @@
+# Caddy — PROD-PARITY edge. Serves the vite-BUILT frontend bundle statically over
+# HTTPS/HTTP-2 — the exact topology a real deployment uses. Unlike the dev edge
+# (docker/Caddyfile) it does NOT proxy the app shell to the vite dev server; it
+# serves the built bundle from /srv/app. Layered via docker-compose.prod.yml so we
+# can develop/test against production's shape and stop bugs hiding in the dev/prod
+# gap (operator directive, 2026-07). See docs/prod-parity.md.
+#
+# TLS is the same locally-trusted setup as docker/Caddyfile.https: a mkcert cert
+# pair at /certs/localhost.pem + /certs/localhost-key.pem (one-time host step, see
+# docs/https-local.md — no domain or purchased cert needed locally). The /datasets
+# and /api handles are SHARED with the dev edge via docker/Caddyfile.edge-snippets
+# (imported below, T2-76), so the ONLY intentional prod/dev differences are:
+# (1) built static bundle instead of the vite server, and (2) HTTP/2 instead of
+# HTTP/1.1 — H2 multiplexes the pyramid's many parallel {z}/{x}/{y} byte-range
+# reads over one connection instead of queueing them behind the browser's
+# ~6-connection HTTP/1.1 cap.
+{
+	# Opt-in TLS edge; an explicit cert is supplied via `tls` below. admin off
+	# matches the other edges.
+	admin off
+}
+
+# Load the shared edge snippet definitions (datasets_edge, api_edge) so the site
+# block below can `import` them by name (T2-76). Mounted alongside this Caddyfile.
+import Caddyfile.edge-snippets
+
+# The base compose file maps host :8080 -> container :80 and an override cannot
+# UN-map an inherited port. Without an explicit http:// site, Caddy's automatic
+# HTTP->HTTPS redirect points at https://localhost (no port — its https_port is
+# the in-container 443), which is unreachable from the host; anyone hitting the
+# familiar dev URL http://localhost:8080 would get a dead redirect. Send them to
+# the real external HTTPS edge instead.
+http://localhost {
+	redir https://localhost:8443{uri}
+}
+
+https://localhost {
+	# Locally-trusted cert pair issued by mkcert on the HOST (one-time
+	# `mkcert -install` + `mkcert localhost 127.0.0.1 ::1`), placed at these stable
+	# filenames under ./docker/certs. See docs/https-local.md.
+	tls /certs/localhost.pem /certs/localhost-key.pem
+
+	# Static versioned dataset assets (D-30) and the /api reverse-proxy are shared,
+	# byte-identical across all three edge profiles — imported from the shared
+	# snippet file so an edge change lands once (T2-76). See docker/Caddyfile.edge-snippets.
+	import datasets_edge
+	import api_edge
+
+	# App shell: the vite-built SPA bundle from disk (NOT the dev server). try_files
+	# falls back to index.html so client-side routes resolve. No explicit cache
+	# header here: index.html must stay revalidatable so a fresh build is picked up
+	# (vite's own asset filenames are content-hashed, so the bundle is safe to cache
+	# by the browser's default heuristics; aggressive asset caching can be layered
+	# later once verified live). `encode` is scoped to THIS block (the text bundle:
+	# the ~850 kB JS compresses to ~230 kB) and deliberately NOT applied to
+	# /datasets — those are already-compressed WebP/PMTiles served via HTTP Range,
+	# which must not be re-encoded.
+	handle {
+		root * /srv/app
+		encode gzip zstd
+		try_files {path} /index.html
+		file_server
+	}
+}

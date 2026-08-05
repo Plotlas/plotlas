@@ -1,0 +1,63 @@
+{
+  "manifest_version": "1.0",
+  "dataset_id": "golden_dataset",
+  "dataset_version": 1,
+  "layouts": [
+    {
+      "layout_id": "grid",
+      "label": "Grid",
+      "type": "grid",
+      "tile_root": "cells/grid/v1/",
+      "bbox": [
+        0.025,
+        0.175,
+        0.975,
+        0.825
+      ]
+    }
+  ],
+  "atlas": {
+    "page_size_px": 4096,
+    "path_prefix": "atlas/",
+    "format": "webp",
+    "lod_levels": [
+      {
+        "lod": 0,
+        "cell_size_px": 32,
+        "page_count": 1
+      },
+      {
+        "lod": 1,
+        "cell_size_px": 128,
+        "page_count": 0
+      },
+      {
+        "lod": 2,
+        "cell_size_px": 512,
+        "page_count": 0
+      }
+    ]
+  },
+  "dataset_metadata": {
+    "image_count": 10,
+    "ingest_timestamp": "2026-05-29T00:00:00Z",
+    "source": "fixture.csv"
+  },
+  "column_roles": {
+    "filename": {
+      "column": "filename",
+      "label": "Filename"
+    },
+    "tag": [
+      {
+        "column": "tags",
+        "label": "Tags",
+        "delimiter": ","
+      }
+    ]
+  },
+  "tags": {
+    "path": "tags/tags_v1.arrow",
+    "format": "arrow"
+  }
+}

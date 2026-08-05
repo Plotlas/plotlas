@@ -1,0 +1,45 @@
+{
+  "manifest_version": "2.1",
+  "dataset_id": "golden_dataset_dense_v2",
+  "dataset_version": 1,
+  "layouts": [
+    {
+      "layout_id": "grid",
+      "label": "Grid",
+      "type": "grid",
+      "bbox": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+      ],
+      "pyramid": {
+        "container": "pmtiles",
+        "path": "tiles/grid/grid_v1.pmtiles",
+        "tile_px": 512,
+        "thumb_px": 64,
+        "cap": 64,
+        "levels": [
+          {
+            "z": 0,
+            "tile_count": 1
+          },
+          {
+            "z": 1,
+            "tile_count": 2
+          }
+        ],
+        "z_cap": 1
+      },
+      "detail": {
+        "mode": "image_ref",
+        "path_prefix": "detail/",
+        "format": "webp"
+      }
+    }
+  ],
+  "dataset_metadata": {
+    "image_count": 80,
+    "ingest_timestamp": "2026-05-29T00:00:00Z"
+  }
+}

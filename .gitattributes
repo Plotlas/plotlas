@@ -1,0 +1,9 @@
+# Normalize line endings: store text as LF in the repo, check out native.
+* text=auto eol=lf
+
+# Binary test fixtures (tests/fixtures/golden_dataset/) — never normalize line
+# endings or treat as text/diff.
+*.parquet binary
+*.feather binary
+*.arrow   binary
+*.webp    binary

@@ -1,0 +1,9 @@
+{
+  "name": "@image-viz/frontend-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Real-browser renderer diagnostics + regression gate (Playwright). Drives the live stack and asserts on window.__vizDebug — the streaming dynamics the GL-free unit tests cannot see (O1 round-3).",
+  "devDependencies": {
+    "@playwright/test": "1.49.1"
+  }
+}

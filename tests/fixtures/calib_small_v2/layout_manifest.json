@@ -1,0 +1,45 @@
+{
+  "manifest_version": "2.1",
+  "dataset_id": "calib_small_v2",
+  "dataset_version": 1,
+  "layouts": [
+    {
+      "layout_id": "grid",
+      "label": "Grid",
+      "type": "grid",
+      "bbox": [
+        0.003125,
+        0.003125,
+        0.996875,
+        0.996875
+      ],
+      "pyramid": {
+        "container": "pmtiles",
+        "path": "tiles/grid/grid_v1.pmtiles",
+        "tile_px": 512,
+        "thumb_px": 64,
+        "cap": 64,
+        "levels": [
+          {
+            "z": 0,
+            "tile_count": 1
+          },
+          {
+            "z": 1,
+            "tile_count": 4
+          }
+        ],
+        "z_cap": 1
+      },
+      "detail": {
+        "mode": "image_ref",
+        "path_prefix": "detail/v1/",
+        "format": "webp"
+      }
+    }
+  ],
+  "dataset_metadata": {
+    "image_count": 256,
+    "ingest_timestamp": "2026-07-06T09:32:33Z"
+  }
+}

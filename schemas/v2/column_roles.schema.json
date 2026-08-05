@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/v2/column_roles.schema.json",
+  "$comment": "LOCKED / IN-FORCE (2026-06-29) — schemas/v2 (MAJOR). This is the in-force cross-package contract (decision D-33), landed via the coordinated PR chain #63/#66/#68/#69/#72 and enforced by api/db.py SUPPORTED_MANIFEST_MAJOR=2. CARRIED FORWARD UNCHANGED in shape from schemas/v1.1/column_roles.schema.json (v1 and v1.1 are now frozen-historical): the renderer rework changes ONLY how pixels are tiled/served (manifest pyramid + cell_record), never how metadata maps to roles. The metadata join (cell `id` <-> source `filename`) and every role are preserved verbatim (decision D-33). Only the `$id` and the version sentence in the description change for the major bump. Carrying it into v2 (rather than $ref-ing v1.1) keeps schemas/v2/ self-contained as the single MAJOR contract directory.",
+  "title": "ColumnRoles",
+  "description": "Maps an optional metadata source's columns to the semantic roles the application understands. The dataset is the images; metadata is optional enrichment (CSV today, other sources later) joined to the images by filename. When present, this object is validated by ingest.py and embedded in the layout manifest so the API and frontend know how to query and display each column. Absent => images-only dataset. Schema version 2.x (the v2.8 MINOR added the optional top-level `url` role — the names of columns whose values are links, rendered as anchors instead of plain text; the v2.4 MINOR added the top-level `geographic` role array — real-world lon/lat pairs projected to a map, a first-class family distinct from scatter — D-35 Seam G2; the v2.3 MINOR added optional per-axis scatter scale + normalize + overlap knobs to scatterRoleEntry — D-35 Seam G1; otherwise the shape is unchanged from 1.1).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["filename"],
+  "properties": {
+    "filename": {
+      "description": "The column naming each row's image file — the join key to the image set, matched by basename. Required whenever a column_roles object is present (a role map is only useful if it says which column is the filename). Stored for display and export; the pipeline assigns the cell id (users never supply ids).",
+      "$ref": "#/$defs/roleEntry"
+    },
+    "datetime": {
+      "description": "Optional timestamp column driving the datetime layout. At most one. Values must parse as ISO 8601 dates or Unix timestamps.",
+      "anyOf": [
+        { "$ref": "#/$defs/datetimeRoleEntry" },
+        { "type": "null" }
+      ]
+    },
+    "categorical": {
+      "description": "Discrete label columns driving the categorical layout and color-by. Zero to N.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/roleEntry" },
+      "default": []
+    },
+    "scatter": {
+      "description": "Pre-computed 2-D coordinate column pairs (UMAP/t-SNE/custom, decision D-26); each entry drives one scatter layout. The pair is atomic — an X without a Y is unrepresentable. Zero to N.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/scatterRoleEntry" },
+      "default": []
+    },
+    "geographic": {
+      "description": "Real-world lon/lat coordinate column pairs (D-35 Seam G2); each entry drives one GEOGRAPHIC layout — a FIRST-CLASS family DISTINCT from scatter (operator 2026-07-19). The columns MEAN longitude/latitude, so the pipeline PROJECTS them to a map (equirectangular or Web Mercator) before the shared aspect fit — unlike scatter, whose x/y are already-planar coordinates. The pair is atomic — a lon without a lat is unrepresentable. There are NO scale knobs (degrees are degrees — D-35). Zero to N.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/geographicRoleEntry" },
+      "default": []
+    },
+    "tag": {
+      "description": "Multi-value columns used for highlight/filter controls. Zero to N. Each cell may carry multiple tag values; the delimiter is declared per column.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/tagRoleEntry" },
+      "default": []
+    },
+    "freeform": {
+      "description": "Display-only columns surfaced in the metadata panel. Not indexed for layout or filtering. Zero to N.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/roleEntry" },
+      "default": []
+    },
+    "url": {
+      "description": "Column names whose values ARE links — the panel renders each one's value as an anchor instead of plain text. Zero to N. Just names: there is nothing to synthesize (the column already holds the URL) and no label to carry (the panel already heads each field with the column's own name, and the link text is the value). A column named here is an ORDINARY metadata column in almost every other respect — it stays in metadata.parquet and appears in /api/metadata `fields` like any other. Naming it here changes how it is DRAWN and has exactly one further effect: the column is excluded from free-text search (its values are link targets, not human search text, and short URLs would otherwise match nearly every row). Rendering rule (normative): a value is a live link ONLY if it parses as an absolute http(s) URL; anything else — javascript:, data:, relative, protocol-relative, malformed — renders as the same inert text as any other field, so a role map travelling inside a dataset cannot introduce a hostile target. Nothing ever fetches, HEADs or validates the target, which would break the no-outbound-network property the application documents.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "default": []
+    },
+    "embedding": {
+      "description": "RESERVED for Phase 2 UMAP. Optional, nullable. Names a vector column (Arrow list<float32>) used to compute UMAP coordinates. Present in the schema from day one so the Phase 2 hook does not require a breaking change.",
+      "anyOf": [
+        { "$ref": "#/$defs/embeddingRoleEntry" },
+        { "type": "null" }
+      ]
+    }
+  },
+  "$defs": {
+    "roleEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "label"],
+      "properties": {
+        "column": {
+          "description": "Exact column name as it appears in the metadata source's header (the join is by basename; users never supply cell ids). This always names the SOURCE column — not any internal name the pipeline may store the data under (e.g. an enrichment column that shadows a reserved field is stored as 'meta_<name>'; the role entry still references the original header name) (T2-20).",
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "description": "Human-readable label shown in the UI for this column.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "datetimeRoleEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "label", "format"],
+      "properties": {
+        "column": {
+          "description": "Exact column name as it appears in the metadata source's header (the join is by basename; users never supply cell ids). This always names the SOURCE column — not any internal name the pipeline may store the data under (e.g. an enrichment column that shadows a reserved field is stored as 'meta_<name>'; the role entry still references the original header name) (T2-20).",
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "description": "Human-readable label shown in the UI for this column.",
+          "type": "string",
+          "minLength": 1
+        },
+        "format": {
+          "description": "How to parse the column's values. 'iso8601' for date/datetime strings; 'unix_seconds' or 'unix_millis' for integer epoch timestamps.",
+          "type": "string",
+          "enum": ["iso8601", "unix_seconds", "unix_millis"]
+        }
+      }
+    },
+    "scatterRoleEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x_column", "y_column", "label"],
+      "properties": {
+        "x_column": {
+          "description": "Exact column name (metadata source header) carrying the pre-computed X coordinate. Values must parse as finite floats; empty/null values mark the cell unplaced.",
+          "type": "string",
+          "minLength": 1
+        },
+        "y_column": {
+          "description": "Exact column name (metadata source header) carrying the pre-computed Y coordinate. Values must parse as finite floats; empty/null values mark the cell unplaced.",
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "description": "Human-readable label shown in the UI for this scatter layout.",
+          "type": "string",
+          "minLength": 1
+        },
+        "x_scale": {
+          "description": "Optional DECLARED scale for the X axis, applied before the fit (D-35 Seam G1; the reworked T2-118a). 'linear' (default) plots the raw values; 'log' plots the natural log of the values, spreading a heavy MULTIPLICATIVE tail (artwork dimensions in cm, prices, counts) so the dense bulk stops piling into a corner. The transform is DECLARED, never auto-selected from the value shape (knobs, never sniffing — D-35): a positive-quadrant REGIONAL map is additive, not multiplicative, and a value-sniffed log would wrongly warp it. 'log' REQUIRES strictly-positive values on this axis over the rows that place (a row missing either coordinate is unplaced and exempt) — the producer fail-fasts (D-11) naming the column and the offending value rather than silently falling back to linear, on BOTH entry points (CSV ingest and add-layouts roles re-validation). Both axes must currently share ONE scale: declaring 'log' on one axis and 'linear' on the other fail-fasts, because the shared-scale aspect fit assumes commensurable axes and would crush the logged one (a per-axis fit mode is tracked as T2-128). Also incompatible with normalize 'none' (pass-through preserves your normalized values; apply any scaling upstream). Absent => 'linear' (today's behavior, byte-for-byte).",
+          "type": "string",
+          "enum": ["linear", "log"],
+          "default": "linear"
+        },
+        "y_scale": {
+          "description": "Optional DECLARED scale for the Y axis, applied before the fit (D-35 Seam G1). Same contract as x_scale: 'linear' (default) or 'log' (natural log; REQUIRES strictly-positive values over the placing rows, fail-fast naming column + offending value on both producer entry points; incompatible with normalize 'none'). The field is declared per axis for forward-compatibility with a per-axis fit mode (T2-128), but currently both axes must share one scale — mixed 'log'/'linear' fail-fasts (the shared-scale aspect fit would crush the logged axis). Absent => 'linear'. Log is monotonic, so the north-up orientation (T2-85) is preserved.",
+          "type": "string",
+          "enum": ["linear", "log"],
+          "default": "linear"
+        },
+        "normalize": {
+          "description": "Optional DECLARED source/placement for this scatter pair (D-35 Seam G1; T2-34). 'fit' (default) is today's aspect-preserving, median-centred auto-fit into the placed box (x in [0,1], y in [0,0.95]) with the T2-85 north-up y-inversion. 'none' is PASS-THROUGH: your already-normalized [0,1]^2 coordinates are preserved EXACTLY up to ONE uniform scale on both axes (x0.95, into the placed band) — no auto-fit, no per-axis warp, no re-centring, and no north-up inversion is applied, so you own projection, aspect, AND orientation; supply your y in the orientation you want. Cell size under pass-through derives from the occupied extent, so a sub-region placement keeps a sane density, and cells with MISSING coordinates form a small block one gutter below your occupied extent (adjacent and discoverable at the data's own zoom, never intermixed with real datapoints; when your data spans the canvas the block falls back to the bottom band y>0.95, which is adjacent in exactly that case). 'none' REQUIRES both axis columns' placing values within [0,1] — the producer fail-fasts (D-11) naming the column and the offending value, on both entry points. Absent => 'fit'.",
+          "type": "string",
+          "enum": ["fit", "none"],
+          "default": "fit"
+        },
+        "overlap": {
+          "description": "Optional DECLARED handling of co-located images (D-35: Seam G1 lands the FIELD; Seam G4 lands the behaviors). 'overdraw' (default) is today's behavior — images draw over one another at their true positions. 'jitter' (deterministic seeded displacement, ~one cell pitch) and 'aggregate' (a representative image + count badge) are RESERVED contract values, present now so declaring them needs no future schema bump, but they are NOT YET IMPLEMENTED: declaring either fail-fasts (\"overlap '<v>' ... is not implemented yet (coming — D-35 G4)\") on BOTH producer entry points (CSV ingest and add-layouts roles re-validation) rather than being silently ignored. Absent => 'overdraw'.",
+          "type": "string",
+          "enum": ["overdraw", "jitter", "aggregate"],
+          "default": "overdraw"
+        }
+      }
+    },
+    "geographicRoleEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lon_column", "lat_column", "label"],
+      "properties": {
+        "lon_column": {
+          "description": "Exact column name (metadata source header) carrying the LONGITUDE in decimal degrees, within [-180, 180]. Values must parse as finite floats; empty/null values mark the cell unplaced (the strip). Ingest fail-fasts (D-11) on an out-of-range value, naming the column + offending value.",
+          "type": "string",
+          "minLength": 1
+        },
+        "lat_column": {
+          "description": "Exact column name (metadata source header) carrying the LATITUDE in decimal degrees, within [-90, 90]. Values must parse as finite floats; empty/null values mark the cell unplaced. Under projection 'mercator' the latitude is additionally limited to |lat| <= 85.051129 (the Web-Mercator clip latitude — beyond it the northing diverges); ingest fail-fasts naming the column + offending value, with NO silent clamp ('equirectangular' is valid to the poles).",
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "description": "Human-readable label shown in the UI for this geographic layout.",
+          "type": "string",
+          "minLength": 1
+        },
+        "projection": {
+          "description": "Optional DECLARED map projection for this lon/lat pair (D-35 Seam G2). 'equirectangular' (default; plate carrée — x=lon, y=lat, 1° lon = 1° lat; what the current implicit scatter fit already approximates, and valid to the poles) or 'mercator' (Web Mercator — the shape the web maps you know use, y = ln(tan(π/4 + φ/2)); conformal but exaggerates area toward the poles and is limited to |lat| <= 85.051129). BOTH projections ship (D-35 Decision 4); the default is a §6.1 bless item (equirectangular as proposed, so existing lon/lat bakes don't silently change shape on re-bake). There are NO scale knobs on the geographic family (degrees are degrees — D-35). DECLARED, never sniffed. Absent => 'equirectangular'.",
+          "type": "string",
+          "enum": ["equirectangular", "mercator"],
+          "default": "equirectangular"
+        },
+        "overlap": {
+          "description": "Optional DECLARED handling of co-located images (D-35: Seam G2 lands the FIELD on the geographic family; Seam G4 lands the behaviors), mirroring the scatter overlap knob. 'overdraw' (default) is today's behavior — images draw over one another at their true projected positions. 'jitter' and 'aggregate' are RESERVED contract values, present now so declaring them needs no future schema bump, but they are NOT YET IMPLEMENTED: declaring either fail-fasts at ingest (\"overlap '<v>' is not implemented yet (coming — D-35 G4)\"). Absent => 'overdraw'.",
+          "type": "string",
+          "enum": ["overdraw", "jitter", "aggregate"],
+          "default": "overdraw"
+        }
+      }
+    },
+    "tagRoleEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "label", "delimiter"],
+      "properties": {
+        "column": {
+          "description": "Exact column name as it appears in the metadata source's header (the join is by basename; users never supply cell ids). This always names the SOURCE column — not any internal name the pipeline may store the data under (e.g. an enrichment column that shadows a reserved field is stored as 'meta_<name>'; the role entry still references the original header name) (T2-20).",
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "description": "Human-readable label shown in the UI for this column.",
+          "type": "string",
+          "minLength": 1
+        },
+        "delimiter": {
+          "description": "Delimiter splitting a single cell's value into multiple tag values (e.g. ',' or '|'). Use an empty string for single-value tag columns.",
+          "type": "string"
+        }
+      }
+    },
+    "embeddingRoleEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "label", "dim"],
+      "properties": {
+        "column": {
+          "description": "Exact column name as it appears in the metadata source (Arrow list<float32>) — the SOURCE header name, not any internal 'meta_<name>' the pipeline may store it under (T2-20).",
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "description": "Human-readable label shown in the UI for this embedding.",
+          "type": "string",
+          "minLength": 1
+        },
+        "dim": {
+          "description": "Dimensionality of each embedding vector. Recorded into the cell record's embedding_dim field for UMAP layouts.",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

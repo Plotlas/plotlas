@@ -1,0 +1,199 @@
+# Plotlas — PUBLIC SHOWCASE profile (Seam H1; RELEASE_READINESS §2 Group A).
+#
+# The hardened, worker-less, read-only deployment that makes app.plotlas.com safe
+# to expose. It ACTIVATES the fail-closed guards that lie dormant in dev because
+# nothing sets APP_ENV=production.
+#
+# STANDALONE — run it BY ITSELF, do NOT layer it on docker-compose.yml:
+#     docker compose -f docker-compose.public.yml up -d
+# Layering on the dev base would re-introduce redis, the worker, and the dev host
+# bind-mounts this profile deliberately drops. It is also NOT `make prod`
+# (docker-compose.prod.yml) — that is local topology-parity only (mkcert
+# localhost, no fail-closed guards). See docs/launch/RELEASE_READINESS.md.
+#
+# What it runs, and why it is safe to expose:
+#   * api      — FastAPI with APP_ENV=production, so the fail-closed JWT/CORS
+#                guards fire (a missing/dev/short JWT_SECRET or wildcard CORS
+#                crash-loops the boot). Reads the datasets volume READ-ONLY. No
+#                --reload and no source bind-mount: the image is self-contained
+#                (a rented host has no repo). No depends_on redis — the read path
+#                is Redis-free (verified), so the broker + worker are omitted and
+#                ingest simply cannot run here.
+#   * caddy    — the real-domain edge: automatic ACME HTTPS for app.plotlas.com,
+#                security headers, static versioned tiles + the /api reverse proxy.
+#   * frontend — a ONE-SHOT build (`npm ci && npm run build`) into a shared volume
+#                Caddy serves, then EXITS; it is not a long-running service.
+#
+# Secrets come from `.env` (env_file), which is git-ignored and generated on the
+# host — see .env.example. `.env` MUST exist before `config`/`up`.
+name: plotlas-public
+
+services:
+  # One-shot: hand the app-state directory to the app user, then exit. Only
+  # app-state is touched here — unlike the dev profile, /data is mounted READ-ONLY
+  # on the showcase host and no worker ever writes a dataset tree. Runs as root
+  # solely to chown; see the long note in docker-compose.yml for why a bind mount
+  # needs this and a named volume did not.
+  data-init:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    user: "0:0"
+    command: sh -c 'mkdir -p /app-state && chown 10001:10001 /app-state'
+    volumes:
+      - ${DATA_DIR:-./data}/app-state:/app-state
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    # Prod switches + secrets from the host .env (NOT hard-coded here, per R-S1):
+    # APP_ENV, JWT_SECRET, ALLOWED_ORIGINS, (optional) JWT_TTL_SECONDS. Without a
+    # real JWT_SECRET / explicit ALLOWED_ORIGINS the fail-closed guard crash-loops
+    # the boot — that is the point.
+    env_file:
+      - .env
+    environment:
+      # Container-internal, non-secret operational config. The datasets volume is
+      # read-only below; the mutable app-state SQLite is redirected to its own
+      # writable `appstate` volume, disjoint from the read-only content.
+      DATA_ROOT: /data
+      APP_STATE_DB: /app-state/appstate.db
+      # --- seam SEC-1 switches: the DEFAULTS are already correct here, so both
+      # are left commented out. Listed so the knobs are discoverable at the place
+      # they would be turned.
+      #
+      # ALLOW_SIGNUP — web account creation. Unset means DISABLED under
+      # APP_ENV=production (which this profile sets via .env), which is what the
+      # phase-1 curated read-only showcase wants: no signup, no user uploads. A
+      # self-hoster who DOES want public registration uncomments this; the server-
+      # side `python -m api.admin create-user` path is unaffected either way.
+      # ALLOW_SIGNUP: "true"
+      #
+      # AUTH_RATE_LIMIT / AUTH_RATE_LIMIT_WINDOW_SECONDS — the in-process limit on
+      # /api/auth/* (default 10 requests per client, per route, per 60s). It is
+      # in-process BY DESIGN: this profile declares no redis service, so a
+      # broker-backed limiter would fail on the first login. Single api container
+      # ⇒ the budget is global; see AuthRateLimiter for the per-replica caveat.
+      # AUTH_RATE_LIMIT: "10"
+      # AUTH_RATE_LIMIT_WINDOW_SECONDS: "60"
+    volumes:
+      # Content is READ-ONLY on the showcase host — no worker ever writes a
+      # dataset tree here. Populate it out-of-band via bake-and-transfer (§4).
+      - ${DATA_DIR:-./data}:/data:ro
+      # Writable app-state (users + ownership), disjoint from the read-only
+      # content above. This is a BIND MOUNT, so it keeps the HOST directory's
+      # ownership — Docker only chowns a named volume to the container user. The
+      # api runs as uid 10001, so `data-init` below hands it this directory
+      # before boot; without that the lifespan's setup_appstate() dies with
+      # `sqlite3.OperationalError: unable to open database file`.
+      - ${DATA_DIR:-./data}/app-state:/app-state
+    # No command override: the image CMD runs uvicorn WITHOUT --reload.
+    depends_on:
+      data-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    mem_limit: 2g        # cap a heavy DuckDB query; tune per host (R-S9)
+    pids_limit: 512
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    logging:             # bound the json-file driver so logs can't fill the disk (R-S9b)
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # One-shot production build of the frontend bundle into the shared frontend_dist
+  # volume Caddy serves, then EXIT (mirrors docker-compose.prod.yml, but `npm ci`
+  # against the committed package-lock.json for a reproducible bundle — R-S3). The
+  # host needs the repo checked out for THIS build only, or pre-populate the
+  # frontend_dist volume with a locally-built dist/ and skip this service. The
+  # frontend is same-origin / domain-agnostic, so no build-time API URL is needed.
+  frontend:
+    image: node:22.22-bookworm-slim
+    working_dir: /repo/packages/frontend
+    command: sh -c "npm ci && npm run build"
+    volumes:
+      # Mount ONLY the frontend package, NOT the whole repo: `npm run build`
+      # (tsc --noEmit && vite build) is self-contained to packages/frontend
+      # (tsconfig `include: [src]`, no `extends`; vite `root: "."`; its own
+      # package-lock.json), so it needs nothing at the repo root. Keeping the root
+      # out means the host `.env` — the real JWT_SECRET — is NOT exposed to this
+      # root-run `npm ci` build container (a dependency's postinstall could read a
+      # repo-root bind mount). If a future build wires in `gen:types`, also mount
+      # `./schemas:/repo/schemas:ro` (it reads schemas/v2), not the whole repo.
+      - ./packages/frontend:/repo/packages/frontend
+      - frontend_node_modules:/repo/packages/frontend/node_modules
+      - frontend_dist:/repo/packages/frontend/dist
+    restart: "no"
+    mem_limit: 2g        # bound the one-shot tsc+vite build too (R-S9)
+    pids_limit: 512
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2.8-alpine
+    # Caddy needs ONLY ACME_EMAIL + DATA_ROOT — NOT the api's JWT_SECRET /
+    # ALLOWED_ORIGINS. Pull ACME_EMAIL from the host .env via ${..} interpolation
+    # (compose auto-loads ./.env) rather than env_file, so the identity-token
+    # signing secret never enters this internet-facing edge's environment (least
+    # privilege). The `:?` guard makes `docker compose ... config/up` FAIL LOUDLY
+    # with a clear message when ACME_EMAIL is unset/blank — otherwise Caddy's
+    # `email {$ACME_EMAIL}` global fails Caddyfile adaptation and crash-loops the
+    # whole edge on an opaque parse error. DATA_ROOT points Caddy's file_server at
+    # the read-only datasets subtree (the caddy image uses /data for its OWN
+    # storage, so content is served from /srv/datasets — D-30 URL shape unchanged;
+    # caddy_data holds the issued certs).
+    environment:
+      DATA_ROOT: /srv/datasets
+      ACME_EMAIL: "${ACME_EMAIL:?ACME_EMAIL must be set in .env (e.g. ops@plotlas.com); the public edge requires it}"
+    volumes:
+      - ./docker/Caddyfile.public:/etc/caddy/Caddyfile:ro
+      # The shared edge snippets the Caddyfile `import`s (must sit beside it).
+      - ./docker/Caddyfile.edge-snippets:/etc/caddy/Caddyfile.edge-snippets:ro
+      - ${DATA_DIR:-./data}:/srv/datasets:ro
+      - frontend_dist:/srv/app:ro
+      # Persist issued ACME certs + account across restarts (Let's Encrypt rate
+      # limits re-issuance — this volume MUST survive restarts).
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"      # ACME HTTP-01 challenge + the http->https redirect
+      - "443:443"    # HTTPS
+    depends_on:
+      # Serve only once the one-shot build has produced the bundle; the api need
+      # only be started (its own healthcheck covers readiness).
+      frontend:
+        condition: service_completed_successfully
+      api:
+        condition: service_started
+    restart: unless-stopped
+    mem_limit: 512m
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  # `datasets` and `appstate` are deliberately NOT volumes — both are bind mounts under
+  # ${DATA_DIR:-./data}, so `docker compose down -v` cannot delete them. Collections
+  # cost hours to prepare, and the app-state DB (accounts + ownership) is the one thing
+  # in the system that is NOT reproducible from its inputs. Bind mounts also make both
+  # backup-able with `tar`, and visible to an operator who wants to know where their
+  # data actually is — which is a question institutional review asks.
+  frontend_dist:  # the built SPA bundle Caddy serves.
+  frontend_node_modules:
+  caddy_data:     # ACME certs + account — MUST persist (rate limits).
+  caddy_config:
+# WARNING: `datasets` and `appstate` hold the curated exhibition + the user
+# accounts. Use `docker compose -f docker-compose.public.yml down` (WITHOUT -v) on
+# this host — `down -v` would delete both.

@@ -1,0 +1,58 @@
+attrs==26.1.0
+    # via
+    #   jsonschema
+    #   referencing
+cffi==2.0.0
+    # via pyvips
+click==8.4.2
+    # via rq
+croniter==6.2.3
+    # via rq
+duckdb==1.5.4
+    # via pipeline (packages/pipeline/pyproject.toml)
+iniconfig==2.3.0
+    # via pytest
+jsonschema==4.26.0
+    # via pipeline (packages/pipeline/pyproject.toml)
+jsonschema-specifications==2025.9.1
+    # via jsonschema
+numpy==2.5.1
+    # via pipeline (packages/pipeline/pyproject.toml)
+packaging==26.2
+    # via pytest
+pluggy==1.6.0
+    # via pytest
+pmtiles==3.7.0
+    # via pipeline (packages/pipeline/pyproject.toml)
+pyarrow==24.0.0
+    # via pipeline (packages/pipeline/pyproject.toml)
+pycparser==3.0
+    # via cffi
+pygments==2.20.0
+    # via pytest
+pytest==9.1.1
+    # via pipeline (packages/pipeline/pyproject.toml)
+python-dateutil==2.9.0.post0
+    # via croniter
+pyvips==3.1.1
+    # via pipeline (packages/pipeline/pyproject.toml)
+rectpack==0.2.2
+    # via pipeline (packages/pipeline/pyproject.toml)
+redis==8.0.1
+    # via
+    #   -r /tmp/worker-extra.in
+    #   rq
+referencing==0.37.0
+    # via
+    #   jsonschema
+    #   jsonschema-specifications
+rpds-py==2026.6.3
+    # via
+    #   jsonschema
+    #   referencing
+rq==2.10.0
+    # via -r /tmp/worker-extra.in
+six==1.17.0
+    # via python-dateutil
+typing-extensions==4.16.0
+    # via referencing

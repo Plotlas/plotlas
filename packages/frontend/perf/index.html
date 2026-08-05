@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>image-viz — renderer perf harness (100k cells)</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #111;
+        color: #eee;
+        font:
+          13px/1.4 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+        overflow: hidden;
+      }
+      #canvas {
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
+        display: block;
+      }
+      #hud {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        z-index: 10;
+        padding: 10px 14px;
+        background: rgba(0, 0, 0, 0.62);
+        border: 1px solid #333;
+        border-radius: 6px;
+        white-space: pre;
+        pointer-events: none;
+        min-width: 280px;
+      }
+      #hud b {
+        color: #7fd1ff;
+      }
+      .pass {
+        color: #6ee787;
+      }
+      .fail {
+        color: #ff7b72;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas"></canvas>
+    <div id="hud">booting renderer perf harness…</div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

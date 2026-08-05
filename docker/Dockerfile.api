@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1
+# API image — lean FastAPI service (uvicorn). Carries the api allowed deps ONLY
+# (packages/api/pyproject.toml); it must NEVER gain a pipeline dep. The API
+# enqueues the ingest job by dotted string (decision D-15) and never imports
+# `pipeline`, so libvips / pyvips / quadfeather / rectpack have no place here.
+FROM python:3.12-slim-bookworm
+
+WORKDIR /app
+
+# Install the api runtime deps from the compiled lock (single source of resolved
+# versions — regenerate with `make locks` on any pyproject dep change; T2-74),
+# then the api package itself WITHOUT re-resolving deps (--no-deps). No [test]
+# extra in the image.
+COPY docker/locks/api.lock.txt /tmp/api.lock.txt
+RUN pip install --no-cache-dir -r /tmp/api.lock.txt
+COPY packages/api /app
+RUN pip install --no-cache-dir --no-deps .
+
+# Live source via PYTHONPATH so a dev bind-mount + `uvicorn --reload` pick up
+# edits (compose mounts ./packages/api over /app).
+ENV PYTHONPATH=/app
+
+# --- Non-root runtime (R-S6 / RELEASE_READINESS §2) -------------------------
+# Drop the runtime process from uid 0 to an unprivileged user. Everything above
+# (pip install into site-packages, the package COPY) ran as root at BUILD time;
+# only the long-lived service drops to `app`. Pre-create the data roots owned by
+# `app` so a FRESH Docker named volume mounted at /data (dev: DATA_ROOT, where the
+# api writes the app-state SQLite) or /appstate (the public profile's writable
+# app-state volume, APP_STATE_DB) inherits this ownership on first use — Docker
+# seeds an empty named volume from the image dir's ownership — letting the
+# non-root process create ${DATA_ROOT}/app-state/ (dev) or /appstate/ (public).
+# In the public profile /data is mounted READ-ONLY, so this /data ownership is
+# inert there; the transferred dataset trees only need to be world-readable.
+# NOTE: a pre-existing root-owned dev `datasets` volume must be recreated once
+# after this change (`docker compose down -v`) — Docker seeds ownership only for
+# an EMPTY volume, never re-chowns an already-populated one.
+RUN groupadd --gid 10001 app \
+ && useradd --uid 10001 --gid app --no-create-home --shell /usr/sbin/nologin app \
+ && mkdir -p /data/datasets /data/users /data/app-state /appstate \
+ && chown -R app:app /app /data /appstate
+USER app
+
+EXPOSE 8000
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

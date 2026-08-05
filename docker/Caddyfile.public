@@ -1,0 +1,66 @@
+# Caddy — PUBLIC edge for app.plotlas.com (Seam H1; RELEASE_READINESS §2, R-S4/R-S5).
+#
+# The real-domain production edge: AUTOMATIC ACME HTTPS (Let's Encrypt) for
+# app.plotlas.com — no mkcert, no localhost, no cert files to manage. This is the
+# ONLY edge profile that provisions a PUBLIC certificate; dev / Caddyfile.https /
+# Caddyfile.prod are all localhost-only. Loaded standalone via
+# docker-compose.public.yml.
+#
+# Host prereqs: app.plotlas.com resolves to this host (DNS A/AAAA) and ports 80
+# (ACME HTTP-01 challenge + the http->https redirect) and 443 (HTTPS) are
+# reachable. The issued cert + ACME account persist in the caddy_data volume so
+# restarts don't re-request (Let's Encrypt rate limits).
+{
+	# No admin API surface (matches every other profile). auto_https is left at
+	# its DEFAULT (ON) so Caddy provisions + renews the app.plotlas.com cert — do
+	# NOT add `auto_https off` here (that is the dev/localhost pattern).
+	admin off
+	# ACME account email (renewal / expiry notices) from the host .env — REQUIRED.
+	# docker-compose.public.yml injects it via ${ACME_EMAIL:?...}, which fails the
+	# boot loudly (clear message) if it is blank/unset; a blank value reaching this
+	# `email` line would instead fail Caddyfile adaptation and crash-loop the edge.
+	# To run WITHOUT an ACME account email, delete this line entirely — Caddy still
+	# provisions certs, you just forgo expiry/renewal notices.
+	email {$ACME_EMAIL}
+}
+
+# Load the shared edge snippet definitions (datasets_edge, api_edge, and the
+# public-only security_headers) so the site blocks can `import` them by name
+# (T2-76). Mounted alongside this Caddyfile at /etc/caddy/.
+import Caddyfile.edge-snippets
+
+# Explicit http->https redirect for the real domain (replaces the dev/prod
+# localhost redirect pattern). Defining the http:// site ourselves keeps the
+# redirect unambiguous on the standard ports.
+http://app.plotlas.com {
+	redir https://app.plotlas.com{uri} permanent
+}
+
+https://app.plotlas.com {
+	# Security headers (HSTS + nosniff + frame-deny + referrer). HSTS is safe here
+	# because this block is HTTPS-only; the http:// block above only redirects
+	# (R-S5). Defined in Caddyfile.edge-snippets, imported ONLY here.
+	import security_headers
+
+	# Static versioned dataset assets (D-30), gated by the forward_auth sub-request
+	# (T2-09), and the /api reverse-proxy to uvicorn — both shared byte-identical
+	# with the other edge profiles (T2-76). NOTE on path traversal (R-S10): the
+	# `/datasets/A/../B` cross-dataset case is fixed AUTHORITATIVELY in the API's
+	# authz path normalization (parallel Seam H2). An edge-level `..`-reject was
+	# considered but deliberately NOT added here — it would be a redundant,
+	# hard-to-verify control (Caddy normalizes the match path) offering false
+	# confidence, and reads are owner-open in showcase mode anyway.
+	import datasets_edge
+	import api_edge
+
+	# App shell: the vite-BUILT SPA bundle from the shared frontend_dist volume
+	# (NOT a dev server). try_files falls back to index.html for client-side
+	# routes. `encode` is scoped to this text bundle and deliberately NOT applied
+	# to /datasets (already-compressed WebP/PMTiles served via HTTP Range).
+	handle {
+		root * /srv/app
+		encode gzip zstd
+		try_files {path} /index.html
+		file_server
+	}
+}

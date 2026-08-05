@@ -1,0 +1,52 @@
+# Caddy — the public edge for local multi-service dev.
+#   * serves static dataset assets directly from DATA_ROOT with immutable caching.
+#     All served asset paths embed the dataset_version, so immutable is safe (v2
+#     spatial-tile-pyramid contract, decision D-33):
+#       tiles/   → tiles/{layout_id}/{layout_id}_v{ver}.pmtiles  (whole per-layout
+#                  PMTiles pyramid; the renderer HTTP-Range-reads {z}/{x}/{y} tiles
+#                  from it — Caddy's file_server answers Range with 206)
+#       tags/    → tags/tags_v{ver}.arrow                         (tag sidecar, D-14)
+#     The layout manifest is NOT served statically — it goes through the FastAPI
+#     proxy (/api/...) and is always fresh. That stable manifest URL is the share
+#     entry point: loading it always returns the latest version, which carries the
+#     current asset paths (pyramid.path etc.). (gap-analysis §7, decided 2026-06-01)
+#     The DETAIL tier (detail/{cell_id}.{ext}) is also served live by the API, not
+#     here: its URL is unversioned (a re-ingest replaces the bytes), so it cannot be
+#     immutable-cached (see api/routers/tiles.py).
+#   * reverse-proxies the API surface to the FastAPI service;
+#   * proxies everything else to the vite dev server (the app shell).
+#
+# Local HTTPS / HTTP-2 is OPT-IN and lives elsewhere — this file is the DEFAULT
+# zero-setup edge (plain HTTP/1.1 on :8080; no cert, no domain), and stays that way.
+# For a locally-trusted HTTPS/HTTP-2 edge (mkcert — no domain or purchase needed),
+# layer the override, which swaps in docker/Caddyfile.https and adds :8443 while
+# leaving this file untouched:
+#     docker compose -f docker-compose.yml -f docker-compose.https.yml up
+# See docs/https-local.md and docs/plan/renderer-stage0-plan.md §0.5. Browsers do
+# HTTP/2 only over TLS; on plain HTTP/1.1 they cap ~6 concurrent connections per
+# origin, so the pyramid's many parallel {z}/{x}/{y} byte-range reads queue. H2
+# multiplexes them over one connection — a real win for the range-read fan-out
+# (see docs/plan/perf-and-parity-strategy.md).
+
+{
+	# Internal dev edge on :80 — no TLS.
+	auto_https off
+	admin off
+}
+
+# Load the shared edge snippet definitions (datasets_edge, api_edge) so the site
+# block below can `import` them by name (T2-76). Mounted alongside this Caddyfile.
+import Caddyfile.edge-snippets
+
+:80 {
+	# Static versioned dataset assets (D-30) and the /api reverse-proxy are shared,
+	# byte-identical across all three edge profiles — imported from the shared
+	# snippet file so an edge change lands once (T2-76). See docker/Caddyfile.edge-snippets.
+	import datasets_edge
+	import api_edge
+
+	# Dev convenience: the app shell -> the vite dev server.
+	handle {
+		reverse_proxy frontend:5173
+	}
+}

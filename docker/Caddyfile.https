@@ -1,0 +1,55 @@
+# Caddy — OPT-IN local HTTPS / HTTP-2 edge (mirror of docker/Caddyfile).
+#
+# This is the opt-in TLS profile from renderer-stage0-plan.md §0.5. The default
+# dev edge stays plain HTTP/1.1 on :8080 (docker/Caddyfile, byte-unchanged); this
+# file is loaded ONLY via the docker-compose.https.yml override and serves the
+# SAME three handles over https://localhost with HTTP/2.
+#
+# It expects a locally-trusted cert pair at the stable paths /certs/localhost.pem
+# and /certs/localhost-key.pem, mounted from ./docker/certs (see docs/https-local.md
+# for the one-time mkcert step). No domain and no purchased certificate are needed
+# locally — a domain + Caddy automatic HTTPS is only for public deployments.
+#
+# The datasets file server (immutable Cache-Control from {DATA_ROOT}/datasets/,
+# D-30) and the /api reverse-proxy to uvicorn are now SHARED with the other edge
+# profiles via docker/Caddyfile.edge-snippets (imported below, T2-76), so they no
+# longer need hand-syncing; only the site address, the TLS directive, and the
+# catch-all to the vite dev server are profile-specific here.
+{
+	# Opt-in TLS edge. auto_https is left at its default here because we supply an
+	# explicit cert via the `tls` directive below; admin off matches the base edge.
+	admin off
+}
+
+# Load the shared edge snippet definitions (datasets_edge, api_edge) so the site
+# block below can `import` them by name (T2-76). Mounted alongside this Caddyfile.
+import Caddyfile.edge-snippets
+
+# The base compose file maps host :8080 -> container :80 and an override cannot
+# UN-map an inherited port. Without an explicit http:// site, Caddy's automatic
+# HTTP->HTTPS redirect would point at https://localhost (no port — its https_port
+# is the in-container 443), which is unreachable from the host; anyone hitting the
+# familiar dev URL http://localhost:8080 would get a dead redirect. Send them to
+# the real external HTTPS edge instead (transcribed from Caddyfile.prod, PR #81 —
+# T2-51).
+http://localhost {
+	redir https://localhost:8443{uri}
+}
+
+https://localhost {
+	# Locally-trusted cert pair issued by mkcert on the HOST (one-time
+	# `mkcert -install` + `mkcert localhost 127.0.0.1 ::1`), placed at these
+	# stable filenames under ./docker/certs. See docs/https-local.md.
+	tls /certs/localhost.pem /certs/localhost-key.pem
+
+	# Static versioned dataset assets (D-30) and the /api reverse-proxy are shared,
+	# byte-identical across all three edge profiles — imported from the shared
+	# snippet file so an edge change lands once (T2-76). See docker/Caddyfile.edge-snippets.
+	import datasets_edge
+	import api_edge
+
+	# Dev convenience: the app shell -> the vite dev server.
+	handle {
+		reverse_proxy frontend:5173
+	}
+}

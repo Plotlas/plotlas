@@ -1,0 +1,8 @@
+Ingested collections live here — one folder per collection under data/datasets/,
+plus data/appstate/ for the accounts database in the public profile.
+
+This directory is a BIND MOUNT, not a Docker volume, so `docker compose down -v`
+cannot delete it. Back it up by copying the folder; move an installation by moving it.
+
+Set DATA_DIR in your .env to keep the data somewhere else (another disk, a faster
+filesystem). The default is this folder.

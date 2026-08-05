@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pipeline"
+version = "0.1.0"
+description = "image-viz ingestion pipeline: ingest, thumbnail decode, layout plugins, spatial tile-pyramid baker (PMTiles), manifest emitter."
+requires-python = ">=3.12"
+# deps = the allowed pipeline dependency list (AGENT_GUIDE Allowed Dependencies).
+# v2 (decision D-33): the quadfeather fixed-capacity quadtree tiler is RETIRED
+# (Phase-0 S3 — not reusable for the fixed-area spatial pyramid); replaced by the
+# new tiler.py + pmtiles. rectpack/numpy remain on the allowed list (unused in v2
+# code; left to avoid churning the allowed-dep contract).
+dependencies = [
+    "pyarrow",
+    "duckdb",
+    "pyvips",
+    "rectpack",
+    "numpy",
+    # why (NET-NEW, decision D-33): the v2 per-layout spatial tile pyramid is packed
+    # into one PMTiles container per layer (tiler.py: pmtiles.writer.Writer +
+    # zxy_to_tileid). Replaces the retired quadfeather CLI tiler. (Dependencies
+    # added — see PR.) Pinned to the 3.x line: the producer depends on
+    # Writer.write_tile/finalize + zxy_to_tileid/tileid_to_zxy + the reader's
+    # MmapSource/get, whose shapes are 3.x; a 4.0 could retype the writer/header.
+    "pmtiles>=3.7,<4",
+    # why: ColumnRoles.from_config and manifest.py must validate against
+    # schemas/v2/ (interface catalogue). >=4.18 ships the `referencing`-based
+    # Registry API used to resolve the manifest's external $ref to
+    # column_roles.schema.json. Pulls in `referencing` transitively. It is
+    # already present in the lean test image (jsonschema[format]); listing it
+    # here also installs it into the worker image. (Dependencies added — see PR.)
+    "jsonschema>=4.18",
+]
+
+[project.optional-dependencies]
+# Test-only, pre-approved for the skeleton sprint.
+test = ["pytest"]
+
+[project.scripts]
+pixscope = "pipeline.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pipeline*"]
+
+[tool.pytest.ini_options]
+# Native-dep tests (anything importing pyvips/pmtiles or running run_ingest
+# end-to-end) are marked `native` and run only in the worker image
+# (`make test-pipeline`); the lean test image has no libvips.
+markers = [
+    "native: requires libvips (pyvips) + pmtiles; runs only in the worker image",
+    "slow: opt-in heavyweight scale runs (e.g. the full 1M baker); excluded by default",
+]
+
+[tool.mypy]
+python_version = "3.12"
+# Deterministic package resolution regardless of the invocation CWD (kept
+# consistent with packages/api/pyproject.toml — the CI type-check gate, T2-81,
+# runs mypy over both packages from the test image).
+namespace_packages = true
+explicit_package_bases = true
+# The allowed third-party libs (pyarrow, duckdb, pyvips, rectpack, numpy,
+# pmtiles, jsonschema) ship incomplete or absent type stubs; do not fail
+# type-checking on their imports.
+ignore_missing_imports = true

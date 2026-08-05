@@ -1,0 +1,82 @@
+# Shared Caddy edge snippets — the blocks that are BYTE-IDENTICAL across all three
+# edge profiles (docker/Caddyfile, Caddyfile.https, Caddyfile.prod). Extracted here
+# so an edge change (e.g. the T2-09 forward_auth pass on /datasets/*) lands ONCE
+# instead of three times (T2-76). Each profile `import`s these named snippets; the
+# profile-specific parts (site address, TLS, the built-bundle vs vite catch-all)
+# stay inline in each Caddyfile.
+#
+# Caddy resolves `import` relative to the importing Caddyfile's directory, so this
+# file must be mounted alongside each Caddyfile at /etc/caddy/ (a Caddyfile import
+# cannot see an unmounted file). The caddy service in docker-compose.yml mounts it
+# read-only; the https/prod overrides inherit that mount (they only replace the
+# Caddyfile mount itself, by container target).
+
+# Static versioned dataset assets. handle_path strips the /datasets URL prefix,
+# and the root points at the on-disk datasets/ subtree (decision D-30 — dataset
+# trees live at {DATA_ROOT}/datasets/, disjoint from the upload jails under
+# {DATA_ROOT}/users/), so /datasets/{ds_id}/tiles/grid/grid_v1.pmtiles ->
+# {DATA_ROOT}/datasets/{ds_id}/tiles/... The PUBLIC URL shape is unchanged; only
+# the filesystem root moved. All paths here embed the dataset_version, making
+# immutable caching correct. The renderer HTTP-Range-reads {z}/{x}/{y} tiles out
+# of each .pmtiles container; file_server answers Range with 206 Partial Content.
+#
+# T2-09 / decision D-A: the static edge is GATED by a per-request forward_auth
+# sub-request to the API's stateless authz endpoint BEFORE file_server serves any
+# byte. On a 2xx the fetch proceeds and the bytes stay on file_server (no proxy
+# hop — the D-A performance premise); on a 401/403 the API's response is returned
+# and file_server is never reached. The check is a µs-cheap JWT verify (no DB), so
+# the per-tile byte-range fan-out is cheap even at 1M. Landing it here means all
+# three edge profiles gain the gate in ONE edit (the T2-76 dedupe payoff).
+#
+# handle_path has already STRIPPED the /datasets prefix by the time forward_auth
+# runs, so its default X-Forwarded-Uri would carry only /{ds_id}/... — we override
+# it with {http.request.orig_uri} so the endpoint receives the ORIGINAL
+# /datasets/{ds_id}/... path and can extract the id unambiguously (verified: the
+# stripped form drops the /datasets segment). The browser's HttpOnly, path-scoped
+# `viz_ds` cookie rides the same-origin fetch and forward_auth copies it upstream.
+(datasets_edge) {
+	handle_path /datasets/* {
+		forward_auth api:8000 {
+			uri /api/authz/datasets
+			# Forward the ORIGINAL request URI (pre-strip) so the endpoint sees
+			# /datasets/{ds_id}/... and can reconstruct the dataset id.
+			header_up X-Forwarded-Uri {http.request.orig_uri}
+		}
+		root * {$DATA_ROOT:/data}/datasets
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+}
+
+# API surface (incl. the manifest endpoint) -> uvicorn. Keep /api prefix.
+(api_edge) {
+	handle /api/* {
+		reverse_proxy api:8000
+	}
+}
+
+# Shared security-header snippet (R-S5 / RELEASE_READINESS §2). Defined here for
+# reuse but IMPORTED ONLY by the public edge (docker/Caddyfile.public), so it does
+# NOT change the dev / https / prod profiles (they never import it). HSTS lives in
+# this snippet because its only importer is an HTTPS-only site block — sending
+# Strict-Transport-Security over plain HTTP would be ignored by browsers anyway,
+# but scoping it to the public edge keeps the intent explicit. `preload` is
+# intentionally omitted until the domain is submitted to the HSTS preload list;
+# raise max-age only after verifying the cert renews cleanly.
+(security_headers) {
+	header {
+		# Force HTTPS for one year, including subdomains (HTTPS-only block).
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		# Refuse browser MIME-sniffing of responses.
+		X-Content-Type-Options "nosniff"
+		# Forbid framing (clickjacking) — legacy header plus the modern CSP below.
+		X-Frame-Options "DENY"
+		# Minimal CSP: restrict framing only (does NOT constrain script/style/img,
+		# so it cannot break the Three.js app); a fuller policy is a users-gate item.
+		Content-Security-Policy "frame-ancestors 'none'"
+		# Trim the Referer on cross-origin navigations.
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Drop the server banner (less fingerprinting).
+		-Server
+	}
+}

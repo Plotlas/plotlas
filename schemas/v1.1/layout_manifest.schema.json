@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/v1.1/layout_manifest.schema.json",
+  "title": "LayoutManifest",
+  "description": "Root document the frontend renderer fetches first for a dataset. Written by the pipeline's manifest.py, served read-only by the API. Declares the dataset, its available layouts, the atlas configuration, and the column-role mapping. Every layout in the system compiles down to the same on-disk contract referenced from here. Schema version 1.1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifest_version",
+    "dataset_id",
+    "dataset_version",
+    "layouts",
+    "atlas",
+    "dataset_metadata"
+  ],
+  "properties": {
+    "manifest_version": {
+      "description": "Version of THIS manifest schema (not the dataset). The renderer rejects manifests whose major version it does not understand rather than silently misbehaving. Format MAJOR.MINOR. A MINOR schema accepts every same-major document it understands, so v1.0 manifests written before this revision remain valid; the pipeline now writes '1.1' (decision D-26).",
+      "type": "string",
+      "pattern": "^1\\.(0|1)$"
+    },
+    "dataset_id": {
+      "description": "Stable identifier for the dataset. Matches the {ds_id} path segment in every API route and the /datasets/{ds_id}/ directory name.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+$",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "dataset_version": {
+      "description": "Monotonically increasing integer bumped on every re-ingest of this dataset. Used for static-asset cache invalidation: atlas page and tile filenames embed this value so a re-ingest produces fresh URLs.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "layouts": {
+      "description": "All layouts available for this dataset. Order is the display order in the layout switcher. At least one layout is required; the first is the default.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/layoutEntry" }
+    },
+    "atlas": { "$ref": "#/$defs/atlasConfig" },
+    "column_roles": {
+      "description": "Optional column-role mapping for this dataset, conforming to column_roles.schema.json. Present only when the dataset carries a metadata source; absent ⇒ images-only dataset (the renderer shows a filename-only metadata panel and disabled tag controls). Embedded directly so the renderer and metadata panel know which columns to display and how, without a second fetch.",
+      "$ref": "column_roles.schema.json"
+    },
+    "tags": {
+      "description": "Optional per-dataset tag sidecar declaration (decision D-14). Null or absent when the dataset has no tag-role columns. Points to a single file projected from metadata.parquet containing the cell `id` plus the tag list<string> columns, used by the frontend for layout-independent, zero-network tag filtering. The filename embeds the dataset version (e.g. 'tags/tags_v3.arrow') so it is safe to serve with an immutable cache. Distinct from per-layout cell tiles, which carry only rendering data.",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["path", "format"],
+      "properties": {
+        "path": {
+          "description": "Path to the tag sidecar file, relative to the dataset root, with the dataset version embedded (e.g. 'tags/tags_v3.arrow').",
+          "type": "string",
+          "minLength": 1
+        },
+        "format": {
+          "description": "On-disk format of the tag sidecar file. Arrow IPC (Feather) only, written UNCOMPRESSED (decision D-29) — the frontend decodes Arrow via apache-arrow JS, which cannot read Parquet and cannot decode compressed record batches.",
+          "type": "string",
+          "enum": ["arrow"]
+        }
+      }
+    },
+    "dataset_metadata": { "$ref": "#/$defs/datasetMetadata" }
+  },
+  "$defs": {
+    "layoutEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["layout_id", "label", "type", "tile_root", "bbox"],
+      "properties": {
+        "layout_id": {
+          "description": "Identifier for this layout, unique within the dataset. Matches the {layout_id} path segment in API routes.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "label": {
+          "description": "Human-readable label shown in the layout switcher (e.g. 'By date', 'Grid').",
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "description": "Layout kind. Phase 1 implements grid, datetime, categorical, and scatter (Phase-1 user-supplied pre-computed coordinates, decision D-26). umap stays reserved for Phase-2 COMPUTED embeddings; network and custom are likewise reserved for Phase 2 and are valid values from day one so adding them later is not a breaking schema change.",
+          "type": "string",
+          "enum": ["grid", "datetime", "categorical", "scatter", "umap", "network", "custom"]
+        },
+        "tile_root": {
+          "description": "Path to the root of this layout's per-LOD quadtree tile trees, relative to the dataset root (e.g. 'cells/grid/'). One tile tree is written per atlas LOD (decision D-17), mirroring the atlas {path_prefix}lod{lod}/… convention. The renderer resolves a tile file as {tile_root}lod{n}/{z}/{x}/{y}.feather and the per-LOD tile index as {tile_root}lod{n}/manifest.feather, where n is the image-LOD (0/1/2) and z/x/y is the quadfeather quadtree address. Image-LOD (which tree) and quadtree z (spatial granularity within a tree) are independent axes.",
+          "type": "string",
+          "minLength": 1
+        },
+        "bbox": {
+          "description": "World-coordinate bounding box of all cells in this layout, as [x_min, y_min, x_max, y_max]. Always within normalized [0,1]^2 space. Drives the renderer's initial camera framing.",
+          "type": "array",
+          "items": { "type": "number", "minimum": 0, "maximum": 1 },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "edges": {
+          "description": "Optional edge-list declaration for this layout (decision D-20). Declared per layout because edges are a property of a network layout, and a dataset may carry more than one network layout. Null or absent for non-network layouts. Two network layouts may point their edges.path at the same file to share an edge set.",
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["path", "format"],
+          "properties": {
+            "path": {
+              "description": "Path to the edge-list file, relative to the dataset root (e.g. 'edges/edges.arrow'). Each record is (src int64, dst int64, weight float32).",
+              "type": "string",
+              "minLength": 1
+            },
+            "format": {
+              "description": "On-disk format of the edge-list file. Arrow IPC (Feather) only, written UNCOMPRESSED (decision D-29) — the frontend decodes Arrow via apache-arrow JS, which cannot read Parquet and cannot decode compressed record batches.",
+              "type": "string",
+              "enum": ["arrow"]
+            }
+          }
+        }
+      }
+    },
+    "atlasConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["page_size_px", "path_prefix", "format", "lod_levels"],
+      "properties": {
+        "page_size_px": {
+          "description": "Edge length in pixels of each square atlas page (e.g. 8192). The renderer falls back to 4096 at runtime if the device's MAX_TEXTURE_SIZE is smaller, but the on-disk pages are authored at this size.",
+          "type": "integer",
+          "enum": [4096, 8192, 16384]
+        },
+        "path_prefix": {
+          "description": "Path prefix for atlas page files, relative to the dataset root (e.g. 'atlas/'). A page file is resolved as {path_prefix}lod{lod}/p{page:03d}_v{dataset_version}.webp.",
+          "type": "string",
+          "minLength": 1
+        },
+        "format": {
+          "description": "Encoded format of atlas page files.",
+          "type": "string",
+          "const": "webp"
+        },
+        "lod_levels": {
+          "description": "One entry per level-of-detail level, ordered by level (index 0 = LOD 0). Exactly three levels in v1: 32px, 128px, 512px cells.",
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["lod", "cell_size_px", "page_count"],
+            "properties": {
+              "lod": {
+                "description": "LOD level: 0 (coarsest, 32px), 1 (128px), 2 (512px).",
+                "type": "integer",
+                "enum": [0, 1, 2]
+              },
+              "cell_size_px": {
+                "description": "Cell edge length in pixels at this LOD.",
+                "type": "integer",
+                "minimum": 1
+              },
+              "page_count": {
+                "description": "Number of atlas pages written for this LOD level.",
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    "datasetMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image_count", "ingest_timestamp"],
+      "properties": {
+        "image_count": {
+          "description": "Number of RENDERABLE cells in this dataset version: the count of images that were successfully decoded and packed into the atlas (PR12-3). Images that failed to decode are skipped from the atlas and so are NOT counted here, even though their metadata row is retained in metadata.parquet (the id set stays stable for the layout id-join). Equivalently: the number of distinct cell ids a layout places, never larger than the scanned-image count.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "ingest_timestamp": {
+          "description": "UTC timestamp when this dataset version finished ingesting, ISO 8601.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "source": {
+          "description": "Optional provenance of the metadata source at ingest time (e.g. a CSV path or other source identifier), kept source-format-agnostic. Informational only; not read at runtime. Absent for images-only datasets.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

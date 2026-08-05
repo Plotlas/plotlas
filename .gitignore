@@ -1,0 +1,86 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+.env
+*.env
+pip-log.txt
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.npm
+dist/
+dist-streaming/
+.next/
+.nuxt/
+.cache/
+
+# Docker
+.docker/
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+._*
+.Spotlight-V100
+.Trashes
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Secrets
+*.pem
+*.key
+*.cert
+secrets/
+
+# Opt-in local HTTPS certs (docker/certs) — never commit certs/keys; keep the dir.
+docker/certs/*
+!docker/certs/.gitkeep
+
+# vite dependency pre-bundle cache (build artifact)
+.vite/
+
+# Playwright e2e artifacts (real-browser renderer diagnostics)
+test-results/
+playwright-report/
+.last-run.json
+
+# Ingested collections + the app-state DB (bind-mounted at ${DATA_DIR:-./data}).
+# The folders and their .gitkeep files are tracked so a fresh clone has the mount
+# points; the contents never are — they are datasets, not source.
+#
+# datasets/ and appstate/ MUST be tracked, not just data/. Docker chowns an empty
+# NAMED VOLUME to the container's user on first use, but never does that for a bind
+# mount: if these do not exist in the mount, the daemon creates them itself as
+# root:root 755 (to hold the fixture mount points), and the api/worker — which run
+# as uid 10001, not root — then cannot write. That surfaced as `PermissionError:
+# /data/datasets/.staging-<job>` on the first upload after the bind-mount switch,
+# i.e. on the exact path a new self-hoster takes.
+/data/*
+!/data/.gitkeep
+!/data/datasets/
+/data/datasets/*
+!/data/datasets/.gitkeep
+!/data/app-state/
+/data/app-state/*
+!/data/app-state/.gitkeep

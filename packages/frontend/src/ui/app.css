@@ -1,0 +1,960 @@
+/* image-viz app stylesheet — dark "cockpit" theme (Phase A design system).
+ * Every color/type/space value comes from theme/tokens.css via var(); there are
+ * NO hardcoded colors in this file. Class selectors are referenced by name from
+ * the React components, so re-theming here cascades app-wide with no .ts change.
+ * Phase B (Explorer cockpit) / Phase C (Library + Ingest) consume the primitive
+ * classes at the bottom (.seg, .chip, .pill, .panel, .card, .field, .btn.*). */
+
+@import "./theme/tokens.css";
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; margin: 0; }
+
+body {
+  font: 14px/1.45 var(--sans);
+  color: var(--text);
+  background: var(--ground);
+}
+
+.app-shell { height: 100%; display: flex; flex-direction: column; }
+.app-shell-auth { align-items: center; justify-content: center; gap: 1rem; }
+
+.app-title { font-size: 1.1rem; margin: 0; font-weight: 700; letter-spacing: -0.01em; }
+.panel-title { margin: 0 0 0.5rem; font-size: 0.95rem; font-weight: 600; }
+.muted { color: var(--muted); }
+/* Visually hidden but exposed to assistive tech (aria-live announcements etc.). */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+.error-text { color: var(--err); }
+.error-banner { margin: 0.5rem 1rem; color: var(--err); }
+
+button { font: inherit; cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: 0.55; }
+
+/* Base button surface: raised neutral on the dark ground. Variants below. */
+.primary-btn {
+  background: var(--accent); color: var(--accent-ink); border: none;
+  border-radius: var(--r-ctrl); padding: 0.45rem 0.9rem; font-weight: 700;
+}
+.primary-btn:hover:not(:disabled) { background: var(--accent-dim); color: var(--text); }
+.danger-btn {
+  background: transparent; color: var(--err); border: 1px solid var(--err);
+  border-radius: var(--r-ctrl); padding: 0.35rem 0.7rem;
+}
+.danger-btn:hover:not(:disabled) { background: var(--err); color: var(--accent-ink); }
+.mode-btn, .layout-tab {
+  background: var(--surface); color: var(--text-2); border: 1px solid var(--line);
+  border-radius: var(--r-ctrl); padding: 0.35rem 0.7rem;
+}
+.mode-btn:hover:not(:disabled), .layout-tab:hover:not(:disabled) {
+  background: var(--raised); color: var(--text);
+}
+/* Segmented "on" state: accent fill + ink text + weight 700 (design addendum). */
+.mode-btn-active, .layout-tab-active {
+  background: var(--accent); color: var(--accent-ink);
+  border-color: var(--accent); font-weight: 700;
+}
+/* The on-state must hold under the cursor: the base hover rule above is more
+ * specific (class + :hover + :not(:disabled)), so restate the fill for hover. */
+.mode-btn-active:hover:not(:disabled), .layout-tab-active:hover:not(:disabled) {
+  background: var(--accent); color: var(--accent-ink);
+}
+.link-btn { background: none; border: none; color: var(--accent); padding: 0.25rem; }
+.link-btn:hover:not(:disabled) { color: var(--accent-dim); }
+
+/* ---- auth ---- */
+.auth-panel {
+  width: 320px; background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-panel); padding: 1.25rem; box-shadow: var(--shadow);
+}
+.auth-form { display: flex; flex-direction: column; gap: 0.75rem; }
+.form-field { display: flex; flex-direction: column; gap: 0.25rem; margin: 0.4rem 0; }
+.form-field input, .form-field select {
+  font: inherit; padding: 0.4rem 0.5rem; border: 1px solid var(--line);
+  border-radius: var(--r-ctrl); background: var(--ground); color: var(--text);
+}
+.form-field input::placeholder { color: var(--muted); }
+.form-field input:focus, .form-field select:focus {
+  outline: none; border-color: var(--accent);
+}
+
+/* ---- admin ---- */
+.admin-screen { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.admin-topbar {
+  display: flex; align-items: center; gap: 1.25rem;
+  padding: 0.6rem 1rem; background: var(--bar); border-bottom: 1px solid var(--line);
+}
+.admin-tabs { display: flex; gap: 0.4rem; }
+.admin-user { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; color: var(--text-2); }
+
+.dataset-list { list-style: none; margin: 0; padding: 0.75rem 1rem; display: flex; flex-direction: column; gap: 0.5rem; overflow: auto; }
+.dataset-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-ctrl); padding: 0.6rem 0.9rem;
+}
+.dataset-row-main { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+.dataset-name { font-weight: 600; }
+.dataset-row-actions { display: flex; align-items: center; gap: 0.4rem; }
+.confirm-inline { display: inline-flex; align-items: center; gap: 0.4rem; }
+
+/* Status chips: OUTLINE pills — 1px border in the semantic color at 40% alpha,
+ * text in the semantic color, leading dot (design addendum). No filled ground. */
+.status-chip {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  padding: 0.1rem 0.55rem; border-radius: 999px; border: 1px solid transparent;
+  font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em;
+  font-family: var(--mono);
+}
+.status-chip::before {
+  content: ""; width: 6px; height: 6px; border-radius: 999px;
+  background: currentColor; flex: none;
+}
+.status-ready { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.status-processing { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.status-error { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); }
+
+.wizard { max-width: 640px; padding: 1rem; display: flex; flex-direction: column; gap: 0.4rem; overflow: auto; }
+.wizard-actions { display: flex; align-items: center; gap: 0.6rem; }
+.layout-checkboxes { display: flex; gap: 1rem; }
+.checkbox-label { display: inline-flex; align-items: center; gap: 0.3rem; }
+/* Add-layout wizard (T2-92 Seam 1): vertical list of producible layouts — new ones
+   pickable, already-baked ones shown dimmed + disabled. */
+.addlayout-list { display: flex; flex-direction: column; gap: 0.35rem; }
+.addlayout-existing { opacity: 0.6; }
+.addlayout-id { font-family: var(--mono); font-size: 0.78rem; }
+.role-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; }
+.role-row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.role-column-name { min-width: 10rem; font-family: var(--mono); color: var(--text-2); }
+.role-select, .delimiter-input, .role-label-input {
+  font: inherit; padding: 0.25rem 0.4rem; border: 1px solid var(--line);
+  border-radius: var(--r-ctrl); background: var(--ground); color: var(--text);
+}
+.delimiter-input { width: 3.2rem; }
+.role-extra { display: inline-flex; align-items: center; gap: 0.4rem; }
+
+/* D-35 Seam G3 (T2-125): per-pair layout-option knobs (scatter x/y + geographic lat/long).
+   A pair is a column — the main lon/lat|x/y row, then a grid of knob controls beneath it. */
+.pair-row { display: flex; flex-direction: column; gap: 0.4rem; padding: 0.5rem 0.6rem; border: 1px solid var(--line); border-radius: var(--r-ctrl); background: var(--ground); }
+.pair-main { margin: 0; }
+.knob-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 0.5rem 0.9rem; }
+.knob { display: flex; flex-direction: column; gap: 0.2rem; }
+.knob-field { display: inline-flex; align-items: center; gap: 0.4rem; }
+.knob-legend { font-size: 0.78rem; min-width: 4.5rem; }
+.knob-select { flex: 1; }
+.knob-help { margin: 0; font-size: 0.76rem; line-height: 1.3; }
+.knob-coming { list-style: none; margin: 0.1rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.1rem; font-size: 0.74rem; }
+
+.job-progress { padding: 0.5rem 0; }
+.job-state-finished { color: var(--ok); }
+.job-state-failed { color: var(--err); }
+.log-tail {
+  background: var(--bar); color: var(--text-2); padding: 0.6rem; border-radius: var(--r-ctrl);
+  max-height: 16rem; overflow: auto; font-size: 0.8rem; font-family: var(--mono);
+  border: 1px solid var(--line);
+}
+
+/* ---- viewer ---- */
+.viewer-screen { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.viewer-topbar {
+  display: flex; align-items: center; gap: 1rem;
+  padding: 0.5rem 1rem; background: var(--bar); border-bottom: 1px solid var(--line);
+}
+.viewer-title { margin: 0; font-size: 1rem; font-weight: 600; }
+.layout-switcher { display: flex; gap: 0.35rem; }
+/* D-35 Seam G3 (T2-125): the two COORDINATE families read distinct in the switcher — a small
+   mono family badge on the geographic/scatter tabs (mirrors the wizard section names) + a
+   caption surfacing the ACTIVE layout's baked options (the manifest `options` echo). */
+.layout-tab-family {
+  font-family: var(--mono); font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.04em;
+  opacity: 0.75; margin-right: 0.35rem; padding: 0.02rem 0.28rem; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+}
+.layout-baked-note { margin: 0.3rem 0 0; font-size: 0.74rem; font-family: var(--mono); }
+
+.viewer-body { flex: 1; display: flex; min-height: 0; }
+.canvas-holder { flex: 1; position: relative; min-width: 0; background: var(--ground); }
+.atlas-canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+
+.viewer-sidebar {
+  width: 300px; flex: none; overflow-y: auto; background: var(--surface);
+  border-left: 1px solid var(--line); padding: 0.9rem; display: flex;
+  flex-direction: column; gap: 1rem;
+}
+
+.tag-controls-disabled { opacity: 0.7; }
+/* T2-120 (Fix B): renderer-side tag-sidecar failure — a visible retry affordance. */
+.tag-retry-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+  margin: 0.35rem 0 0.5rem; padding: 0.4rem 0.55rem;
+  background: var(--accent-wash); border: 1px solid var(--accent-dim);
+  border-radius: var(--r-ctrl); font-size: 0.82rem;
+}
+.tag-retry-btn { flex: none; }
+.tag-mode { display: flex; gap: 0.35rem; margin-bottom: 0.5rem; }
+.tag-filter {
+  width: 100%; font: inherit; padding: 0.3rem 0.45rem; border: 1px solid var(--line);
+  border-radius: var(--r-ctrl); background: var(--ground); color: var(--text);
+}
+.tag-filter::placeholder { color: var(--muted); }
+.tag-column { margin-top: 0.6rem; }
+.tag-column-label { margin: 0 0 0.3rem; font-size: 0.85rem; color: var(--muted); }
+.chip-row { display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; }
+.chip {
+  background: var(--raised); border: 1px solid var(--line); border-radius: 999px;
+  padding: 0.12rem 0.6rem; font-size: 0.82rem; color: var(--text-2);
+}
+.chip-selected { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.chip-static { cursor: default; }
+
+.metadata-panel .field-list { display: grid; grid-template-columns: auto 1fr; gap: 0.15rem 0.7rem; margin: 0.5rem 0; }
+.metadata-panel dt { color: var(--muted); }
+.metadata-panel dd { margin: 0; overflow-wrap: anywhere; font-family: var(--mono); color: var(--text-2); }
+.cell-preview { border: 1px solid var(--line); border-radius: var(--r-ctrl); margin-bottom: 0.5rem; }
+.panel-tags { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.4rem; }
+
+.selection-summary .value-counts { margin: 0.2rem 0 0.6rem; padding-left: 1.1rem; }
+.summary-block { margin: 0.4rem 0; }
+
+/* Search results-list (T2-57): the body of the UI-S1 search dropdown under the
+ * top-bar search pill (was the Inspector's third body before UI-S1 / PR #227). */
+.search-results .search-status { margin: 0.2rem 0; font-weight: 600; color: var(--text-2); }
+.search-results .search-count { margin: 0 0 0.5rem; font-size: 0.82rem; }
+.search-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.15rem; }
+.search-row {
+  display: flex; flex-direction: column; gap: 0.05rem;
+  padding: 0.4rem 0.5rem; border-radius: var(--r-ctrl); cursor: pointer;
+  border: 1px solid transparent;
+}
+.search-row:hover, .search-row.active { background: var(--raised); border-color: var(--line); }
+.search-row-primary { color: var(--text); overflow-wrap: anywhere; }
+.search-row-secondary { font-size: 0.78rem; }
+
+/* =====================================================================
+ * Primitive utility classes — additive, consumed by Phase B/C.
+ * (The translucent floating variant .panel-float is Phase B's to add.)
+ * ===================================================================== */
+
+/* Segmented control: a row of buttons; the selected one gets .on. */
+.seg { display: inline-flex; gap: 0.35rem; }
+.seg button {
+  font: inherit; cursor: pointer; background: var(--surface); color: var(--text-2);
+  border: 1px solid var(--line); border-radius: var(--r-ctrl); padding: 0.35rem 0.7rem;
+}
+.seg button:hover:not(:disabled) { background: var(--raised); color: var(--text); }
+.seg button.on {
+  background: var(--accent); color: var(--accent-ink);
+  border-color: var(--accent); font-weight: 700;
+}
+.seg button.on:hover:not(:disabled) { background: var(--accent); color: var(--accent-ink); }
+.seg button:disabled { cursor: not-allowed; opacity: 0.55; }
+
+/* Outline status pills — semantic color at 40% alpha border + leading dot.
+ * .pill is the base; .ready / .proc / .err set the semantic color. */
+.pill {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  padding: 0.1rem 0.55rem; border-radius: 999px; border: 1px solid transparent;
+  font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em;
+  font-family: var(--mono);
+}
+.pill::before {
+  content: ""; width: 6px; height: 6px; border-radius: 999px;
+  background: currentColor; flex: none;
+}
+.pill.ready { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.pill.proc { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.pill.err { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); }
+
+/* Opaque floating panel surface. */
+.panel {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-panel); padding: 0.9rem; box-shadow: var(--shadow);
+}
+
+/* Card — a calm content surface (dataset cards, etc.). */
+.card {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-panel); padding: 0.9rem;
+}
+
+/* Field — label + control stack. */
+.field { display: flex; flex-direction: column; gap: 0.25rem; }
+.field > label { font-size: 0.85rem; color: var(--muted); }
+.field input, .field select, .field textarea {
+  font: inherit; padding: 0.4rem 0.5rem; border: 1px solid var(--line);
+  border-radius: var(--r-ctrl); background: var(--ground); color: var(--text);
+}
+.field input::placeholder, .field textarea::placeholder { color: var(--muted); }
+.field input:focus, .field select:focus, .field textarea:focus {
+  outline: none; border-color: var(--accent);
+}
+
+/* Button variants — .btn base + .pri / .ghost / .danger. */
+.btn {
+  font: inherit; cursor: pointer; display: inline-flex; align-items: center; gap: 0.4rem;
+  background: var(--surface); color: var(--text); border: 1px solid var(--line);
+  border-radius: var(--r-ctrl); padding: 0.4rem 0.8rem;
+}
+.btn:hover:not(:disabled) { background: var(--raised); }
+.btn:disabled { cursor: not-allowed; opacity: 0.55; }
+.btn.pri {
+  background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700;
+}
+.btn.pri:hover:not(:disabled) { background: var(--accent-dim); color: var(--text); }
+.btn.ghost { background: transparent; color: var(--text-2); }
+.btn.ghost:hover:not(:disabled) { background: var(--raised); color: var(--text); }
+.btn.danger { background: transparent; color: var(--err); border-color: var(--err); }
+.btn.danger:hover:not(:disabled) { background: var(--err); color: var(--accent-ink); }
+
+/* ── Phase C: Library + Ingest ──────────────────────────────────────────
+ * Recomposes ui/admin into the dataset-card gallery (board 1f) and the
+ * 3-step wizard (board 1g). Token-only; consumes the Phase-A primitives
+ * (.card, .btn.*, .field, .status-chip). Additive — no existing selector
+ * changes. (Phase B owns the Explorer banner; do not edit it here.) */
+
+/* Library header — replaces the tab bar (board 1f). */
+.library-topbar {
+  display: flex; align-items: center; gap: 1rem;
+  padding: 0.7rem 1.1rem; background: var(--bar); border-bottom: 1px solid var(--line);
+}
+.library-heading { display: flex; align-items: baseline; gap: 0.7rem; }
+.library-title { margin: 0; font-size: 20px; font-weight: 800; letter-spacing: -0.01em; }
+.library-count { font-family: var(--mono); font-size: 0.82rem; color: var(--muted); }
+.library-topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 0.75rem; }
+.library-user { color: var(--text-2); }
+
+/* Dataset-card gallery — 3 cols, collapsing to 2 / 1 on narrower viewports. */
+.dataset-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
+  padding: 1rem 1.1rem; overflow: auto; align-content: start;
+}
+@media (max-width: 1100px) { .dataset-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 700px) { .dataset-grid { grid-template-columns: 1fr; } }
+
+.dataset-card { display: flex; flex-direction: column; gap: 0.5rem; }
+.dataset-card.card-error { border-color: color-mix(in srgb, var(--err) 55%, var(--line)); }
+
+/* Media area — the flat --surface block (fallback / processing / error), or the
+ * dataset COVER thumbnail (T2-55: the grid z0 overview, fetched client-side). */
+.card-media {
+  height: 132px; border-radius: var(--r-ctrl); background: var(--raised);
+  border: 1px solid var(--line);
+}
+.card-media-dim { opacity: 0.5; }
+/* Cover thumbnail: clip the fetched overview to the fixed media box (cover-fit,
+ * centered) so any pyramid aspect fills the card cleanly. */
+.card-media-cover { overflow: hidden; padding: 0; }
+.card-cover-img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+
+.card-head { display: flex; align-items: center; gap: 0.5rem; }
+.card-name { font-size: 13px; font-weight: 700; overflow-wrap: anywhere; }
+.card-head .status-chip { margin-left: auto; }
+.card-meta { margin: 0; font-family: var(--mono); font-size: 0.78rem; color: var(--text-2); }
+
+.card-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.layout-chip {
+  font-family: var(--mono); font-size: 0.72rem; color: var(--text-2);
+  background: var(--raised); border: 1px solid var(--line);
+  border-radius: var(--r-ctrl); padding: 0.05rem 0.4rem;
+}
+
+/* Progress bar — determinate fill OR indeterminate shimmer (never a fake %). */
+.progress-track {
+  height: 6px; border-radius: 999px; background: var(--raised);
+  overflow: hidden; position: relative;
+}
+.progress-fill { height: 100%; background: var(--accent); border-radius: 999px; }
+.progress-indeterminate {
+  position: absolute; top: 0; left: 0; height: 100%; width: 35%;
+  background: var(--accent); border-radius: 999px;
+  animation: viz-indeterminate 1.4s ease-in-out infinite;
+}
+@keyframes viz-indeterminate {
+  0%   { left: -35%; }
+  100% { left: 100%; }
+}
+
+.card-actions { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.15rem; }
+
+/* ⋯ action menu (ready card) — the delete inline-confirm lives inside it. */
+.card-menu-wrap { position: relative; margin-left: auto; }
+.card-menu-btn { padding: 0.3rem 0.55rem; }
+.card-menu {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 5;
+  min-width: 12rem; display: flex; flex-direction: column; gap: 0.15rem;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-panel); padding: 0.35rem; box-shadow: var(--shadow);
+}
+/* Bottom-row card (T2-89): open the ⋯ dropdown UPWARD so its lower items (Delete, the
+ * add-layout picker) are not clipped by the .dataset-grid scroll container. Anchors to
+ * the button's TOP instead of its bottom; the flip is chosen at open time in JS. */
+.card-menu-up { top: auto; bottom: calc(100% + 4px); }
+.menu-item {
+  font: inherit; cursor: pointer; text-align: left;
+  background: transparent; color: var(--text); border: none;
+  border-radius: var(--r-ctrl); padding: 0.4rem 0.55rem;
+}
+.menu-item:hover:not(:disabled) { background: var(--raised); }
+.menu-item:disabled { cursor: not-allowed; opacity: 0.55; }
+.menu-item-danger { color: var(--err); }
+.menu-confirm { display: flex; flex-direction: column; gap: 0.4rem; padding: 0.35rem 0.55rem; }
+.menu-confirm-actions { display: flex; gap: 0.4rem; }
+
+/* First-run empty state (board 1f). */
+.library-empty {
+  margin: 1.5rem 1.1rem; padding: 2.5rem 1.5rem; text-align: center;
+  display: flex; flex-direction: column; align-items: center; gap: 0.6rem;
+  border: 1px dashed var(--line); border-radius: var(--r-panel); background: var(--surface);
+}
+.empty-title { margin: 0; font-size: 1.05rem; font-weight: 700; }
+.cli-hint {
+  font-family: var(--mono); font-size: 0.8rem; color: var(--text-2);
+  background: var(--bar); border: 1px solid var(--line);
+  border-radius: var(--r-ctrl); padding: 0.4rem 0.7rem;
+}
+
+/* ── Wizard (board 1g) ── */
+.step-rail {
+  display: flex; align-items: center; gap: 0.5rem; list-style: none;
+  margin: 0 0 0.5rem; padding: 0; flex-wrap: wrap;
+}
+.step { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; }
+.step:not(:last-child)::after {
+  content: ""; width: 1.5rem; height: 1px; background: var(--line); margin-left: 0.5rem;
+}
+.step-marker {
+  width: 1.4rem; height: 1.4rem; border-radius: 999px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 0.78rem; font-weight: 700;
+  border: 1px solid var(--line); color: var(--muted);
+}
+.step-label { color: var(--muted); }
+.step-active .step-marker { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.step-active .step-label { color: var(--text); font-weight: 600; }
+.step-done .step-marker { background: transparent; color: var(--ok); border-color: color-mix(in srgb, var(--ok) 55%, transparent); }
+.step-done .step-label { color: var(--text-2); }
+.step-skipped { opacity: 0.55; }
+
+.wizard-step {
+  display: flex; flex-direction: column; gap: 0.6rem;
+  padding: 0.9rem; background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--r-panel);
+}
+.wizard-step-title { margin: 0; font-size: 0.95rem; font-weight: 700; }
+.wizard-datasetid { max-width: 22rem; }
+
+/* Drop-zone-styled file label (native input kept; drag-drop is additive). */
+.dropzone {
+  display: flex; flex-direction: column; gap: 0.35rem;
+  padding: 0.85rem; border: 1px dashed var(--line);
+  border-radius: var(--r-panel); background: var(--ground);
+}
+.dropzone:hover { border-color: var(--accent); }
+.dropzone-title { font-weight: 600; }
+.dropzone-hint { font-size: 0.82rem; }
+.detected-count { font-family: var(--mono); font-size: 0.8rem; color: var(--ok); }
+
+/* Role table (three columns: column / role / sample · effect). */
+.role-table { width: 100%; border-collapse: collapse; }
+.role-table th {
+  text-align: left; font-size: 0.78rem; font-weight: 600; color: var(--muted);
+  padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--line);
+}
+.role-table td { padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+.role-table .role-column-name { min-width: 8rem; font-family: var(--mono); color: var(--text-2); }
+.role-cell { display: flex; flex-direction: column; gap: 0.35rem; }
+.role-hint { font-size: 0.82rem; }
+.role-sample { font-family: var(--mono); color: var(--text-2); overflow-wrap: anywhere; }
+.role-section-title { margin: 0.6rem 0 0; font-size: 0.85rem; color: var(--muted); }
+.role-datetime-format { display: inline-flex; align-items: center; gap: 0.4rem; }
+
+/* "This dataset will offer:" unlocks readout — --ok outline chips + grid note. */
+.unlocks-strip {
+  display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.5rem;
+  padding-top: 0.6rem; border-top: 1px solid var(--line);
+}
+.unlocks-label { font-size: 0.82rem; }
+.unlocks-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.unlock-chip {
+  display: inline-flex; align-items: center; font-size: 0.78rem;
+  font-family: var(--mono); color: var(--ok);
+  border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent);
+  border-radius: 999px; padding: 0.1rem 0.55rem;
+}
+.grid-floor-note { margin: 0; font-size: 0.78rem; }
+
+/* Step 3 Progress readout. (.progress-pct retired with deriveProgressPct — Seam O3
+ * replaced the fake single-% readout with the real per-stage checklist.) */
+.progress-state { margin: 0; font-weight: 600; }
+.wait-copy { margin: 0; font-size: 0.85rem; }
+.log-disclosure { display: flex; flex-direction: column; gap: 0.4rem; }
+/* ── Phase B: Explorer cockpit ──────────────────────────────────────────
+ * Full-bleed canvas with floating panels + a docked status bar + minimap.
+ * The .canvas-holder (holderRef) is the canvas AREA only — the status bar is a
+ * flex:none sibling below it, so measure(holder) keeps sizing the canvas alone.
+ * Every value is a token; no hardcoded colors. Additive to Phase A. */
+
+/* Translucent floating panel surface over the canvas (this seam's to add). */
+.panel-float {
+  background: var(--panel-bg);
+  backdrop-filter: blur(var(--panel-blur));
+  -webkit-backdrop-filter: blur(var(--panel-blur));
+  border: 1px solid var(--line);
+  border-radius: var(--r-panel);
+  box-shadow: var(--shadow);
+}
+
+/* Floating top bar: three panel groups pinned across the top.
+ * z-index 12 (UI-S1, was 10): this element is a stacking context, so its search
+ * DROPDOWN — the only topbar descendant that extends down the canvas — could not
+ * otherwise paint over the equally-ranked, later-in-DOM rails (.tag-rail /
+ * .inspector, z-index 10) or the error banner (11) when they overlap horizontally.
+ * The bar's own band (top 14px, ~48px tall) clears the banner (top 66px) and the
+ * rails (top 72px), so nothing else changes stacking. */
+.cockpit-topbar {
+  position: absolute; top: 14px; left: 14px; right: 14px; z-index: 12;
+  display: flex; align-items: stretch; gap: 0.6rem; pointer-events: none;
+}
+.cockpit-topbar > * { pointer-events: auto; }
+.topbar-nav { display: flex; align-items: center; gap: 0.7rem; padding: 0.35rem 0.6rem; }
+.topbar-nav .viewer-title { margin: 0; font-size: 1rem; font-weight: 600; }
+.topbar-count { font-family: var(--mono); color: var(--muted); font-size: 0.85rem; }
+.topbar-layouts { padding: 0.35rem 0.5rem; }
+/* Search (T2-57, re-enabled): a live combobox input in the top bar.
+ * position: relative anchors the UI-S1 results dropdown to this pill. Vertical
+ * padding matches the .topbar-nav / .topbar-layouts siblings (0.35rem, was 0.25rem)
+ * — see the PR: that closes 3.2px of the ~11px height gap to them, the rest of which
+ * is content-height, not padding. */
+.topbar-search {
+  position: relative;
+  display: flex; align-items: center; gap: 0.25rem; padding: 0.35rem 0.35rem 0.35rem 0.5rem;
+}
+.search-input {
+  width: 15rem; max-width: 30vw; border: none; background: transparent; color: var(--text);
+  font-size: 0.9rem; padding: 0.2rem 0.1rem; outline: none;
+}
+.search-input::placeholder { color: var(--text-faint); }
+.search-clear { padding: 0.1rem 0.4rem; font-size: 1rem; line-height: 1; }
+/* Re-show control for a hidden dropdown, shown in the pill beside the clear × . */
+.search-reveal { padding: 0.1rem 0.4rem; font-size: 1rem; line-height: 1; }
+
+/* Search results dropdown (UI-S1): the results list's OWN floating panel, hung under
+ * the search pill instead of taking over the Inspector's body. Absolute against
+ * .topbar-search, so it tracks the pill without measuring anything. Height allowance is
+ * the same expression the rails use (- 72px top band - 54px bottom gutter), against the
+ * viewport rather than the holder because this is not a child of .canvas-holder. */
+.search-dropdown {
+  position: absolute; top: calc(100% + 6px); left: 0;
+  width: 20rem; max-width: 60vw;
+  max-height: calc(100vh - 72px - 54px);
+  display: flex; flex-direction: column;
+}
+.search-dropdown-body { min-height: 0; }
+
+/* Floating error banner, under the top bar. */
+.error-banner-float {
+  position: absolute; top: 66px; left: 14px; right: 14px; z-index: 11;
+  margin: 0; padding: 0.55rem 0.8rem;
+}
+
+/* Floating rails share the collapsed-chevron affordance. */
+.rail-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+  padding: 0.55rem 0.7rem; border-bottom: 1px solid var(--line);
+}
+.rail-title { font-size: 0.9rem; font-weight: 600; color: var(--text-2); }
+.rail-toggle { padding: 0.15rem 0.45rem; }
+.rail-body { padding: 0.7rem; overflow-y: auto; }
+
+/* Collapsed rail: a 36px icon button that re-expands the rail. */
+.rail-collapsed {
+  position: absolute; z-index: 10; top: 72px;
+  width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
+  color: var(--text-2); font-size: 1.1rem;
+}
+.rail-collapsed:hover { color: var(--text); }
+.rail-collapsed-left { left: 14px; }
+.rail-collapsed-right { right: 14px; }
+
+/* Tag rail (left). */
+.tag-rail {
+  position: absolute; top: 72px; left: 14px; width: 236px; z-index: 10;
+  max-height: calc(100% - 72px - 54px); display: flex; flex-direction: column;
+}
+.tag-rail .rail-body { min-height: 0; }
+
+/* Inspector (right). */
+.inspector {
+  position: absolute; top: 72px; right: 14px; width: 272px; z-index: 10;
+  max-height: calc(100% - 72px - 54px); display: flex; flex-direction: column;
+}
+.inspector-body { position: relative; min-height: 0; }
+/* View ⤢ button overlaying the preview's bottom-right. */
+.view-full-btn {
+  position: absolute; top: 0.7rem; right: 0.7rem; z-index: 1;
+  padding: 0.2rem 0.5rem; font-size: 0.8rem;
+}
+
+/* Fit-view control: a small floating button just above the minimap (T2-67). */
+.fit-view-btn {
+  position: absolute; right: 14px; bottom: 140px; z-index: 10;
+  padding: 0.25rem 0.55rem; font-size: 0.8rem; color: var(--text-2);
+}
+.fit-view-btn:hover { color: var(--text); }
+
+/* Minimap: bottom-right, 14px above the status bar (live overview — T2-54). */
+.minimap {
+  position: absolute; right: 14px; bottom: 40px; z-index: 10;
+  width: 150px; height: 94px; overflow: hidden; cursor: pointer;
+  backdrop-filter: none; -webkit-backdrop-filter: none;   /* .panel-float minus blur */
+}
+.minimap-label {
+  position: absolute; top: 5px; left: 7px; z-index: 2; font-family: var(--mono);
+  font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em;
+}
+/* Painted overview mosaic: fills the minimap box; the camera box + label sit over it. */
+.minimap-canvas {
+  position: absolute; inset: 0; width: 100%; height: 100%; display: block;
+}
+.minimap-view {
+  position: absolute; left: 30%; top: 34%; width: 40%; height: 34%; z-index: 1;
+  border: 1px solid var(--accent); border-radius: 2px; background: var(--accent-wash);
+  pointer-events: none;
+}
+
+/* Docked status bar (26px), mono + muted. */
+.status-bar {
+  flex: none; height: 26px; display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; padding: 0 0.8rem; background: var(--bar); border-top: 1px solid var(--line);
+  font-family: var(--mono); font-size: 10px; color: var(--muted);
+}
+.status-group { display: flex; align-items: center; gap: 1rem; min-width: 0; }
+.status-item { white-space: nowrap; }
+.status-layout { color: var(--text-2); }
+.status-loading { color: var(--accent); }
+/* T2-120 (Fix B/C): honest "tags unavailable" read-out — a muted-warning tint. */
+.status-tags-unavailable { color: var(--err); }
+
+/* ── Lightbox ───────────────────────────────────────────────────────────
+ * Full-viewport overlay (board 2b) OVER the dimmed Explorer: a contained
+ * detail-tier original with a slim identity strip + a full-height side
+ * inspector. position:fixed so it renders inline in ViewerScreen without
+ * disturbing the renderer stack. Every value is a token; no hardcoded colors. */
+
+.lightbox-backdrop {
+  position: fixed; inset: 0; z-index: 100;
+  background: var(--scrim);
+  display: flex; align-items: center; justify-content: center;
+  padding: 3.5rem;
+}
+.lightbox-content {
+  position: relative;
+  display: flex; gap: 12px;
+  width: 100%; height: 100%; min-height: 0; min-width: 0;
+}
+
+/* Image column (left): [image area, identity strip]; never shrinks below the
+ * column when the panel is open — the inspector scrolls instead. */
+.lightbox-image-col {
+  flex: 1 1 auto; min-width: 0; min-height: 0;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.lightbox-image-area {
+  position: relative; flex: 1 1 auto; min-height: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: var(--r-panel);
+  box-shadow: var(--shadow-deep); overflow: hidden;
+  background: var(--ground);
+}
+.lightbox-img {
+  max-width: 100%; max-height: 100%;
+  object-fit: contain; display: block;
+}
+.lightbox-img-loading, .lightbox-img-failed, .lightbox-img-none {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 0.6rem;
+}
+/* Loading: blur up whatever we already have while the original streams. */
+.lightbox-img-blur { position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: contain; filter: blur(18px); transform: scale(1.04); opacity: 0.6; }
+.lightbox-loading-note { position: relative; font-family: var(--mono); font-size: 0.8rem; }
+
+/* Slim identity strip under the image. */
+.lightbox-identity {
+  flex: none;
+  display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+  padding: 0.5rem 0.8rem;
+  font-family: var(--mono); font-size: 0.82rem; color: var(--text-2);
+}
+.lightbox-id-name { overflow-wrap: anywhere; }
+.lightbox-id-count { margin-left: auto; color: var(--muted); }
+.lightbox-download { color: var(--accent); text-decoration: none; font-family: var(--sans); }
+.lightbox-download:hover { color: var(--accent-dim); text-decoration: underline; }
+
+/* Nav arrows on the image edges (38px). */
+.lightbox-nav {
+  position: absolute; top: 50%; transform: translateY(-50%); z-index: 2;
+  width: 38px; height: 38px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-2); font-size: 1.3rem; line-height: 1;
+}
+.lightbox-nav:hover:not(:disabled) { color: var(--text); }
+.lightbox-nav:disabled { opacity: 0.35; cursor: not-allowed; }
+.lightbox-nav-prev { left: 10px; }
+.lightbox-nav-next { right: 10px; }
+
+/* Side inspector (right, 328px, full height) — the field grid scrolls. */
+.lightbox-inspector {
+  flex: none; width: 328px; min-height: 0;
+  display: flex; flex-direction: column;
+}
+.lightbox-inspector-head {
+  flex: none;
+  display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem;
+  padding: 0.6rem 0.8rem; border-bottom: 1px solid var(--line);
+}
+.lightbox-inspector-title { font-family: var(--mono); font-weight: 600; color: var(--text); }
+.kbd-hint { font-size: 0.75rem; }
+.lightbox-inspector-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0.7rem 0.8rem; }
+.lightbox-inspector-foot { flex: none; padding: 0.7rem 0.8rem; border-top: 1px solid var(--line); }
+
+/* Panel-toggle + close chrome, pinned top-right of the content region. */
+.lightbox-chrome { position: absolute; top: 0; right: 0; z-index: 3; display: flex; gap: 0.4rem; }
+.lightbox-chrome-btn {
+  width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-2); font-family: var(--mono); font-size: 0.9rem;
+}
+.lightbox-chrome-btn:hover { color: var(--text); }
+
+/* ── Plotlas brand ──────────────────────────────────────────────────────────
+ * The mark (ui/PlotlasMark) is quiet instrumentation: one name per surface, the
+ * glyph inherits theme tokens, the apex tile is the only accent. Token-only,
+ * additive — no existing selector changes. The mark's svg is `display:block` so
+ * it sits on the text center line rather than the inline baseline. */
+
+/* Horizontal lockup (board 3b): glyph + wordmark, pinned left of a library-topbar. */
+.brand-lockup { display: inline-flex; align-items: center; gap: 0.45rem; flex: none; }
+.brand-lockup svg { display: block; }
+.brand-wordmark { font-weight: 800; font-size: 0.95rem; letter-spacing: -0.01em; color: var(--text); }
+
+/* Stacked lockup (board 3c): the auth brand moment — mark over wordmark, mono
+ * footer signature below the panel. */
+.auth-lockup { display: flex; flex-direction: column; align-items: center; gap: 0.4rem; }
+.auth-lockup svg { display: block; }
+.auth-footer { margin: 0; font-family: var(--mono); font-size: 0.75rem; color: var(--muted); }
+/* T2-123 (Fix A): the session-expiry notice on the auth screen — informational, not alarming. */
+.auth-notice {
+  margin: 0 0 0.75rem; padding: 0.5rem 0.65rem; font-size: 0.85rem; color: var(--text-2);
+  background: var(--accent-wash); border-left: 3px solid var(--accent);
+  border-radius: var(--r-ctrl);
+}
+
+/* Glyph-only mark in the viewer topbar-nav pill (board 3b): a bare button that
+ * shares the back-navigation target, fenced from the nav by a 1px divider. */
+.topbar-brand {
+  display: inline-flex; align-items: center; background: none; border: none;
+  padding: 0; margin: 0; color: inherit; cursor: pointer; opacity: 0.9;
+}
+.topbar-brand:hover { opacity: 1; }
+.topbar-brand svg { display: block; }
+.topbar-divider { flex: none; width: 1px; height: 16px; background: var(--line); }
+
+/* Status-bar signature (board 3b): micro mark + lowercase mono `plotlas vN`. */
+.status-brand { display: inline-flex; align-items: center; gap: 0.35rem; }
+.status-brand svg { display: block; }
+
+/* Ingest loading moment (board 3d): the mark IS the spinner — the five tiles
+ * stagger their opacity in a loop, 600ms apart, apex (5th rect) last. */
+.plotlas-spinner { display: flex; justify-content: center; margin: 0.2rem 0 0.7rem; }
+.plotlas-spinner rect { animation: plotlas-tile 3s infinite; }
+.plotlas-spinner rect:nth-child(1) { animation-delay: 0s; }
+.plotlas-spinner rect:nth-child(2) { animation-delay: 0.6s; }
+.plotlas-spinner rect:nth-child(3) { animation-delay: 1.2s; }
+.plotlas-spinner rect:nth-child(4) { animation-delay: 1.8s; }
+.plotlas-spinner rect:nth-child(5) { animation-delay: 2.4s; }
+@keyframes plotlas-tile { from { opacity: 0.35; } 30% { opacity: 1; } to { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+  .plotlas-spinner rect { animation: none; opacity: 1; }
+}
+
+/* ── Seam O3: activity indicator + job-progress panel ────────────────────────
+ * The always-visible pill (both top bars) + its anchored popover with the shared
+ * stage checklist. Token-only, additive; reuses .status-chip / .panel-float /
+ * .progress-track. `--accent` doubles as "processing" (tokens.css). */
+
+/* Anchor for the popover; in the viewer the pill OWNS a .panel-float group. */
+.activity-pill-wrap { position: relative; display: inline-flex; }
+/* margin-left:auto keeps the activity pill top-RIGHT now that the hidden search box
+   (T2-57) no longer owns it — the pill was the trailing flex item after the search. */
+.topbar-activity { margin-left: auto; padding: 0.35rem 0.5rem; }
+
+/* The pill — a status-chip-shaped button with a leading dot. */
+.activity-pill {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  padding: 0.15rem 0.6rem; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--text-2);
+  font-family: var(--mono); font-size: 0.78rem; letter-spacing: 0.03em;
+}
+.activity-pill::before {
+  content: ""; width: 6px; height: 6px; border-radius: 999px;
+  background: var(--muted); flex: none;
+}
+.activity-pill:hover:not(:disabled) { background: var(--raised); color: var(--text); }
+.activity-pill-running { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.activity-pill-running::before { background: var(--accent); animation: activity-pulse 1.4s ease-in-out infinite; }
+.activity-pill-failed { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); }
+.activity-pill-failed::before { background: var(--err); }
+@keyframes activity-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) { .activity-pill-running::before { animation: none; } }
+
+/* Library-card "updating" badge (T2-104): accent chip button beside the ready chip. */
+.status-updating { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.updating-badge { background: none; }
+.updating-badge::before { animation: activity-pulse 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .updating-badge::before { animation: none; } }
+
+/* The anchored popover panel (opens below the pill; flips up when cramped). */
+.activity-panel {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 20;
+  width: 340px; max-width: 90vw; max-height: 70vh; overflow: auto;
+  padding: 0.7rem; display: flex; flex-direction: column; gap: 0.5rem;
+}
+.activity-panel-up { top: auto; bottom: calc(100% + 6px); }
+.activity-panel-title { margin: 0; }
+
+.activity-job-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.7rem; }
+.activity-job { display: flex; flex-direction: column; gap: 0.35rem; }
+.activity-job:not(:last-child) { border-bottom: 1px solid var(--line); padding-bottom: 0.7rem; }
+.activity-job-head { display: flex; align-items: center; gap: 0.5rem; }
+.activity-job-ds { font-family: var(--mono); font-size: 0.82rem; color: var(--text); overflow-wrap: anywhere; }
+.activity-job-head .status-chip { margin-left: 0; }
+.activity-dismiss { margin-left: auto; font-size: 0.78rem; }
+.activity-job-wait { margin: 0; font-size: 0.82rem; }
+.activity-poll-error { margin: 0; font-size: 0.78rem; }
+
+/* Shared stage checklist (activity panel + the wizard's JobProgressView). */
+.stage-checklist { display: flex; flex-direction: column; gap: 0.4rem; }
+.activity-current { margin: 0; font-size: 0.82rem; color: var(--text-2); }
+.activity-stages, .activity-layout-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; }
+.activity-stage, .activity-layout { display: flex; flex-direction: column; gap: 0.2rem; }
+.activity-stage-head, .activity-layout-head { display: flex; align-items: baseline; gap: 0.4rem; }
+.activity-stage-icon, .activity-layout-icon { flex: none; font-family: var(--mono); color: var(--muted); }
+.activity-stage-label, .activity-layout-label { color: var(--text-2); }
+.activity-stage-count { margin-left: auto; font-family: var(--mono); font-size: 0.76rem; color: var(--muted); }
+.activity-stage-eta { font-family: var(--mono); font-size: 0.76rem; color: var(--accent); }
+.activity-stage-dur { margin-left: auto; font-family: var(--mono); font-size: 0.76rem; color: var(--muted); }
+.activity-bar { margin-top: 0.1rem; }
+
+/* Stage/layout state accents: done ✓ (ok), running (accent), failed (err), pending (muted). */
+.activity-stage-done .activity-stage-icon, .activity-layout-done .activity-layout-icon { color: var(--ok); }
+.activity-stage-running .activity-stage-icon, .activity-layout-running .activity-layout-icon { color: var(--accent); }
+.activity-stage-running .activity-stage-label, .activity-layout-running .activity-layout-label { color: var(--text); }
+.activity-stage-failed .activity-stage-icon, .activity-layout-failed .activity-layout-icon { color: var(--err); }
+.activity-stage-failed .activity-stage-label, .activity-layout-failed .activity-layout-label { color: var(--err); }
+
+.activity-layouts { display: flex; flex-direction: column; gap: 0.3rem; }
+.activity-section-title { margin: 0.2rem 0 0; font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.activity-layout-state { font-family: var(--mono); font-size: 0.74rem; color: var(--muted); }
+.activity-layout-done .activity-layout-state { color: var(--ok); }
+.activity-layout-running .activity-layout-state { color: var(--accent); }
+.activity-layout-failed .activity-layout-state { color: var(--err); }
+
+/* The whole-job ETA — always tagged "estimate", never a bare fact. */
+.activity-eta { margin: 0.1rem 0 0; font-size: 0.82rem; color: var(--text-2); }
+.activity-eta-tag { color: var(--muted); font-style: italic; }
+
+/* ── Seam O4: resilient upload transport (progress, resume, folder/drag-drop) ──
+ * Additive; reuses .dropzone / .progress-track / .panel-float / semantic tokens. */
+
+/* Drag-active state on the images drop-zone (the CSS already anticipated drag-drop). */
+.dropzone-active { border-color: var(--accent); background: var(--raised); }
+.dropzone-folder .dropzone-hint { font-size: 0.8rem; }
+
+/* Client-side selection notices (deduped names / ignored non-images / clear). */
+.selection-notes { display: flex; flex-direction: column; gap: 0.2rem; align-items: flex-start; }
+.selection-note { margin: 0; font-size: 0.8rem; overflow-wrap: anywhere; }
+
+/* Resume banner — a persisted, interrupted session was found at mount. */
+.resume-banner {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.5rem 0.7rem; font-size: 0.85rem;
+}
+.resume-banner-text { color: var(--text-2); }
+.resume-banner .link-btn { margin-left: auto; flex: none; }
+
+/* Resume review — the /check diff (present / needed / mismatched). */
+.resume-mismatch { display: flex; flex-direction: column; gap: 0.35rem; }
+.resume-mismatch-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.15rem; }
+.resume-mismatch-name { font-family: var(--mono); font-size: 0.78rem; color: var(--text-2); overflow-wrap: anywhere; }
+
+/* Upload progress readout — the aggregate bar + the parts in flight. */
+.upload-progress { display: flex; flex-direction: column; gap: 0.45rem; }
+.upload-progress-head { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+.upload-progress-label { font-weight: 600; }
+.upload-progress-bytes { margin-left: auto; font-family: var(--mono); font-size: 0.8rem; color: var(--muted); }
+.upload-progress-bar { height: 8px; }
+
+.upload-file-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+.upload-file { display: flex; flex-direction: column; gap: 0.15rem; }
+.upload-file-head { display: flex; align-items: baseline; gap: 0.4rem; }
+.upload-file-name { font-family: var(--mono); font-size: 0.78rem; color: var(--text-2); overflow-wrap: anywhere; }
+.upload-file-count { margin-left: auto; font-family: var(--mono); font-size: 0.74rem; color: var(--muted); flex: none; }
+.upload-file-bar { height: 4px; }
+
+.upload-retrying { font-size: 0.8rem; }
+.upload-failures { display: flex; flex-direction: column; gap: 0.3rem; }
+.upload-failure-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.2rem; }
+.upload-failure { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+.upload-failure-detail { font-size: 0.78rem; }
+
+/* --- Links (Part D polish) --------------------------------------------------
+   The app had NO anchor rule at all until now, so every link Part C/D introduced
+   (the `url` column role in the inspector, the source credit on the card and in the
+   footer) fell back to the browser default #0000EE — near-black-on-black against
+   --ground #0E1116, effectively invisible and unreadable.
+   --accent is the established interactive colour here (buttons, .link-btn, focus
+   rings), so links join it rather than introducing a second "clickable" hue.
+   Underline stays: colour alone is not an affordance, and --accent is also used for
+   non-interactive status text. */
+a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+a:hover { color: var(--accent-dim); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+/* --- Source credit (Part D §2/§2b) ------------------------------------------
+   One rule set for both surfaces; only the sizing differs. `Source:` is muted and
+   the value carries the weight, so the label reads as a field name rather than
+   competing with the collection title above it. */
+.credit-label { color: var(--muted); }
+
+/* Library card: ONE line, clipped. A long institution name must not push the card
+   taller than its siblings or wrap into a second title-sized block — the whole
+   complaint was that it took too much room beside a near-identical title. The full
+   value stays available as the element's `title` tooltip. */
+.card-credit {
+  margin: 0.1rem 0 0; font-size: 0.78rem; color: var(--text-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Viewer: an ordinary status-bar item, sitting immediately left of the brand
+   signature. Inherits the bar's mono/muted treatment; capped so a long credit
+   cannot crowd out the read-outs to its left. */
+/* The cap exists only so a pathological credit (the API allows 200 chars) cannot push
+   the brand signature off the bar — NOT to keep the credit short. 22ch was measured
+   clipping an ordinary value: "Source: Rijksmuseum, Amsterdam" wants 165px and was
+   given 121px, on a bar 1656px wide with no other item competing for the room. 48ch
+   fits that and anything comparable outright, and still bounds the worst case. */
+.status-credit {
+  margin: 0; max-width: 48ch;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* A source-record URL is long (~55 chars for a Rijksmuseum object page) and the
+   inspector is a ~250px column, so a link there must BREAK rather than overflow its
+   panel. `anywhere` (not `break-word`) so a URL with no spaces still wraps. */
+.metadata-panel .field-list dd { overflow-wrap: anywhere; }

@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/v1.1/column_roles.schema.json",
+  "title": "ColumnRoles",
+  "description": "Maps an optional metadata source's columns to the semantic roles the application understands. The dataset is the images; metadata is optional enrichment (CSV today, other sources later) joined to the images by filename. When present, this object is validated by ingest.py and embedded in the layout manifest so the API and frontend know how to query and display each column. Absent ⇒ images-only dataset. Schema version 1.1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["filename"],
+  "properties": {
+    "filename": {
+      "description": "The column naming each row's image file — the join key to the image set, matched by basename. Required whenever a column_roles object is present (a role map is only useful if it says which column is the filename). Stored for display and export; the pipeline assigns the cell id (users never supply ids).",
+      "$ref": "#/$defs/roleEntry"
+    },
+    "datetime": {
+      "description": "Optional timestamp column driving the datetime layout. At most one. Values must parse as ISO 8601 dates or Unix timestamps.",
+      "anyOf": [
+        { "$ref": "#/$defs/datetimeRoleEntry" },
+        { "type": "null" }
+      ]
+    },
+    "categorical": {
+      "description": "Discrete label columns driving the categorical layout and color-by. Zero to N.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/roleEntry" },
+      "default": []
+    },
+    "scatter": {
+      "description": "Pre-computed 2-D coordinate column pairs (UMAP/t-SNE/custom, decision D-26); each entry drives one scatter layout. The pair is atomic — an X without a Y is unrepresentable. Zero to N.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/scatterRoleEntry" },
+      "default": []
+    },
+    "tag": {
+      "description": "Multi-value columns used for highlight/filter controls. Zero to N. Each cell may carry multiple tag values; the delimiter is declared per column.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/tagRoleEntry" },
+      "default": []
+    },
+    "freeform": {
+      "description": "Display-only columns surfaced in the metadata panel. Not indexed for layout or filtering. Zero to N.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/roleEntry" },
+      "default": []
+    },
+    "embedding": {
+      "description": "RESERVED for Phase 2 UMAP. Optional, nullable. Names a vector column (Arrow list<float32>) used to compute UMAP coordinates. Present in the schema from day one so the Phase 2 hook does not require a breaking change.",
+      "anyOf": [
+        { "$ref": "#/$defs/embeddingRoleEntry" },
+        { "type": "null" }
+      ]
+    }
+  },
+  "$defs": {
+    "roleEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "label"],
+      "properties": {
+        "column": {
+          "description": "Exact column name as it appears in the metadata source's header (the join is by basename; users never supply cell ids). This always names the SOURCE column — not any internal name the pipeline may store the data under (e.g. an enrichment column that shadows a reserved field is stored as 'meta_<name>'; the role entry still references the original header name) (T2-20).",
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "description": "Human-readable label shown in the UI for this column.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "datetimeRoleEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "label", "format"],
+      "properties": {
+        "column": {
+          "description": "Exact column name as it appears in the metadata source's header (the join is by basename; users never supply cell ids). This always names the SOURCE column — not any internal name the pipeline may store the data under (e.g. an enrichment column that shadows a reserved field is stored as 'meta_<name>'; the role entry still references the original header name) (T2-20).",
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "description": "Human-readable label shown in the UI for this column.",
+          "type": "string",
+          "minLength": 1
+        },
+        "format": {
+          "description": "How to parse the column's values. 'iso8601' for date/datetime strings; 'unix_seconds' or 'unix_millis' for integer epoch timestamps.",
+          "type": "string",
+          "enum": ["iso8601", "unix_seconds", "unix_millis"]
+        }
+      }
+    },
+    "scatterRoleEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x_column", "y_column", "label"],
+      "properties": {
+        "x_column": {
+          "description": "Exact column name (metadata source header) carrying the pre-computed X coordinate. Values must parse as finite floats; empty/null values mark the cell unplaced.",
+          "type": "string",
+          "minLength": 1
+        },
+        "y_column": {
+          "description": "Exact column name (metadata source header) carrying the pre-computed Y coordinate. Values must parse as finite floats; empty/null values mark the cell unplaced.",
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "description": "Human-readable label shown in the UI for this scatter layout.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "tagRoleEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "label", "delimiter"],
+      "properties": {
+        "column": {
+          "description": "Exact column name as it appears in the metadata source's header (the join is by basename; users never supply cell ids). This always names the SOURCE column — not any internal name the pipeline may store the data under (e.g. an enrichment column that shadows a reserved field is stored as 'meta_<name>'; the role entry still references the original header name) (T2-20).",
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "description": "Human-readable label shown in the UI for this column.",
+          "type": "string",
+          "minLength": 1
+        },
+        "delimiter": {
+          "description": "Delimiter splitting a single cell's value into multiple tag values (e.g. ',' or '|'). Use an empty string for single-value tag columns.",
+          "type": "string"
+        }
+      }
+    },
+    "embeddingRoleEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "label", "dim"],
+      "properties": {
+        "column": {
+          "description": "Exact column name as it appears in the metadata source (Arrow list<float32>) — the SOURCE header name, not any internal 'meta_<name>' the pipeline may store it under (T2-20).",
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "description": "Human-readable label shown in the UI for this embedding.",
+          "type": "string",
+          "minLength": 1
+        },
+        "dim": {
+          "description": "Dimensionality of each embedding vector. Recorded into the cell record's embedding_dim field for UMAP layouts.",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

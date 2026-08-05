@@ -1,0 +1,63 @@
+/* image-viz design tokens — Phase A (final, from Design Pass board 2a/1f–1h)
+ * Drop at packages/frontend/src/ui/theme/tokens.css and @import from app.css.
+ * Source of truth for every color/type/space value; no hex outside this file. */
+
+:root {
+  /* ground */
+  --ground:   #0E1116;  /* app + canvas surround */
+  --surface:  #171B22;  /* cards, panels (opaque) */
+  --raised:   #1F242E;  /* segmented "on", hovers */
+  --line:     #2A303B;  /* all borders */
+  --bar:      #12151B;  /* status bar / table headers */
+
+  /* floating panel over the canvas */
+  --panel-bg:   rgba(23, 27, 34, 0.88);
+  --panel-blur: 12px;                     /* backdrop-filter: blur(var(--panel-blur)) */
+  --scrim:      rgba(7, 9, 12, 0.55);     /* lightbox backdrop over the dimmed canvas */
+
+  /* text */
+  --text:    #E7EAF0;
+  --text-2:  #AEB6C6;  /* secondary; small data text uses this, not muted */
+  --muted:   #838C9E;  /* labels, hints — AA on --ground/--surface; do not darken */
+
+  /* semantic neutrals — role-named grays layered over the primitives above, so a
+   * component names the ROLE it wants and the palette is retuned here in ONE place
+   * (repoint an alias, or give it its own hex, without touching --line/--text-*).
+   * PlotlasMark's non-apex tiles are the first consumer; any component may use them. */
+  --border:        var(--line);    /* faint hairline / faintest glyph tile */
+  --border-strong: var(--muted);   /* stronger neutral tile */
+  --text-faint:    var(--text-2);  /* faint foreground neutral */
+
+  /* accent — meaning only (active / selected / interactive) */
+  --accent:      #F0B429;
+  --accent-ink:  #0E1116;               /* text on accent */
+  --accent-dim:  #8A6A1E;
+  --accent-wash: rgba(240, 180, 41, 0.12);
+
+  /* semantic */
+  --ok:    #4ADE80;
+  --err:   #F26D6D;
+  /* processing = --accent */
+
+  /* tag data ramp — categorical highlight; distinct from accent by design */
+  --t1: #2DD4BF;  /* teal */
+  --t2: #E879C6;  /* magenta */
+  --t3: #7AA2F7;  /* blue */
+  --t4: #F09857;  /* orange */
+  --t5: #A3D96C;  /* green */
+  --t6: #C792EA;  /* purple */
+  --t7: #56B6C2;  /* cyan */
+  --t8: #E06C75;  /* rose */
+
+  /* type */
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* data face rule: ids, counts, coordinates, timestamps, filenames → --mono */
+
+  /* space & shape — 4px base */
+  --sp: 8px;
+  --r-ctrl: 6px;    /* buttons, inputs, chips-square */
+  --r-panel: 10px;  /* panels, cards */
+  --shadow: 0 6px 20px rgba(0, 0, 0, 0.4);        /* floating panels */
+  --shadow-deep: 0 20px 60px rgba(0, 0, 0, 0.6);  /* lightbox image */
+}

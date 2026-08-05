@@ -1,0 +1,63 @@
+# syntax=docker/dockerfile:1
+# Worker image — runs the RQ worker that executes the pipeline ingest job
+# (decision D-15) and carries the heavy native pipeline dep the lean `api` image
+# must never have: libvips (for pyvips, Spike 01). The v2 spatial tile pyramid
+# (decision D-33) packs tiles via `pmtiles` (pure-Python, installed from PyPI as a
+# pipeline dependency below); the v1 quadfeather CLI tiler is retired.
+# Base pinned to a minor tag per docker/README conventions.
+FROM python:3.12-slim-bookworm
+
+# libvips runtime shared lib for pyvips (Spike 01).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libvips42 \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Pipeline deps from the compiled lock (single source of resolved versions —
+# regenerate with `make locks` on any pyproject dep change; T2-74). The lock
+# covers the allowed pipeline deps (pyarrow, duckdb, pyvips, rectpack, numpy,
+# pmtiles, jsonschema — exactly packages/pipeline/pyproject.toml), the [test]
+# extra (pytest — this image is where native-dep pipeline tests run:
+# `make test-pipeline` / the test-pipeline-native CI job, decided 2026-06-01),
+# AND rq+redis (the worker *process* runtime, the RQ consumer). The pipeline
+# package itself is then installed WITHOUT re-resolving deps (--no-deps).
+COPY docker/locks/worker.lock.txt /tmp/worker.lock.txt
+RUN pip install --no-cache-dir -r /tmp/worker.lock.txt
+COPY packages/pipeline /app
+RUN pip install --no-cache-dir --no-deps .
+
+# Live source via PYTHONPATH so a dev bind-mount and RQ's dotted-path resolution
+# of "pipeline.worker.run_ingest" both use the mounted code.
+ENV PYTHONPATH=/app
+
+# Bundle the locked schemas (decision D-25, pipeline seam flag b). The whole tree
+# is copied; v2 is the in-force MAJOR contract the pipeline validates against at
+# runtime (manifest.py, ColumnRoles.from_config — decision D-33). v1/v1.1 stay
+# alongside as the frozen historical contracts. The dev/test path finds them via
+# the repo bind-mount, but a PRODUCTION worker has no repo mounted, so copy them in
+# and point the resolver at v2. Read-only — rule #6 (no module writes schemas/)
+# still holds. compose mounts ./schemas over this for dev so schema edits are live.
+COPY schemas /schemas
+ENV IMAGE_VIZ_SCHEMA_DIR=/schemas/v2
+
+# --- Non-root runtime (R-S6 / RELEASE_READINESS §2 — "worker too, for later") ---
+# Drop the RQ worker process from uid 0 to an unprivileged user. The apt/pip/COPY
+# steps above ran as root at BUILD time; only the runtime process drops to `app`.
+# The worker writes dataset trees under DATA_ROOT/datasets/ (D-30), so pre-create
+# /data owned by `app`: a FRESH Docker named volume mounted at /data inherits this
+# ownership on first use (Docker seeds an empty named volume from the image dir),
+# letting the non-root worker write. The api image pre-creates the SAME tree with
+# the SAME uid, so whichever service initializes the shared `datasets` volume
+# first yields consistent app-owned ownership. The public showcase profile omits
+# the worker entirely; this hardening is for the full (dev/users-gate) stack.
+# NOTE: a pre-existing root-owned dev `datasets` volume must be recreated once
+# (`docker compose down -v`) — Docker seeds ownership only for an EMPTY volume.
+RUN groupadd --gid 10001 app \
+ && useradd --uid 10001 --gid app --no-create-home --shell /usr/sbin/nologin app \
+ && mkdir -p /data/datasets /data/users /data/app-state \
+ && chown -R app:app /app /data
+USER app
+
+# Consume ingest jobs off Redis; REDIS_URL is injected by docker-compose.
+CMD ["sh", "-c", "rq worker --url \"$REDIS_URL\""]
