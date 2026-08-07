@@ -31,7 +31,8 @@ docker compose up --build
 Then open **<http://localhost:8080>**.
 
 The stack builds on first run, which takes a few minutes. You will land on an empty
-library — that is correct, there are no collections until you add one.
+library — that is correct, there are no collections until you add one. Click "New 
+Dataset" to create your own.
 
 To stop it:
 
@@ -69,6 +70,9 @@ git reset --hard origin/main
 That discards local edits to the checkout. It does not touch `./data`.
 
 ## Add your own images
+
+You can add datasets via the frontend UI interface, but it will be faster if you point
+Plotlas at existing images on your hard-drive for larger sets.
 
 The `--sync` flag runs the work in the foreground so you can watch it. Point `-v` at a
 folder on your machine; it is mounted read-only and never modified.
