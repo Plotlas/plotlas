@@ -164,7 +164,6 @@ test("viewer flow: validated manifest → layouts → tag chips → applyTags �
         ...(manifest.column_roles ?? { filename: { column: "filename", label: "Filename" } }),
         categorical: [{ column: "category", label: "Category" }],
       },
-      onClear: () => {},
     }),
   );
   assert.match(summaryHtml, /5 cells selected/);

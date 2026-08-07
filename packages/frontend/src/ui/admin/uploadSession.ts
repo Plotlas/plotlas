@@ -19,7 +19,7 @@ export interface PersistedUploadSession {
   fingerprint: string;
 }
 
-/** Browser-GLOBAL key (like `image-viz.token` / `image-viz.activity` in App.tsx). The
+/** Browser-GLOBAL key (like `plotlas.token` / `plotlas.activity` in App.tsx). The
  *  session is single-flight per browser — one create wizard at a time — so one slot is
  *  enough; a fresh login/logout clears it alongside the token (see App.tsx). */
 export const UPLOAD_SESSION_STORAGE_KEY = "plotlas.upload-session";

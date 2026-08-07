@@ -117,6 +117,37 @@ test("Escape and an outside pointerdown each dismiss the open panel (popover a11
   assert.equal(screen.queryByText("ds1"), null, "an outside click closes the panel");
 });
 
+// T2-204 regression pin. This listener is on `document`, one hop below `window` in the
+// bubble path, so without stopPropagation the dismiss Escape ALSO reaches every
+// window-level Escape handler. That went unnoticed until ViewerScreen made Escape clear
+// the cell selection: one press closed this panel and silently emptied the inspector,
+// with no undo. The pill owns its own dismiss key — assert it consumes it.
+test("Escape dismissing the panel does NOT reach window-level Escape handlers (T2-204)", async () => {
+  const { client } = progressiveClient();
+  render(h(StrictMode, null, h(ActivityProvider, { client }, h(RegisterHarness))));
+
+  const pill = await screen.findByRole("button", { name: /Activity: 1 job/ });
+  let sawEscapeAtWindow = 0;
+  const spy = (e: KeyboardEvent): void => {
+    if (e.key === "Escape") sawEscapeAtWindow += 1;
+  };
+  window.addEventListener("keydown", spy);
+  try {
+    // Panel CLOSED: Escape is nobody's but the window's — it must pass through, or the
+    // pin would also pass with the pill swallowing Escape unconditionally.
+    fireEvent.keyDown(document, { key: "Escape" });
+    assert.equal(sawEscapeAtWindow, 1, "with the panel closed, Escape reaches window");
+
+    fireEvent.click(pill);
+    await screen.findByText("ds1");
+    fireEvent.keyDown(document, { key: "Escape" });
+    assert.equal(screen.queryByText("ds1"), null, "Escape still closes the panel");
+    assert.equal(sawEscapeAtWindow, 1, "the dismiss Escape was consumed, not forwarded");
+  } finally {
+    window.removeEventListener("keydown", spy);
+  }
+});
+
 function readyWithJob(activeJobId: string): DatasetSummary {
   return {
     dataset_id: "reingesting",

@@ -43,6 +43,31 @@ Your collections live in **`./data`** — a plain folder, not a Docker volume. S
 survive `docker compose down -v`, you can back them up with `tar`, and you can move an
 installation by moving the folder. Set `DATA_DIR` in `.env` to keep them elsewhere.
 
+### Updating
+
+Each release is published here as one squashed commit on top of the last, so an update
+is an ordinary pull and rebuild:
+
+```bash
+git pull
+docker compose up --build
+```
+
+Your collections in `./data` are not touched by an update.
+
+If `git pull` instead reports **`fatal: Need to specify how to reconcile divergent
+branches`**, you cloned during an early period when a release *replaced* the published
+history rather than adding to it — so your copy and the current one share no common
+commit. None of the three strategies git suggests can bridge that. Reset to the
+published branch once, and pulls behave normally from then on:
+
+```bash
+git fetch origin
+git reset --hard origin/main
+```
+
+That discards local edits to the checkout. It does not touch `./data`.
+
 ## Add your own images
 
 The `--sync` flag runs the work in the foreground so you can watch it. Point `-v` at a

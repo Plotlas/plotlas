@@ -99,18 +99,20 @@ test("hitTestPositionTable overlap: nearest centre wins; ties break to the highe
   assert.equal(hitTestPositionTable(0.5, 0.5, coincident), 1, "coincident tie -> higher id");
 });
 
-test("hitTestPositionTable minWorldSize floor: sub-floor cells are skipped", () => {
+// CHARACTERIZATION, not a regression pin. It documents that the scan itself is
+// size-blind, but it cannot fail against the floor T2-204 removed: that floor lived in
+// the CALLER (layout.ts multiplied ~3 CSS px by the camera zoom) and the old signature
+// defaulted `minWorldSize = 0`, so pre-change code satisfies every assertion here. The
+// pin that actually carries T2-204 is the controller-level one further down, which
+// drives cells.pick through the registered fallback.
+test("hitTestPositionTable is size-blind: a sub-pixel cell hits (characterization)", () => {
   const t = parseOf([
-    { x: 0.2, y: 0.2, w: 0.1, h: 0.1 }, // id 0 — both dims below a 0.2 floor
-    { x: 0.8, y: 0.8, w: 0.3, h: 0.05 }, // id 1 — thin bar, but max(w,h)=0.3 >= floor
+    { x: 0.2, y: 0.2, w: 0.001, h: 0.001 }, // id 0 — far below any plausible px floor
+    { x: 0.8, y: 0.8, w: 0.3, h: 0.05 }, // id 1 — a thin bar
   ]);
-  assert.equal(hitTestPositionTable(0.2, 0.2, t), 0, "no floor (default 0) -> hits");
-  assert.equal(hitTestPositionTable(0.2, 0.2, t, 0.2), null, "sub-floor cell -> skipped (a miss)");
-  assert.equal(
-    hitTestPositionTable(0.8, 0.8, t, 0.2),
-    1,
-    "one dimension over the floor keeps a thin cell pickable",
-  );
+  assert.equal(hitTestPositionTable(0.2, 0.2, t), 0, "tiny cell is pickable, like the fine tier");
+  assert.equal(hitTestPositionTable(0.8, 0.8, t), 1, "a thin cell is pickable");
+  assert.equal(hitTestPositionTable(0.5, 0.5, t), null, "a genuine gap is still a miss");
 });
 
 // --- cells.pick() fallback (the T2-66 integration) -------------------------
@@ -223,8 +225,7 @@ async function flush(): Promise<void> {
 test("controller loads the position table on activate and registers the coarse-pick fallback", async () => {
   const { world, emit } = createStubWorld();
   const cells = createCells(world);
-  // zoom 0.01 world/px: screen (20,20) -> world (0.2,0.2), and a 0.1-world cell is
-  // 10 CSS px — above the controller's ~3px coarse-pick floor.
+  // zoom 0.01 world/px: screen (20,20) -> world (0.2,0.2), where a 0.1-world cell is.
   emit({ center: [0, 0], zoom: 0.01 }, { width: 0, height: 0, devicePixelRatio: 1 });
 
   const fetched: string[] = [];
@@ -239,6 +240,88 @@ test("controller loads the position table on activate and registers the coarse-p
   // With NO fine cells resident, a coarse pick now resolves via the registered table.
   assert.equal(cells.pick(20, 20).cellId, 0, "grid table: world (0.2,0.2) -> id 0");
   assert.equal(cells.pick(80, 80).cellId, 1);
+  cells.dispose();
+});
+
+// T2-204 regression pin. The fallback the CONTROLLER registers used to multiply a
+// ~3 CSS px floor by the camera zoom, so a cell that drew smaller than that was a
+// deliberate miss. At zoom 1 world/px the 0.1-world cells below are 0.1 CSS px —
+// 30x under the old floor — so this asserts on the registered fallback, the only
+// place the floor ever lived (the pure hitTestPositionTable defaulted to none).
+test("coarse pick has no floor: a sub-pixel cell is pickable at any zoom (T2-204)", async () => {
+  const { world, emit } = createStubWorld();
+  const cells = createCells(world);
+  // zoom 1 world/px + a 0-size viewport: screen coords == world coords.
+  emit({ center: [0, 0], zoom: 1 }, { width: 0, height: 0, devicePixelRatio: 1 });
+
+  const client = positionsClient({});
+  const manifest = await client.getManifest("golden_dataset_v2", "grid");
+  const controller = createLayoutController(cells, createStubPyramid(manifest), client);
+
+  await controller.activate("grid");
+  await flush();
+
+  assert.equal(cells.pick(0.2, 0.2).cellId, 0, "0.1 CSS px cell still resolves");
+  assert.equal(cells.pick(0.8, 0.8).cellId, 1);
+  assert.equal(cells.pick(0.5, 0.5).cellId, null, "a genuine gap is still a miss");
+
+  // Zoom-INVARIANT: the same world point resolves the same cell at 0.01 world/px,
+  // where that cell draws 10 CSS px. Only the aim changes, never the answer.
+  emit({ center: [0, 0], zoom: 0.01 }, { width: 0, height: 0, devicePixelRatio: 1 });
+  assert.equal(cells.pick(20, 20).cellId, 0, "same cell, zoomed in");
+  cells.dispose();
+});
+
+// T2-204: countCellsInView memoizes on the view rect, because the status observable
+// calls it on every coalesced emit and an unfloored pick makes hover emit constantly.
+// The memo is keyed on the RECT ALONE, so it must be dropped when the position table
+// changes — a layout switch preserves the camera, so an unmoved camera over a different
+// layout is exactly the case a rect key cannot see. Grid and alt below have DIFFERENT
+// counts in the same rect, so a surviving memo reports grid's answer for alt.
+test("countCellsInView memo is invalidated by a layout switch (T2-204)", async () => {
+  const { world, emit } = createStubWorld();
+  const cells = createCells(world);
+  emit({ center: [0, 0], zoom: 0.01 }, { width: 0, height: 0, devicePixelRatio: 1 });
+
+  const gridIpc = tableToIPC(
+    positionsTable([
+      { x: 0.2, y: 0.2, w: 0.1, h: 0.1 }, // inside the probe rect
+      { x: 0.8, y: 0.8, w: 0.1, h: 0.1 }, // outside it
+    ]),
+    "stream",
+  );
+  const altIpc = tableToIPC(
+    positionsTable([
+      { x: 0.2, y: 0.2, w: 0.1, h: 0.1 }, // BOTH inside the probe rect
+      { x: 0.3, y: 0.3, w: 0.1, h: 0.1 },
+    ]),
+    "stream",
+  );
+  const base = createFakeClient(undefined, {
+    doctorManifest: (m: LayoutManifest): LayoutManifest => ({
+      ...m,
+      layouts: [...m.layouts, { ...m.layouts[0], layout_id: "alt", label: "Alt" }],
+    }),
+  });
+  const client = {
+    ...base,
+    positionsUrl: (_dsId: string, layoutId: string): string | null => `pos://${layoutId}`,
+    fetchPositions: async (url: string): Promise<Table> =>
+      tableFromIPC(url.endsWith("alt") ? altIpc : gridIpc),
+  };
+
+  const manifest = await client.getManifest("golden_dataset_v2", "grid");
+  const controller = createLayoutController(cells, createStubPyramid(manifest), client);
+  await controller.activate("grid");
+  await flush();
+
+  const probe = { xMin: 0, yMin: 0, xMax: 0.5, yMax: 0.5 };
+  assert.equal(controller.countCellsInView(probe), 1, "grid: one cell in the probe rect");
+  assert.equal(controller.countCellsInView(probe), 1, "memo hit returns the same answer");
+
+  await controller.switchTo("alt");
+  await flush();
+  assert.equal(controller.countCellsInView(probe), 2, "alt's count, not grid's memoized 1");
   cells.dispose();
 });
 
@@ -326,24 +409,3 @@ test("a layout switch mid-Locate-pulse restores visibility (no stuck-dim on the 
   cells.dispose();
 });
 
-test("coarse pick floors at ~3 CSS px: sub-pixel cells miss zoomed out, resolve zoomed in", async () => {
-  const { world, emit } = createStubWorld();
-  const cells = createCells(world);
-  // Zoomed FAR out (1 world unit per CSS px): a 0.1-world cell is 0.1 px — far below
-  // the floor. Even a click INSIDE its rect must MISS, so on a space-filling layout
-  // the plain click-on-background-clears-selection gesture stays reachable.
-  emit({ center: [0, 0], zoom: 1 }, { width: 0, height: 0, devicePixelRatio: 1 });
-
-  const client = positionsClient({});
-  const manifest = await client.getManifest("golden_dataset_v2", "grid");
-  const controller = createLayoutController(cells, createStubPyramid(manifest), client);
-  await controller.activate("grid");
-  await flush();
-
-  assert.equal(cells.pick(0.2, 0.2).cellId, null, "sub-pixel cell -> floored to a miss");
-
-  // Zoom in (0.01 world/px — the same cell is now 10 px): the same world point picks.
-  emit({ center: [0, 0], zoom: 0.01 }, { width: 0, height: 0, devicePixelRatio: 1 });
-  assert.equal(cells.pick(20, 20).cellId, 0, "the 10-px cell picks after zooming in");
-  cells.dispose();
-});

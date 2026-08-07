@@ -47,6 +47,14 @@ export function ActivityPill(props: ActivityPillProps): ReactElement | null {
     if (!panelOpen) return;
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === "Escape") {
+        // The pill is a POPOVER — it owns its dismiss key. This listener is on
+        // `document`, so without stopPropagation the Escape carries on to the
+        // window-level selection-clear (T2-204) and one press would close the panel
+        // AND empty the inspector. So consume it. A higher-priority MODAL still wins:
+        // the Lightbox binds Escape in the CAPTURE phase (Lightbox.ts), so when it is
+        // open its close runs before this document-bubble handler ever fires — one
+        // press closes the modal you're looking at, not the pill behind it.
+        e.stopPropagation();
         close();
         btnRef.current?.focus();
       }

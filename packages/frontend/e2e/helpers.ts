@@ -26,8 +26,16 @@ export type DebugSample = VizV2 & { t: number };
 // tens of KB+. 10 KB cleanly separates blank from content — shared by both gates.
 export const BLANK_PNG_BYTES = 10_000;
 
-const TOKEN_KEY = "image-viz.token";
-const USERNAME_KEY = "image-viz.username";
+// MUST match App.tsx's TOKEN_KEY / USERNAME_KEY exactly. The e2e suite deliberately
+// does not import from `src` (it drives a DEPLOYED stack, which may be a remote one),
+// so these are duplicated by design and a rename in App.tsx cannot be caught by the
+// type checker. It was not: the 2026-08-05 `image-viz.*` -> `plotlas.*` rename updated
+// src and left these two behind, so seedSession wrote keys the app no longer read, the
+// session never restored, and the owner-scoped calib fixture card never rendered —
+// which the render gate reported as a click timeout on a card that simply was not
+// there. If you rename a key in App.tsx, rename it here and in capture/hero.spec.ts.
+const TOKEN_KEY = "plotlas.token";
+const USERNAME_KEY = "plotlas.username";
 
 /** Authenticate against the target API and return a bearer token.
  *

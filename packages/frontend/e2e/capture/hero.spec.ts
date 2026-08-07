@@ -71,8 +71,9 @@ test("capture the hero loop", async ({ page }, testInfo) => {
     const auth = await authenticate(page.request, baseURL);
     await page.addInitScript(
       ([t, u]) => {
-        localStorage.setItem("image-viz.token", t);
-        localStorage.setItem("image-viz.username", u);
+        // Must match App.tsx's TOKEN_KEY / USERNAME_KEY — see the note in helpers.ts.
+        localStorage.setItem("plotlas.token", t);
+        localStorage.setItem("plotlas.username", u);
       },
       [auth.token, auth.username] as const,
     );

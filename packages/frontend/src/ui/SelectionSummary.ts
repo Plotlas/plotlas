@@ -3,6 +3,11 @@
 // shell trims to the first 250 ids and this component says so ("summary over
 // first 250 of N") — the client REJECTS over-cap calls by design (D-13).
 //
+// It owned the "Clear selection" button until T2-204. Clearing now has to be
+// reachable for a SINGLE selection too (an unfloored pick means a click lands on a
+// cell nearly everywhere, so background-click is no longer a reliable way to empty
+// the selection), so the one button lives in the inspector's header — see ViewerScreen.
+//
 // Seam-internal props (not catalogued). Presentational: the shell fetches the
 // rows. .ts + createElement, runtime imports bare-only: see LayoutSwitcher.ts.
 import { createElement as h } from "react";
@@ -71,7 +76,6 @@ export interface SelectionSummaryProps {
   /** Rows fetched for the FIRST min(count, 250) selected ids. */
   rows: MetadataRow[];
   roles: ColumnRoles | null | undefined;
-  onClear: () => void;
 }
 
 export function SelectionSummary(props: SelectionSummaryProps): ReactElement {
@@ -105,6 +109,5 @@ export function SelectionSummary(props: SelectionSummaryProps): ReactElement {
           `${digest.dateRange.label}: ${digest.dateRange.min} – ${digest.dateRange.max}`,
         )
       : null,
-    h("button", { type: "button", className: "mode-btn", onClick: props.onClear }, "Clear selection"),
   );
 }

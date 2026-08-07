@@ -17,7 +17,12 @@ body {
   background: var(--ground);
 }
 
-.app-shell { height: 100%; display: flex; flex-direction: column; }
+/* Seam M0 §3.3 (SCOPE_mobile-viewer S4): the shell is exactly the VISIBLE viewport.
+ * `height: 100%` (of #root, of body, of html) stays FIRST as the fallback for anything
+ * without `dvh`; `100dvh` is the live value and tracks a mobile browser's collapsing
+ * URL bar, where `vh` stays pinned to the LARGE viewport and leaves the bottom of the
+ * app under browser chrome. On desktop dvh == vh == 100% — no change. */
+.app-shell { height: 100%; height: 100dvh; display: flex; flex-direction: column; }
 .app-shell-auth { align-items: center; justify-content: center; gap: 1rem; }
 
 .app-title { font-size: 1.1rem; margin: 0; font-weight: 700; letter-spacing: -0.01em; }
@@ -157,7 +162,77 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 
 /* ---- viewer ---- */
-.viewer-screen { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+/* Seam M2 §3.1 (SCOPE_mobile-viewer): the cockpit's fixed geometry, declared ONCE.
+ * `ui/viewerLayoutMode.ts` reads --cockpit-inset / --rail-tags-w / --rail-inspector-w
+ * off these properties to derive the narrow-mode threshold, and the rules below size
+ * the rails from the same declarations — so the rule and the thing it reasons about
+ * cannot drift apart. (viewerLayoutMode carries literal fallbacks for an environment
+ * that applies no stylesheet; it warns at runtime if a live value disagrees, and
+ * tests/dom/narrow_layout.dom.test.ts pins them against this block.)
+ *
+ * --minimap-bottom is a variable rather than a literal because Constraint M-1 (SCOPE
+ * §3 D5) hangs off it: the narrow rule overrides this ONE value and both the minimap
+ * and the fit-view button lift clear of the Inspector sheet together, with no repeated
+ * arithmetic to keep in step.
+ *
+ * --sheet-peek-h is a PERCENTAGE of .canvas-holder on purpose, not a dvh: the sheet and
+ * the minimap share that containing block, so `calc(var(--sheet-peek-h) + 12px)` is
+ * exactly "12px above the sheet's top edge" whatever the peek height is — the M-1
+ * clearance is structural rather than a number that has to be maintained.
+ *
+ * The `min()` is the SHORT-HOLDER bound (review #271 F10). A flat 34% put the minimap's
+ * top at 0.66·H − 106, which slides behind the ~62px top bar below H ≈ 254px and goes
+ * negative below H ≈ 160px — reachable in landscape split-screen, and it would clip the
+ * very instrument M-1 exists to protect. Bounding the PEEK rather than clamping the
+ * minimap is what keeps M-1 structural: the minimap is still derived from the peek, so
+ * the 12px clearance holds at every height, and the second term is itself derived from
+ * the geometry it has to clear (the 72px top band + the minimap's own height + the same
+ * 12px gap) rather than picked. Below H ≈ 178px nothing can fit and the peek floors at
+ * 0 — the sheet is invisible there, so M-1 is vacuous rather than violated. */
+/* `touch-action: none` on the VIEWER, and only the viewer (D1, operator-requested after
+ * a physical-iPhone pass 2026-08-06). M0 put it on `.atlas-canvas`, which suppresses the
+ * browser's own pinch over the canvas — but not over the chrome, so a two-finger pinch
+ * that STARTS on the header or the footer still triggered iOS's page-level zoom and
+ * scaled the whole app away. The viewer is a fixed-height canvas app that does not
+ * scroll, so suppression is safe here; it would NOT be on `.app-shell` or `html`, which
+ * the library, admin and wizard screens share and which DO scroll. `.viewer-screen` is a
+ * sibling of those screens under `.app-shell` (App.tsx), so this is the exact boundary.
+ *
+ * The viewport meta stays untouched: SCOPE non-goal §4.2 forbids `user-scalable=no` /
+ * `maximum-scale`, iOS ignores them anyway, and the browser's own zoom UI and
+ * accessibility zoom remain available. What is suppressed is the app surface responding
+ * to a pinch as a page zoom.
+ *
+ * The scrollable BODIES re-enable vertical panning below (`touch-action: pan-y`) — the
+ * sheet, the Tags panel, the rails, the menu and the lightbox all scroll internally and
+ * a blanket suppression would freeze them. Measured 2026-08-06 in Chromium: with this
+ * `none` in force and `pan-y` on the body, a real touch drag inside the Tags panel
+ * scrolled it 135px, so a descendant genuinely does re-enable its own axis. */
+.viewer-screen {
+  flex: 1; display: flex; flex-direction: column; min-height: 0;
+  touch-action: none;
+  --cockpit-inset: 14px;
+  --rail-tags-w: 236px;
+  --rail-inspector-w: 272px;
+  --minimap-w: 150px;
+  --minimap-h: 94px;
+  --minimap-bottom: 40px;
+  --sheet-peek-h: min(34%, max(0px, calc(100% - 72px - var(--minimap-h) - 12px)));
+  /* Seam M3 §3.2 (SCOPE S2). The platform touch minimum, declared ONCE so every rule
+   * that grows a hit area — and the derived gaps that stop two grown hit areas
+   * overlapping — move together. 44px is the Apple HIG / WCAG 2.5.5 figure the SCOPE
+   * measured 109 viewer controls against, not a value chosen here. */
+  --touch-min: 44px;
+  /* The chip's VISUAL height, made explicit because two rules need it: the chip renders
+   * 24.8px (0.82rem × 1.45 line-height + 2 × 0.12rem padding + 2 × 1px border, measured
+   * 2026-08-06 in headless Blink), and the wrapped chip row's gap is derived from it as
+   * `--touch-min - --chip-h` so a 44px hit area exactly tiles the row pitch. Pinning it
+   * here means the pill's look and the row's rhythm cannot drift apart. */
+  --chip-h: 25px;
+  /* The lightbox's chrome buttons, likewise: `.lightbox-chrome`'s gap is derived from
+   * this and --touch-min so the two grown hit areas cannot overlap. */
+  --lightbox-chrome-size: 32px;
+}
 .viewer-topbar {
   display: flex; align-items: center; gap: 1rem;
   padding: 0.5rem 1rem; background: var(--bar); border-bottom: 1px solid var(--line);
@@ -172,10 +247,27 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   opacity: 0.75; margin-right: 0.35rem; padding: 0.02rem 0.28rem; border-radius: 999px;
   border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
 }
-.layout-baked-note { margin: 0.3rem 0 0; font-size: 0.74rem; font-family: var(--mono); }
+/* Seam M3 §3.3.1 (closes [[T2-131]] a+b): the baked-options summary is now CONTENT in
+ * each tab — a second line under the label — instead of living only in the tab's `title`,
+ * where neither a keyboard nor a touch user could ever reach it. `.layout-baked-note`,
+ * the active-layout caption, is GONE with it: it was T2-131(b), appearing and
+ * disappearing across switches, changing `.topbar-layouts` height and resizing the canvas.
+ * A per-tab line cannot do that — the row's height is a max over ALL tabs, which does not
+ * depend on which one is active. */
+.layout-tab { display: flex; flex-direction: column; align-items: flex-start; gap: 0.1rem; }
+.layout-tab-label { display: inline-flex; align-items: baseline; }
+.layout-tab-note {
+  font-family: var(--mono); font-size: 0.7rem; opacity: 0.8;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 .viewer-body { flex: 1; display: flex; min-height: 0; }
-.canvas-holder { flex: 1; position: relative; min-width: 0; background: var(--ground); }
+/* Seam M0 §3.1 (SCOPE_mobile-viewer L1): the holder is the containing block for every
+ * floating panel over the canvas, so `overflow: hidden` is the rule that nothing which
+ * floats over the canvas may paint outside it. Measured 2026-08-05 at a 390px viewport
+ * on the live build: documentElement.scrollWidth 860 vs clientWidth 390 — 470px of
+ * sideways page scroll, all of it top-bar pills escaping this box. */
+.canvas-holder { flex: 1; position: relative; min-width: 0; overflow: hidden; background: var(--ground); }
 .atlas-canvas { width: 100%; height: 100%; display: block; touch-action: none; }
 
 .viewer-sidebar {
@@ -516,14 +608,61 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
  * The bar's own band (top 14px, ~48px tall) clears the banner (top 66px) and the
  * rails (top 72px), so nothing else changes stacking. */
 .cockpit-topbar {
-  position: absolute; top: 14px; left: 14px; right: 14px; z-index: 12;
+  position: absolute; top: 14px; left: var(--cockpit-inset); right: var(--cockpit-inset); z-index: 12;
   display: flex; align-items: stretch; gap: 0.6rem; pointer-events: none;
 }
 .cockpit-topbar > * { pointer-events: auto; }
-.topbar-nav { display: flex; align-items: center; gap: 0.7rem; padding: 0.35rem 0.6rem; }
-.topbar-nav .viewer-title { margin: 0; font-size: 1rem; font-weight: 600; }
+/* Seam M0 §3.1 (SCOPE_mobile-viewer L2) — CONTAINMENT, not layout. A flex item's
+ * automatic minimum size is its min-content width, so without `min-width: 0` not one
+ * of these three pills can give up a pixel: measured 2026-08-06 at 390px against
+ * golden_dataset_full_v2, they laid out 235 + 483 + 133 = 851px inside a 362px bar and
+ * the search input's right edge landed at x = 877. Clipping .canvas-holder alone would
+ * have HIDDEN the search box rather than fitted it, so the pills have to shrink.
+ * This is NOT the narrow-screen layout model — Seam M2 owns that (SCOPE D2: the nav
+ * drops to an icon and the layouts + search move into a hamburger menu) and will
+ * replace these pills outright. Deliberately NO breakpoint: M2 derives and owns it. */
+.cockpit-topbar > .panel-float { min-width: 0; }
+/* Shrink ORDER. Under pure proportional shrink the three pills came out 126 / 165 / 51px
+ * at 390 and the search INPUT — capped at 30vw = 117px, so it cannot fit a 51px pill —
+ * still hung out to x = 450, i.e. off the screen. So the one text FIELD holds its size
+ * and the two pills that degrade gracefully absorb the pressure instead: the collection
+ * name ellipsizes, and the layout tabs scroll (below). No effect at 1265px, where the
+ * bar has room to spare and nothing shrinks at all. */
+.topbar-search { flex: none; }
+/* `overflow: hidden` = a pill's content stays inside that pill; the nav's buttons
+ * otherwise painted over the neighbouring pill once it was squeezed. Deliberately NOT
+ * applied to .topbar-search or the activity pill — both anchor an absolutely positioned
+ * dropdown that has to escape. */
+.topbar-nav { display: flex; align-items: center; gap: 0.7rem; padding: 0.35rem 0.6rem; overflow: hidden; }
+/* The collection name is the elastic part of the nav pill — it ellipsizes so the pill
+ * yields width instead of pinning the bar to its min-content. Nothing is lost: the
+ * dataset id is already the element's `title` tooltip. */
+.topbar-nav .viewer-title {
+  margin: 0; font-size: 1rem; font-weight: 600;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .topbar-count { font-family: var(--mono); color: var(--muted); font-size: 0.85rem; }
-.topbar-layouts { padding: 0.35rem 0.5rem; }
+/* Seam M2 §3.2: M0's interim `.layout-switcher { overflow-x: auto }` scroll strip is
+ * GONE — D2 rejected it (2 of 5 tabs visible with no hint the rest exist, and it invites
+ * accidental horizontal drags in a pannable app); the hamburger menu lists every layout
+ * vertically instead. `flex: none` is what replaces it, and it does two jobs.
+ *
+ * (1) EVERY LAYOUT STAYS REACHABLE at every desktop width. A shrinkable tab row silently
+ * truncates itself, which is the same defect the scroll strip had. The elastic part of
+ * the bar is the collection NAME, which ellipsizes and loses nothing (the id is already
+ * its tooltip) — M0's stated shrink order, now applied strictly.
+ *
+ * (2) It makes the bar's requirement MEASURABLE. With this pill and the search pill both
+ * at natural width, what they render at IS what they need, so
+ * `ui/viewerLayoutMode.measureTopbarFloor` can sum the bar's parts into an absolute
+ * threshold instead of inferring one. That is what keeps the switch correct for a
+ * collection with fifteen layouts instead of pinning it to rijks_pilot's five — measured
+ * 2026-08-06 on this branch, the same code flips at a 807px viewport for a ONE-layout
+ * collection (calib_small_v2, where the rails term binds) and at 977px for a SIX-layout
+ * one (golden_dataset_full_v2, where this term does). SCOPE §1a measured ~855px for
+ * five, and said in the same breath that the number moves with the layout count. */
+.topbar-layouts { padding: 0.35rem 0.5rem; flex: none; }
+.layout-switcher > .layout-tab { flex: none; }
 /* Search (T2-57, re-enabled): a live combobox input in the top bar.
  * position: relative anchors the UI-S1 results dropdown to this pill. Vertical
  * padding matches the .topbar-nav / .topbar-layouts siblings (0.35rem, was 0.25rem)
@@ -545,12 +684,32 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 /* Search results dropdown (UI-S1): the results list's OWN floating panel, hung under
  * the search pill instead of taking over the Inspector's body. Absolute against
  * .topbar-search, so it tracks the pill without measuring anything. Height allowance is
- * the same expression the rails use (- 72px top band - 54px bottom gutter), against the
- * viewport rather than the holder because this is not a child of .canvas-holder. */
+ * the same expression the rails use (- 72px top band - 54px bottom gutter), measured
+ * against the VIEWPORT because this panel's containing block is .topbar-search — a
+ * percentage here would resolve against the pill, not the canvas.
+ *
+ * CORRECTED (PR #266 review): this comment used to justify the viewport units by saying
+ * the dropdown "is not a child of .canvas-holder". Not a *direct* child — but it IS a
+ * DESCENDANT (.canvas-holder > .cockpit-topbar > .topbar-search > here), and Seam M0 gave
+ * .canvas-holder `overflow: hidden`, so the holder now CLIPS this panel. The
+ * containing-block reasoning above is the real reason for viewport units; the clip is a
+ * separate chain, and conflating the two is what made the old comment misleading.
+ *
+ * LATENT — lands on whoever restructures this region (M2). A viewport-relative height is
+ * only safe while the holder starts at the viewport top. The moment it does not — an app
+ * header above the viewer, `env(safe-area-inset-top)` on a notched device (SCOPE §5 flags
+ * notch handling as UNMEASURED), or the top bar reflowing to two rows — this allowance
+ * exceeds the holder and the bottom of a long results list is silently clipped. Make it
+ * holder-relative, or subtract the holder's offset. The same applies to .activity-panel's
+ * 70dvh below. */
 .search-dropdown {
   position: absolute; top: calc(100% + 6px); left: 0;
   width: 20rem; max-width: 60vw;
+  /* Seam M0 §3.3 (SCOPE S4): `vh` resolves against the LARGE viewport on mobile — the
+   * one with the URL bar hidden — so this allowance let the dropdown run past the
+   * visible area. `dvh` is the live one. The vh line stays first as the fallback. */
   max-height: calc(100vh - 72px - 54px);
+  max-height: calc(100dvh - 72px - 54px);
   display: flex; flex-direction: column;
 }
 .search-dropdown-body { min-height: 0; }
@@ -568,7 +727,15 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 .rail-title { font-size: 0.9rem; font-weight: 600; color: var(--text-2); }
 .rail-toggle { padding: 0.15rem 0.45rem; }
-.rail-body { padding: 0.7rem; overflow-y: auto; }
+/* T2-204: clear-selection sits WITH the collapse chevron on the right — the header's
+ * space-between would otherwise centre it as the middle of three children. */
+.rail-clear { margin-left: auto; padding: 0.15rem 0.5rem; font-size: 0.85rem; }
+/* `pan-y` restores the one touch behaviour the viewer-wide suppression above must not
+ * take with it: a scrollable body still scrolls under a finger. `pan-y`, not `auto` —
+ * only the axis this box actually scrolls, so a pinch over a panel is still not a page
+ * zoom. One rule covers every scrolling body in the viewer: the two rails, the search
+ * dropdown, the Inspector sheet and the Tags panel all use `.rail-body`. */
+.rail-body { padding: 0.7rem; overflow-y: auto; touch-action: pan-y; }
 
 /* Collapsed rail: a 36px icon button that re-expands the rail. */
 .rail-collapsed {
@@ -580,16 +747,18 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .rail-collapsed-left { left: 14px; }
 .rail-collapsed-right { right: 14px; }
 
-/* Tag rail (left). */
+/* Tag rail (left). Width + inset come from the .viewer-screen custom properties so the
+ * narrow-mode threshold in ui/viewerLayoutMode.ts reasons about the SAME numbers this
+ * renders from (Seam M2 §3.1). Computed values are unchanged: 236px at left 14px. */
 .tag-rail {
-  position: absolute; top: 72px; left: 14px; width: 236px; z-index: 10;
+  position: absolute; top: 72px; left: var(--cockpit-inset); width: var(--rail-tags-w); z-index: 10;
   max-height: calc(100% - 72px - 54px); display: flex; flex-direction: column;
 }
 .tag-rail .rail-body { min-height: 0; }
 
-/* Inspector (right). */
+/* Inspector (right). Same single-sourcing as .tag-rail: 272px at right 14px. */
 .inspector {
-  position: absolute; top: 72px; right: 14px; width: 272px; z-index: 10;
+  position: absolute; top: 72px; right: var(--cockpit-inset); width: var(--rail-inspector-w); z-index: 10;
   max-height: calc(100% - 72px - 54px); display: flex; flex-direction: column;
 }
 .inspector-body { position: relative; min-height: 0; }
@@ -599,17 +768,21 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   padding: 0.2rem 0.5rem; font-size: 0.8rem;
 }
 
-/* Fit-view control: a small floating button just above the minimap (T2-67). */
+/* Fit-view control: a small floating button just above the minimap (T2-67). Its offset
+ * is DERIVED from the minimap's (bottom + height + a 6px gap = 140px, exactly what this
+ * declared before), so the narrow rule that lifts the minimap clear of the Inspector
+ * sheet lifts this with it from one override — see --minimap-bottom on .viewer-screen. */
 .fit-view-btn {
-  position: absolute; right: 14px; bottom: 140px; z-index: 10;
+  position: absolute; right: var(--cockpit-inset);
+  bottom: calc(var(--minimap-bottom) + var(--minimap-h) + 6px); z-index: 10;
   padding: 0.25rem 0.55rem; font-size: 0.8rem; color: var(--text-2);
 }
 .fit-view-btn:hover { color: var(--text); }
 
 /* Minimap: bottom-right, 14px above the status bar (live overview — T2-54). */
 .minimap {
-  position: absolute; right: 14px; bottom: 40px; z-index: 10;
-  width: 150px; height: 94px; overflow: hidden; cursor: pointer;
+  position: absolute; right: var(--cockpit-inset); bottom: var(--minimap-bottom); z-index: 10;
+  width: var(--minimap-w); height: var(--minimap-h); overflow: hidden; cursor: pointer;
   backdrop-filter: none; -webkit-backdrop-filter: none;   /* .panel-float minus blur */
 }
 .minimap-label {
@@ -626,18 +799,430 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   pointer-events: none;
 }
 
-/* Docked status bar (26px), mono + muted. */
-.status-bar {
-  flex: none; height: 26px; display: flex; align-items: center; justify-content: space-between;
-  gap: 1rem; padding: 0 0.8rem; background: var(--bar); border-top: 1px solid var(--line);
-  font-family: var(--mono); font-size: 10px; color: var(--muted);
+/* ── Seam M2: the narrow-screen layout model (SCOPE_mobile-viewer D1 + D2) ──────
+ * Everything below is scoped under .cockpit-narrow, a class ViewerScreen puts on
+ * .viewer-screen when ui/viewerLayoutMode says this HOLDER is too narrow for the desktop
+ * cockpit. There is deliberately NO media query: the threshold is dataset-dependent (it
+ * scales with the layout count) and the holder, not the viewport, is the honest
+ * container — so the switch is derived in JS and only its RESULT reaches the stylesheet.
+ * Nothing here can match at desktop widths, so the desktop cockpit's geometry is
+ * untouched (brief §3.4 / §5.6). */
+
+/* CONSTRAINT M-1 (SCOPE §3 D5, binding — the condition D5 was approved under): the
+ * minimap is the visitor's "where am I relative to the whole collection" instrument and
+ * it shipped at exactly where the sheet now goes. ONE override lifts it — and the
+ * fit-view button with it — to 12px above the sheet's peek line. Both share
+ * .canvas-holder as their containing block, so the percentage resolves against the same
+ * height the sheet's does and the clearance holds at any peek height.
+ *
+ * CONDITIONAL, not unconditional (operator, on a real phone 2026-08-06: "the mini map
+ * floats in the middle of the screen; it should pin to the bottom"). The first cut lifted
+ * it whenever the layout was narrow, so the minimap was held up by a sheet that is CLOSED
+ * most of the time — measured at 390x844 with `.inspector-sheet` absent: minimap at
+ * y 433…527 in an 816px holder, `bottom: 289.438px`, with 289px of empty canvas beneath
+ * it. The instrument that answers "where am I" hovered mid-screen for no reason.
+ *
+ * The condition is the sheet's OWN EXISTENCE via `:has()`, deliberately not a class
+ * mirrored from React state: the sheet is rendered only while open, so there is exactly
+ * one source of truth and no flag to fall out of step. Resting = the shared 40px base;
+ * lifted = 12px above the peek line, where M-1 binds. At FULL the sheet covers both
+ * instruments by design (M-1 is vacuous there, as its own derivation records). */
+.cockpit-narrow:has(.inspector-sheet) { --minimap-bottom: calc(var(--sheet-peek-h) + 12px); }
+/* ...and the fit-view button moves BESIDE the minimap instead of above it, so the two
+ * instruments occupy ONE band hugging the sheet rather than a 130px-tall column running
+ * up the middle of a phone screen. This is not cosmetic: measured 2026-08-06 at 390x844,
+ * the stacked-above position put the button at x 329…376, y 399…428 — exactly where
+ * `mobile-pinch.spec.ts`'s right finger STARTS its 320px-apart pinch (195 + 160 = 355,
+ * y 409). That finger landed on a button instead of the canvas, the world saw one
+ * pointer, and the pinch became a pan: the spec caught it as "pinching in did not zoom
+ * out". Any control parked over the vertical middle of a touch screen is in a gesture's
+ * way; keeping both instruments low keeps the atlas's centre band clear. */
+.cockpit-narrow .fit-view-btn {
+  right: calc(var(--cockpit-inset) + var(--minimap-w) + 8px);
+  bottom: var(--minimap-bottom);
 }
-.status-group { display: flex; align-items: center; gap: 1rem; min-width: 0; }
-.status-item { white-space: nowrap; }
+
+/* The narrow top bar is [← icon] [collection name] [count] [☰ label]: the nav pill takes
+ * the row and the menu is pushed to the end. The nav pill's title already ellipsizes. */
+.cockpit-narrow .topbar-nav { flex: 1 1 auto; }
+
+/* The ☰ trigger — a .card-menu-wrap on a .panel-float surface, so it reads as one of the
+ * cockpit's floating pills. `margin-left: auto` is inherited from .card-menu-wrap and is
+ * a no-op here (the nav pill already absorbs the free space); it is left rather than
+ * unset so the shipped menu pattern is used as-is. */
+/* SHRINKABLE, not `flex: none` (review #271 F8). At max-content the pill grew with the
+ * active layout's label, and once the nav pill hit its floor the trigger kept growing
+ * past the holder's clipped edge — the ☰ glyph itself disappearing off-screen. Because
+ * the holder clips, that produces NO page scroll, so the render gate's
+ * `scrollWidth === clientWidth` could never catch it. Letting it shrink makes the label
+ * ellipsize (it already declares `text-overflow`) while the glyph, which is `flex: none`,
+ * is the last thing standing. */
+.viewer-menu-wrap { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; }
+.viewer-menu-btn { display: inline-flex; align-items: center; gap: 0.4rem; min-width: 0; max-width: 100%; }
+.viewer-menu-glyph { flex: none; }
+/* The label is the affordance (D2's one designed-against risk: a bare ☰ does not say
+ * "there are five ways to see this collection"). It may ellipsize, never disappear. */
+.viewer-menu-trigger-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* All-or-nothing (ViewerMenu's settle effect): when the active layout's name cannot fit
+ * WHOLE, the trigger falls back to the bare glyph rather than a one-letter stub plus an
+ * ellipsis. `display: none` — not width/visibility — so the flex gap beside the glyph
+ * collapses too and the button is genuinely glyph-sized. The button's `aria-label` still
+ * names the active layout, so nothing is lost to assistive tech. */
+.viewer-menu-trigger-label.viewer-menu-label-hidden { display: none; }
+.viewer-menu {
+  min-width: min(20rem, 80vw);
+  /* The same allowance the rails and the search dropdown use (72px top band, 54px bottom
+   * gutter), in the dynamic unit so a collapsing URL bar cannot push the tail of a long
+   * layout list under browser chrome.
+   *
+   * SAME LATENCY AS .search-dropdown / .activity-panel, and inherited knowingly (PR #266
+   * review, finding 2): this is a viewport-relative height on a holder-clipped
+   * descendant, which is only safe while .canvas-holder starts at the viewport top. This
+   * seam did NOT move the holder's origin or height — it adds no header and no
+   * safe-area inset — so the three are still equivalent. Whoever DOES move it (notch /
+   * `env(safe-area-inset-top)` handling, which SCOPE §5 flags as unmeasured) must make
+   * all three holder-relative in the same change, or the tail of a long list is silently
+   * clipped with no scrollbar to say so. There is no CSS-only fix here: the popover's
+   * containing block is its trigger, not the holder, so a percentage would resolve
+   * against the wrong box. */
+  max-height: calc(100vh - 72px - 54px);
+  max-height: calc(100dvh - 72px - 54px);
+  overflow-y: auto;
+  touch-action: pan-y; /* see .rail-body — this popover scrolls too (D1) */
+  gap: 0.4rem;
+}
+.viewer-menu-section {
+  margin: 0.2rem 0 0; padding: 0 0.55rem;
+  font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.viewer-menu-items { display: flex; flex-direction: column; gap: 0.15rem; }
+.viewer-menu-layout.on { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+/* Seam M3 — the menu holds two KINDS of thing and now says so (operator 2026-08-06).
+ * `Tags…` used to hang off the bottom of the Views list behind a hairline rule, which
+ * made a filter read as an arrangement. It has its own heading and its own named list
+ * now, so the rule moves from the row to the section: one separator between two sections
+ * rather than one dangling under the last item. */
+/* The section rule sits on the FILTERS HEADING, so the hairline falls between the two
+ * SECTIONS — above "Filters" — rather than between "Filters" and the Tags item it labels.
+ * Bordering the list instead detached the heading from its own item and read as though
+ * "Filters" belonged to the Views list above it (review of #272, finding #5). */
+.viewer-menu-section-filters {
+  border-top: 1px solid var(--line); margin-top: 0.25rem; padding-top: 0.4rem;
+}
+.viewer-menu-filters { padding-top: 0.4rem; }
+/* Menu rows are two-line where there is something to explain (§3.3.1) and 44px tall
+ * either way (§3.2). `justify-content: center` keeps a one-line row's text on the row's
+ * centre line rather than pinned to the top of the taller box. */
+.viewer-menu .menu-item {
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: center;
+  gap: 0.05rem;
+}
+/* 0.78rem — the legibility floor this seam raised the status bar to, because SCOPE §4.2
+ * suppresses page zoom inside the viewer and named this seam's type work as the
+ * compensating mitigation. This note is T2-131 content moved OUT of an un-zoomable tooltip
+ * precisely so it could be read, so rendering it below that floor undercuts the reason it
+ * was moved (review of #272, finding #11).
+ *
+ * Its desktop twin `.layout-tab-note` deliberately stays at 0.7rem for now: it sits in the
+ * two-line tab row, and raising it MEASURED the top bar from 64.9px to 66.8px, deepening
+ * the rails' `top: 72px` occlusion from 6.9px to 9px (finding #4 / [[T2-210]]). This note
+ * lives inside the ☰ popover, which cannot push the bar — so the mobile half is free and
+ * ships now, and the desktop half waits for T2-210 to derive that band. */
+.viewer-menu-row-note {
+  font-family: var(--mono); font-size: 0.78rem; opacity: 0.8;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Search MOVED into the menu (D2), not duplicated — ViewerScreen builds one search pill
+ * and hands it to whichever surface owns it, so there is never a second combobox in the
+ * document and the #227 ARIA contract is untouched. These rules only undo the pill's
+ * top-bar dress: inside the menu it is full width and its results list drops INLINE
+ * instead of hanging as a floating dropdown, so the popover scrolls as one surface. */
+.viewer-menu-search { padding: 0.15rem 0.15rem 0.35rem; border-bottom: 1px solid var(--line); }
+.viewer-menu .topbar-search {
+  width: 100%; background: none; border: none; box-shadow: none;
+  backdrop-filter: none; -webkit-backdrop-filter: none;
+}
+.viewer-menu .search-input { width: 100%; max-width: none; }
+.viewer-menu .search-dropdown {
+  position: static; width: auto; max-width: none; max-height: none;
+  background: none; border: none; box-shadow: none;
+  backdrop-filter: none; -webkit-backdrop-filter: none;
+}
+
+/* Tags → a FULL-SCREEN panel (D1). It fills .canvas-holder rather than the viewport, so
+ * the status bar stays legible below it and no length unit is involved at all. Above the
+ * top bar (z 12) because it is a destination, not an overlay — its own "Done" is the way
+ * back out. */
+.tags-panel {
+  position: absolute; inset: 0; z-index: 15; border-radius: 0;
+  display: flex; flex-direction: column;
+}
+.tags-panel-body { flex: 1 1 auto; min-height: 0; }
+
+/* Inspector → a BOTTOM SHEET (D1). Two heights only: peek answers "what did I just tap"
+ * with the atlas still visible, full shows the metadata body and stops below the top bar.
+ * z-index 11 sits above the rails' band (10) and below the top bar (12), so the menu's
+ * search results still paint over it. */
+.inspector-sheet {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 11;
+  height: var(--sheet-peek-h);
+  border-radius: var(--r-panel) var(--r-panel) 0 0;
+  display: flex; flex-direction: column;
+}
+.inspector-sheet-full { height: calc(100% - 72px); }
+/* The peek/full control. Sized like the rails' own chevrons — M3 owns touch-target
+ * sizing for every control including this one, so nothing here is pre-sized for a
+ * finger. */
+.sheet-grip {
+  flex: none; display: flex; align-items: center; justify-content: center;
+  background: none; border: none; padding: 0.35rem; width: 100%;
+}
+.sheet-grip-bar {
+  display: block; width: 2.4rem; height: 4px; border-radius: 999px; background: var(--line);
+}
+.sheet-grip:hover .sheet-grip-bar { background: var(--muted); }
+
+/* ══ Seam M3 §3.2 — touch targets (SCOPE S2) ═══════════════════════════════════════
+ * 109 interactive elements in the viewer measured under 44 × 44 px on the live build at
+ * 390px; re-measured on this branch in headless Blink, every control class in the harness
+ * was under it at BOTH 390 × 844 and 1265 × 900. That second half is why nothing below is
+ * gated on `.cockpit-narrow`: a 21 × 27 px chevron is a poor target with a mouse too, and
+ * the brief is explicit that this is an all-widths change.
+ *
+ * THE TECHNIQUE, and why there are three of them rather than one:
+ *
+ *  (1) A transparent `::after` overlay grows the HIT area without moving one pixel of
+ *      visual chrome. `max(100%, …)` means a control already big enough gets nothing.
+ *      This is for controls with a VISIBLE box (a ghost button's 1px border, the chip's
+ *      pill) — padding there would fatten the box itself, which the brief forbids.
+ *      A pseudo-element is part of its originating element for hit-testing, so the
+ *      overlay routes clicks to the button; it is transparent, so it paints nothing.
+ *
+ *  (2) `min-height` where the control has NO visible box of its own — a `.menu-item`'s
+ *      only chrome is a hover fill, the sheet grip is a 4px bar on a transparent button,
+ *      a text field is expected to be finger-height. There padding IS the right tool and
+ *      the brief names it. Growing these changes spacing, not chrome.
+ *
+ *  (3) A DERIVED gap where two grown hit areas would otherwise overlap. This is the part
+ *      that is easy to miss and worse than the defect: overlapping hit areas mean a tap
+ *      near the seam activates the WRONG control, and a mis-tapped tag chip silently
+ *      filters the atlas. Every such gap is `calc(var(--touch-min) - <the control's own
+ *      size>)`, so it tracks both.
+ *
+ * WHAT DELIBERATELY STAYS UNDER 44, with the reason (brief §3.2 asks for this list):
+ *  · the status bar's credit LINK — the bar is a 28px docked strip; a 44px hit area on a
+ *    link inside it would extend 8px over the canvas and eat atlas taps. A control that
+ *    steals the primary surface's input is worse than a small one.
+ *  · the two BUTTONS inside the search pill (`.search-clear`, `.search-reveal`) keep their
+ *    WIDTH: they sit 4px apart inside one pill, so widening them to 44px would overlap each
+ *    other — and "clear my search" fired instead of "show results" is a real loss. They do
+ *    reach 44px tall via the `::after` overlay.
+ *    (`.search-input` was listed here too and should not have been — it is ~25px TALL, and
+ *    that claim was false. It now takes `min-height` above.)
+ *  · a `.chip` whose LABEL renders narrower than 44px (2 of 12 in the harness — "17" at
+ *    35.3px) keeps its width, for the same reason: the row's column gap is 4.8px, so a
+ *    wider hit area would overlap the neighbouring tag's.
+ *
+ * TWO BOUNDARIES THAT ARE SHARED RATHER THAN CLEAN, both found by probing
+ * `elementFromPoint` at the corners of the intended 44px box rather than by trusting the
+ * declared overlay size — a rect can be declared and still be unreachable:
+ *  · `.topbar-brand` grows to 44 × 44 but its LEFT edge is clipped by `.topbar-nav`'s
+ *    `overflow: hidden` — it is the pill's first child with 9.6px of padding beside it, so
+ *    ~11px of the grown width falls outside the pill. That `overflow: hidden` is M0's
+ *    containment rule (it is what stops the nav's buttons painting over the neighbouring
+ *    pill) and must not be undone here; the brand keeps a full-height 44px band instead.
+ *  · `.fit-view-btn`'s lower band overlaps `.minimap`, which sits 6px below it. Accepted
+ *    rather than derived away: the two are ONE camera-control cluster by M2's design (the
+ *    narrow rule puts them side by side for exactly that reason), neither action is
+ *    destructive, and separating them would need a length for the button's own height
+ *    that nothing declares.
+ */
+/* An overlay needs its host to be a containing block. `position: relative` is added ONLY
+ * to the statically-positioned controls: `.fit-view-btn`, `.view-full-btn` and
+ * `.lightbox-nav` are already `position: absolute`, which is a containing block too — and
+ * this selector is MORE SPECIFIC than the rules that place them, so listing them here
+ * silently returned all three to the normal flow. Measured 2026-08-06 when it happened:
+ * `.fit-view-btn` landed at x = -172…-125, i.e. entirely off the left of a 390px screen,
+ * because its `right: 172px` was reinterpreted as a relative offset. */
+.viewer-screen .topbar-brand,
+.viewer-screen .topbar-nav .btn,
+.viewer-screen .rail-toggle,
+.viewer-screen .rail-clear,
+.viewer-screen .tag-retry-btn,
+.viewer-screen .mode-btn,
+.viewer-screen .chip:not(.chip-static),
+.viewer-screen .layout-tab,
+.viewer-screen .viewer-menu-btn,
+.viewer-screen .search-clear,
+.viewer-screen .search-reveal,
+.viewer-screen .activity-dismiss,
+.viewer-screen .lightbox-chrome-btn,
+.viewer-screen .lightbox-inspector-foot .btn,
+.viewer-screen .lightbox-download { position: relative; }
+
+/* (1a) Both axes — controls with room around them on every side. */
+.viewer-screen .topbar-brand::after,
+.viewer-screen .topbar-back::after,
+.viewer-screen .rail-toggle::after,
+.viewer-screen .fit-view-btn::after,
+.viewer-screen .view-full-btn::after,
+.viewer-screen .lightbox-nav::after,
+.viewer-screen .lightbox-chrome-btn::after {
+  content: ""; position: absolute; left: 50%; top: 50%;
+  width: max(100%, var(--touch-min)); height: max(100%, var(--touch-min));
+  transform: translate(-50%, -50%);
+}
+
+/* (1b) Height only — controls that sit in a tight horizontal row, where a wider hit area
+ * would reach into the neighbour's. Every one of these is already wider than 44px except
+ * the short chips and the search pill's two icons, which are listed above as residuals. */
+.viewer-screen .topbar-nav .btn:not(.topbar-back)::after,
+.viewer-screen .rail-clear::after,
+.viewer-screen .tag-retry-btn::after,
+.viewer-screen .mode-btn::after,
+.viewer-screen .chip:not(.chip-static)::after,
+.viewer-screen .layout-tab::after,
+.viewer-screen .viewer-menu-btn::after,
+.viewer-screen .search-clear::after,
+.viewer-screen .search-reveal::after,
+.viewer-screen .activity-dismiss::after,
+.viewer-screen .lightbox-inspector-foot .btn::after,
+.viewer-screen .lightbox-download::after {
+  content: ""; position: absolute; left: 0; top: 50%;
+  width: 100%; height: max(100%, var(--touch-min));
+  transform: translateY(-50%);
+}
+
+/* (2) min-height where the control has no visible box to distort.
+ *
+ * `.search-input` joins this list (review of #272, finding #2). It had been ALLOW-LISTED
+ * instead, on the reason "they keep their WIDTH … they do reach 44px TALL" — true of
+ * `.search-clear` / `.search-reveal`, and FALSE of the input: at 0.9rem text + 0.2rem
+ * padding with no border it is ~25px tall, and width was never its problem (it is 240px).
+ * So the allow-list was masking this seam's own defect on the PRIMARY search field, which
+ * on a phone renders full-width inside the ☰. An `<input>` cannot be grown by an `::after`
+ * overlay, so min-height is the only mechanism available — the same one its sibling
+ * `.tag-filter` already uses. */
+.viewer-screen .viewer-menu .menu-item,
+.viewer-screen .sheet-grip,
+.viewer-screen .tag-filter { min-height: var(--touch-min); }
+
+/* …but NARROW-ONLY for `.search-input`, a deliberate departure from §3.2's all-widths rule.
+ * MEASURED: applying it at every width grows the search pill to 66.8px, putting the top
+ * bar's bottom at y=81 against rails pinned at `top: 72px` — a 9px occlusion of the left
+ * rail at every desktop width. Finding #4 of the same review measured 6.9px of that overlap
+ * ALREADY present, so all-widths would deepen a known defect on the primary use case
+ * (backlog [[T2-210]]: the 72px band is a picked constant duplicated across ~11 rules and
+ * wants deriving from the bar's measured height).
+ *
+ * Narrow is where the defect actually bites AND where the fix is free: the phone's search
+ * field lives inside the ☰ popover, which cannot push the top bar at all. Desktop keeps
+ * today's ~25px input — unchanged, not newly broken. Lift this to all widths as soon as
+ * T2-210 derives the band. */
+.cockpit-narrow .search-input { min-height: var(--touch-min); }
+
+/* (3) The derived gaps. The chip pitch is the load-bearing one: chips wrap, so the row
+ * gap IS the vertical distance between two hit areas. 44 - 25 = 19px. Without it the
+ * overlays of two stacked rows overlap by 14px and a tap in that band toggles the tag
+ * ABOVE the one under the finger. The column gap is untouched (see the residual note). */
+.chip { min-height: var(--chip-h); }
+.chip-row { row-gap: calc(var(--touch-min) - var(--chip-h)); }
+
+/* Docked status bar, mono + muted.
+ *
+ * Seam M3 §3.4 — THE TYPE FLOOR. This was `font-size: 10px`, the smallest type in the
+ * app. SCOPE_mobile-viewer §4.2 (AMENDED 2026-08-06, after a physical-iPhone pass) makes
+ * that a problem rather than a preference: the viewer now suppresses PAGE zoom, so a
+ * low-vision visitor can no longer pinch-enlarge the chrome, and the amendment names
+ * "M3 raises the status bar's type floor" as the accepted trade's partial mitigation.
+ *
+ * 0.78rem = 12.48px is NOT a picked number: it is the app's existing smallest text step,
+ * already used by .status-chip / .pill / .card-credit / .search-row-secondary /
+ * .activity-*. Raising the floor to a size the design system already contains keeps one
+ * scale instead of inventing a second.
+ *
+ * The height goes 26 → 28px because the line box no longer fits: 12.48px × 1.45 = 18.1px
+ * of text plus the border in a 26px strip leaves 3.9px of breathing room top and bottom,
+ * which reads as cramped at exactly the size that was raised for legibility. 28px is the
+ * line box + 8px, the same 4px-per-side rhythm the 26px bar had at 10px type.
+ *
+ * NB the brief (§3.2/§3.4) says "do not increase the status bar's 10px font". The SCOPE
+ * amendment is DATED LATER and is the approved decision artifact, so it governs; the
+ * deviation is called out in the seam report rather than silently taken. */
+.status-bar {
+  flex: none; height: 28px; display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; padding: 0 0.8rem; background: var(--bar); border-top: 1px solid var(--line);
+  font-family: var(--mono); font-size: 0.78rem; color: var(--muted);
+}
+/* Seam M0 §3.2 (SCOPE_mobile-viewer L4) — the bar fits its own width at EVERY viewport.
+ * It is a fixed-height docked strip of `white-space: nowrap` read-outs; measured
+ * 2026-08-05 at 390px its content wanted 453px in a 390px box, 63px of page-widening
+ * overflow. `min-width: 0` on the groups was already declared and is not enough on its
+ * own: it lets a group SHRINK, but its nowrap items then paint outside it, and an
+ * overflowing child that is not clipped still counts toward the ancestor's scrollWidth.
+ * So the groups clip, and each item ellipsizes as it is squeezed rather than being cut
+ * mid-glyph (.status-credit already carried exactly this pattern).
+ * Nothing is removed: the credit is an attribution obligation and stays in the DOM.
+ * `cursor` and `fps` are the read-outs worth losing first (SCOPE S5 — both are
+ * meaningless without a pointer), but they carry no class of their own to target and
+ * StatusBar.ts is not this seam's to edit, so this squeezes rather than drops; S5
+ * belongs to Seam M3. Desktop is untouched — with room to spare nothing shrinks. */
+.status-group { display: flex; align-items: center; gap: 1rem; min-width: 0; overflow: hidden; }
+.status-item { white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .status-layout { color: var(--text-2); }
 .status-loading { color: var(--accent); }
 /* T2-120 (Fix B/C): honest "tags unavailable" read-out — a muted-warning tint. */
 .status-tags-unavailable { color: var(--err); }
+
+/* ── Seam M3 §3.4 — the narrow bar shows FEWER read-outs (SCOPE S5) ───────────────
+ * M0 made the bar FIT (`scrollWidth === clientWidth`) but not READ: measured 2026-08-06
+ * in headless Blink at 390 × 844 against a rijks_pilot-shaped status, its ten items
+ * wanted 687px of text + 144px of pure `gap` + 25.6px of padding = 856.6px in a 390px
+ * bar, and every single item ellipsized to ~24% of its natural width. There is no
+ * arrangement of ten read-outs that fits; the cure is fewer of them, which is why M0
+ * refused it and this seam owns it.
+ *
+ * The switch is M2's, unchanged: `.cockpit-narrow` is the derived mode's ONLY output to
+ * this stylesheet. No media query, no second definition of narrow, and — deliberately —
+ * no position-based shrink ladder: each rule below names a read-out by what it MEANS,
+ * so the bar's narrow content is a decision about information, not about pixels.
+ *
+ * WHAT IS CUT, AND WHY IT IS NOT NEEDED ON A PHONE:
+ *   .status-layout    the active layout's name is already on screen at all times — it is
+ *                     M2's ☰ trigger label (`Views… — showing By place`), which exists
+ *                     only in this mode. Duplicating it costs a third of the room the
+ *                     credit needs.
+ *   .status-selection ditto for the selected cell: a selection opens the Inspector SHEET
+ *                     (M2/D1), which names the cell it is describing.
+ *   .status-cursor    dead without a pointer — SCOPE S5 names it explicitly.
+ *   .status-fps       instrumentation.
+ *   .status-zoom      instrumentation. The visitor's zoom feedback is the atlas.
+ *   .status-inview    instrumentation; the collection's size is already in the top bar's
+ *                     `.topbar-count`, which narrow mode keeps.
+ *   .status-tiles     instrumentation.
+ *   .status-tags-idle "0 tags highlighted" is the resting state and reports nothing. The
+ *                     read-out is KEPT whenever it has something to say — an active
+ *                     filter or an unavailable sidecar — because that is the only signal
+ *                     that the atlas is showing a subset. The condition is over the DATA
+ *                     (StatusBar.tagStatusIdle), never over a width.
+ *
+ * WHAT SURVIVES: the credit and the brand, plus the tag read-out when a filter is on.
+ * The credit is an attribution obligation (it may ellipsize; it may not disappear) and
+ * is NOT in this list — see also the `.status-credit` / `.status-item` no-display:none
+ * pins in tests/dom/mobile_containment.dom.test.ts, which this must not violate.
+ *
+ * Attacking `gap` first — the brief's suggestion, and it turned out to be unnecessary:
+ * cutting the item COUNT from ten to two removes 8 of the 9 gaps by itself, 144px → 16px,
+ * without touching the 1rem value that desktop also uses. */
+.cockpit-narrow .status-layout,
+.cockpit-narrow .status-zoom,
+.cockpit-narrow .status-inview,
+.cockpit-narrow .status-tiles,
+.cockpit-narrow .status-selection,
+.cockpit-narrow .status-cursor,
+.cockpit-narrow .status-fps,
+.cockpit-narrow .status-tags-idle { display: none; }
 
 /* ── Lightbox ───────────────────────────────────────────────────────────
  * Full-viewport overlay (board 2b) OVER the dimmed Explorer: a contained
@@ -708,9 +1293,16 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .lightbox-nav-prev { left: 10px; }
 .lightbox-nav-next { right: 10px; }
 
-/* Side inspector (right, 328px, full height) — the field grid scrolls. */
+/* Side inspector (right, 328px, full height) — the field grid scrolls.
+ *
+ * Seam M3 §3.1 (SCOPE S1): `min(328px, 40%)` replaces the bare `328px`. At every desktop
+ * width the first term binds and NOTHING changes (measured 1265 × 900: the content box is
+ * 1153px, 40% of it is 461px, so the inspector is 328px exactly as before). The second
+ * term is the safety rail the brief asked for in preference to a breakpoint — a
+ * `flex: none` panel wider than the box it sits in cannot be shrunk by flex, and that is
+ * precisely how the image column got crushed to ZERO width at 390px. */
 .lightbox-inspector {
-  flex: none; width: 328px; min-height: 0;
+  flex: none; width: min(328px, 40%); min-height: 0;
   display: flex; flex-direction: column;
 }
 .lightbox-inspector-head {
@@ -720,17 +1312,54 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 .lightbox-inspector-title { font-family: var(--mono); font-weight: 600; color: var(--text); }
 .kbd-hint { font-size: 0.75rem; }
-.lightbox-inspector-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0.7rem 0.8rem; }
+/* `pan-y`: the lightbox renders inside .viewer-screen, which suppresses touch (D1). */
+.lightbox-inspector-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0.7rem 0.8rem; touch-action: pan-y; }
 .lightbox-inspector-foot { flex: none; padding: 0.7rem 0.8rem; border-top: 1px solid var(--line); }
 
-/* Panel-toggle + close chrome, pinned top-right of the content region. */
-.lightbox-chrome { position: absolute; top: 0; right: 0; z-index: 3; display: flex; gap: 0.4rem; }
+/* Panel-toggle + close chrome, pinned top-right of the content region.
+ * The gap is DERIVED (Seam M3 §3.2): each 32px button's hit area is expanded to
+ * `--touch-min` by the ::after rule below, which pushes it (44 - 32) / 2 = 6px past each
+ * edge — so two adjacent buttons need 12px between them or their hit areas overlap and a
+ * tap near the seam hides the details when it meant to close. `calc()` keeps that true if
+ * either number moves. (Was 0.4rem = 6.4px, i.e. a 5.6px overlap.) */
+.lightbox-chrome {
+  position: absolute; top: 0; right: 0; z-index: 3; display: flex;
+  gap: calc(var(--touch-min) - var(--lightbox-chrome-size));
+}
 .lightbox-chrome-btn {
-  width: 32px; height: 32px;
+  width: var(--lightbox-chrome-size); height: var(--lightbox-chrome-size);
   display: flex; align-items: center; justify-content: center;
   color: var(--text-2); font-family: var(--mono); font-size: 0.9rem;
 }
 .lightbox-chrome-btn:hover { color: var(--text); }
+
+/* ── Seam M3 §3.1 — the lightbox at a narrow width (SCOPE S1) ────────────────────
+ * Measured 2026-08-06 in headless Blink at 390 × 844, BEFORE this rule: the backdrop's
+ * 3.5rem padding ate 112px, leaving a 278px content box; `.lightbox-inspector` is
+ * `flex: none` at 328px, so it took the whole box and overflowed it (right edge x = 396,
+ * off a 390px screen) while `.lightbox-image-col` measured **0px wide** and the image
+ * itself 0 × 0. The overlay whose entire purpose is showing the picture showed no picture.
+ *
+ * Two rules fix it, both scoped to M2's derived mode — no media query, no second
+ * threshold:
+ *
+ * 1. The backdrop's padding drops to `--cockpit-inset`. Not a new number: it is THE
+ *    floating-panel inset this cockpit already uses for the top bar, both rails, the
+ *    minimap and the fit-view button, declared once on `.viewer-screen`. 112px → 28px
+ *    hands 84px straight back to the image.
+ * 2. The two columns STACK. The image is the point (brief §3.1), so it takes the column
+ *    and the metadata goes underneath, capped BELOW half the content box — whatever the
+ *    cap leaves is the image's, and it is always the larger share. `.lightbox-image-col`
+ *    is already `flex: 1 1 auto`, so it absorbs the remainder with no rule of its own.
+ *
+ * NO NEW SCROLLER, which matters because `.viewer-screen` is `touch-action: none` and any
+ * new scrollable region would be frozen to touch: the thing that scrolls when stacked is
+ * `.lightbox-inspector-body`, the same element that scrolls side-by-side, and it already
+ * declares `touch-action: pan-y` (M2). Verified by measuring its computed value in the
+ * stacked layout, not by reading the cascade. */
+.cockpit-narrow .lightbox-backdrop { padding: var(--cockpit-inset); }
+.cockpit-narrow .lightbox-content { flex-direction: column; }
+.cockpit-narrow .lightbox-inspector { width: auto; max-height: 40%; }
 
 /* ── Plotlas brand ──────────────────────────────────────────────────────────
  * The mark (ui/PlotlasMark) is quiet instrumentation: one name per surface, the
@@ -822,7 +1451,12 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 /* The anchored popover panel (opens below the pill; flips up when cramped). */
 .activity-panel {
   position: absolute; right: 0; top: calc(100% + 6px); z-index: 20;
-  width: 340px; max-width: 90vw; max-height: 70vh; overflow: auto;
+  width: 340px; max-width: 90vw; overflow: auto;
+  touch-action: pan-y; /* see .rail-body — the viewer suppresses touch (D1); this scrolls */
+  /* Seam M0 §3.3 (SCOPE S4): the dynamic unit, with the vh line kept first as the
+   * fallback — see .search-dropdown above for why vh is wrong on a phone. */
+  max-height: 70vh;
+  max-height: 70dvh;
   padding: 0.7rem; display: flex; flex-direction: column; gap: 0.5rem;
 }
 .activity-panel-up { top: auto; bottom: calc(100% + 6px); }

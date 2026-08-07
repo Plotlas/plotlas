@@ -164,6 +164,12 @@ services:
       # limits re-issuance — this volume MUST survive restarts).
       - caddy_data:/data
       - caddy_config:/config
+      # Access log, rolled by Caddy itself with a 30-day cap (Caddyfile.public
+      # `roll_keep_for 720h`) to implement the retention promise on
+      # plotlas.com/privacy. Kept OFF the read-only ${DATA_DIR} content mount and
+      # out of the container's own stdout, so it is neither mixed with error output
+      # nor subject to the json-file size-only rotation below.
+      - caddy_logs:/var/log/caddy
     ports:
       - "80:80"      # ACME HTTP-01 challenge + the http->https redirect
       - "443:443"    # HTTPS
@@ -194,6 +200,7 @@ volumes:
   frontend_node_modules:
   caddy_data:     # ACME certs + account — MUST persist (rate limits).
   caddy_config:
+  caddy_logs:     # access log; Caddy caps retention at 30d (roll_keep_for 720h).
 # WARNING: `datasets` and `appstate` hold the curated exhibition + the user
 # accounts. Use `docker compose -f docker-compose.public.yml down` (WITHOUT -v) on
 # this host — `down -v` would delete both.

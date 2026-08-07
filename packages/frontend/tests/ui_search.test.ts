@@ -19,6 +19,7 @@ import {
   noResultsCopy,
   initialSearchState,
 } from "../src/ui/SearchResults.ts";
+import { escapeClearsSelection } from "../src/ui/ViewerScreen.ts";
 import type { CategoryRow, SearchRow, SearchViewState } from "../src/ui/SearchResults.ts";
 import type { SearchHit } from "../src/api-client/types.ts";
 import type { LabelAnnotation, LayoutEntry } from "../src/renderer/layout.ts";
@@ -135,6 +136,33 @@ test("searchKeydown Escape closes; other keys fall through to the input", () => 
   assert.deepEqual(searchKeydown("Escape", 3, 1), { type: "close" });
   assert.equal(searchKeydown("a", 3, 1), null);
   assert.equal(searchKeydown("Home", 3, 1), null);
+});
+
+// T2-204: Escape as the clear-selection key. Escape has two prior owners (the search
+// box clears its query, the Lightbox closes) and this rule must YIELD to both — that
+// is the whole content of the guard, so each owner gets its own assertion.
+test("escapeClearsSelection: only Escape, only with a selection, never over search/lightbox", () => {
+  const base = { typing: false, lightboxOpen: false, selectionCount: 1 };
+  assert.equal(escapeClearsSelection("Escape", base), true, "a selection + Escape clears");
+  assert.equal(escapeClearsSelection("Escape", { ...base, selectionCount: 5 }), true, "multi too");
+
+  assert.equal(
+    escapeClearsSelection("Escape", { ...base, typing: true }),
+    false,
+    "focus in a field: the search box owns Escape (clear the query)",
+  );
+  assert.equal(
+    escapeClearsSelection("Escape", { ...base, lightboxOpen: true }),
+    false,
+    "lightbox open: it owns Escape (close)",
+  );
+  assert.equal(
+    escapeClearsSelection("Escape", { ...base, selectionCount: 0 }),
+    false,
+    "nothing selected: Escape stays free",
+  );
+  assert.equal(escapeClearsSelection("Enter", base), false, "other keys fall through");
+  assert.equal(escapeClearsSelection("esc", base), false, "the key name is exact");
 });
 
 // ---------------------------------------------------------------------------

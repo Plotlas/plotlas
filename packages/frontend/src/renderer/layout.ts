@@ -623,13 +623,10 @@ export function createLayoutController(
   // still the CURRENT load (a newer call — a switch — bumps it and wins). Avoids a
   // load referencing its own promise for the single-flight identity check.
   let positionsToken = 0;
-  // Screen-size floor for the coarse-tier pick (CSS px): below this a cell is
-  // un-aimable, so the position-table scan treats it as a miss. Keeps single-image
-  // pick meaningful (you pick what you can see) and preserves the plain
-  // click-clears-selection gesture at extreme zoom-out (see applyPickFallback).
-  // Sanity of the value: a 100k grid fills a ~1200px viewport at ~3.8px/cell (still
-  // pickable fully zoomed out); a 1M grid at ~1.2px/cell needs a ~3x zoom-in first.
-  const COARSE_PICK_MIN_CSS_PX = 3;
+  // Memo for countCellsInView: the last view rect and the count computed for it against
+  // the CURRENT `positions` table. Dropped by applyPickFallback whenever that table
+  // changes. See countCellsInView for why this exists.
+  let inViewMemo: (BBox & { count: number }) | null = null;
 
   async function ensureTags(mf: LayoutManifest): Promise<void> {
     if (tagsLoaded) return;
@@ -738,17 +735,18 @@ export function createLayoutController(
    *  miss, scan `positions` (the active layout's table). Cleared (null) when there
    *  is no table for this layout, so picking degrades to fine-tier-only.
    *
-   *  The scan is floored at COARSE_PICK_MIN_CSS_PX on screen (zoom is world units per
-   *  CSS px, I-09): a cell smaller than that is un-aimable, so it is a MISS — which
-   *  also keeps plain click-on-background-clears-selection reachable at extreme
-   *  zoom-out on space-filling layouts (grid tiles the whole world, so without the
-   *  floor EVERY coarse-zoom click would resolve some sub-pixel cell). */
+   *  UNFLOORED (T2-204): the scan resolves whatever cell the point lands in at ANY
+   *  zoom. It used to skip cells under ~3 CSS px on screen, which left the click dead
+   *  across most of the 8x-past-fit zoom-out range — and, on layouts whose cells are
+   *  sub-pixel at fit (a stacked datetime histogram), dead in the DEFAULT view. */
   function applyPickFallback(): void {
     const table = positions;
+    // The table just changed identity — the in-view memo is keyed only on the rect, so
+    // drop it here or a layout switch at an unmoved camera would report the OLD
+    // layout's count (T2-204).
+    inViewMemo = null;
     cellsH.setCoarsePickFallback?.(
-      table === null
-        ? null
-        : (wx, wy, zoom) => hitTestPositionTable(wx, wy, table, COARSE_PICK_MIN_CSS_PX * zoom),
+      table === null ? null : (wx, wy) => hitTestPositionTable(wx, wy, table),
     );
     // The position table just changed (loaded / cleared / switched) — re-push it to the
     // detail overlay too (T2-26). Folded here because this fires at exactly the moments
@@ -1033,7 +1031,29 @@ export function createLayoutController(
     countCellsInView(view: BBox): number | null {
       const table = positions;
       if (table === null) return null; // no table ⇒ "not derivable" (the bar shows —)
-      return countPositionsInView(table, view);
+      // Memoized on the view rect (T2-204). This is a LINEAR scan of the whole table
+      // (T2-48) and the count is a pure function of (table, rect), but the status
+      // observable calls it on EVERY coalesced emit — including emits the camera did
+      // not cause. That used to be rare: a cursor-cell emit only fires when the hovered
+      // cell changes, and a zoomed-out hover resolved null every time, so setCursorCell's
+      // dedupe swallowed it. Removing the coarse-pick floor made every pointer move over
+      // a zoomed-out canvas resolve a DIFFERENT sub-pixel cell, turning a hover into an
+      // O(N) rescan per frame (~12.7 ms at 1M). Memoizing here rather than in the
+      // observable keeps the invalidation next to the thing that goes stale: the memo is
+      // dropped in applyPickFallback, which fires on every table load/clear/switch — a
+      // layout switch preserves the camera, so the rect alone cannot detect one.
+      if (
+        inViewMemo !== null &&
+        inViewMemo.xMin === view.xMin &&
+        inViewMemo.yMin === view.yMin &&
+        inViewMemo.xMax === view.xMax &&
+        inViewMemo.yMax === view.yMax
+      ) {
+        return inViewMemo.count;
+      }
+      const count = countPositionsInView(table, view);
+      inViewMemo = { ...view, count };
+      return count;
     },
 
     centerOnCell(id: number, fraction?: number): boolean {

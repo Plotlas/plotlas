@@ -38,6 +38,7 @@ import type { PreviewCache } from "./cellPreview.ts";
 import { MetadataPanelView, tagValuesForId } from "./MetadataPanel.ts";
 import type { CellPreviewData } from "./MetadataPanel.ts";
 import type { MetadataRow } from "../api-client/types.ts";
+import { isTypingTarget } from "./keys.ts";
 
 export interface LightboxProps {
   dataset: string;
@@ -128,13 +129,6 @@ export function runLocate(cellId: number, actions: LocateActions): void {
   actions.select(cellId);
   const centered = actions.center(cellId);
   if (centered) actions.highlight(cellId);
-}
-
-/** True when a keyboard event originates from a text field (guard shared shape
- *  with ViewerScreen's backtick handler). */
-function isTypingTarget(target: EventTarget | null): boolean {
-  const el = target as HTMLElement | null;
-  return el !== null && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
 }
 
 /** The image area's load state. In v2 the preview cache holds the DETAIL original
@@ -484,12 +478,20 @@ export function Lightbox(props: LightboxProps): ReactElement {
       });
       if (action.kind === "none") return;
       e.preventDefault();
+      // The Lightbox is a MODAL: consume the keys it acts on so nothing behind it
+      // sees them (T2-204). Bound in the CAPTURE phase + stopPropagation so a dismiss
+      // Escape reaches the Lightbox BEFORE any bubble-phase handler lower in the tree
+      // — notably ActivityPill's `document`-level Escape, which would otherwise fire
+      // first and swallow this close (leaving the modal stuck open behind the pill),
+      // and the window-level selection-clear. Only keys the Lightbox OWNS are eaten;
+      // anything it maps to `none` (typing, unrelated keys) still propagates.
+      e.stopPropagation();
       if (action.kind === "close") onClose();
       else if (action.kind === "toggle-panel") setPanelOpen((v) => !v);
       else if (action.kind === "navigate") onNavigate(action.index);
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [count, index, onNavigate, onClose]);
 
   const filename = row !== null ? filenameOf(row) : null;

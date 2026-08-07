@@ -87,10 +87,42 @@ test("LayoutSwitcher (D-35 G3) marks the coordinate families apart and surfaces 
   assert.match(html, /data-family="scatter"/);
   assert.match(html, /layout-tab-family[^>]*>map</);
   assert.match(html, /layout-tab-family[^>]*>x\/y</);
-  // The tooltip explains each layout's baked options; the active layout gets a caption.
+  // The tooltip still explains each layout's baked options for a mouse...
   assert.match(html, /title="By location \(geographic\) — equirectangular"/);
   assert.match(html, /title="Dimensions \(cm\) \(scatter\) — log × log, fit"/);
-  assert.match(html, /layout-baked-note[^>]*>By location — equirectangular</);
+
+  // ...but Seam M3 §3.3.1 ([[T2-131]] a) means it is no longer the ONLY place they live.
+  // This assertion used to read `layout-baked-note[^>]*>By location — equirectangular`,
+  // i.e. a caption for the ACTIVE layout only; a keyboard or touch user still had no way
+  // to see what the OTHER layouts were before switching to them. The summary is content
+  // in EVERY tab now, active or not.
+  assert.match(html, /layout-tab-note[^>]*>equirectangular</);
+  assert.match(html, /layout-tab-note[^>]*>log × log, fit</);
+
+  // ...and the active-layout caption is GONE, which is [[T2-131]](b): it appeared and
+  // disappeared across switches, changing .topbar-layouts height and resizing the canvas.
+  assert.doesNotMatch(html, /layout-baked-note/);
+});
+
+test("LayoutSwitcher (M3 §3.3.1) renders no summary line for a layout that has none", () => {
+  // The counterpart to the pin above, and what makes the tab row's height stable: a tab
+  // with nothing to explain gets ONE line, not an empty second one. The row's height is a
+  // max over all tabs and so does not depend on which tab is active — the property that
+  // closes T2-131(b). (grid/datetime have no shaping options; describeBakedOptions
+  // returns null for them — see ui_layout_options.test.ts.)
+  const html = renderToString(
+    h(LayoutSwitcher, {
+      layouts: [
+        { layout_id: "grid", label: "Grid", type: "grid" },
+        { layout_id: "geographic", label: "By location", type: "geographic" },
+      ],
+      activeLayoutId: "grid",
+      onSwitch: () => {},
+      bakedSummary: { grid: null, geographic: "equirectangular" },
+    }),
+  );
+  assert.equal((html.match(/layout-tab-note/g) ?? []).length, 1, "one summary line for two tabs");
+  assert.match(html, /layout-tab-note[^>]*>equirectangular</);
 });
 
 // ---------------------------------------------------------------------------
@@ -238,7 +270,7 @@ test("summarizeRows aggregates categorical counts and the datetime range", () =>
 
 test("SelectionSummary renders the count, value counts, range, and the 250-cap note", () => {
   const html = renderToString(
-    h(SelectionSummary, { count: 5, rows: SUMMARY_ROWS, roles: SUMMARY_ROLES, onClear: () => {} }),
+    h(SelectionSummary, { count: 5, rows: SUMMARY_ROWS, roles: SUMMARY_ROLES }),
   );
   assert.match(html, /5 cells selected/);
   assert.match(html, /first 3 of 5/); // the shell passes the first <=250 rows
@@ -246,7 +278,9 @@ test("SelectionSummary renders the count, value counts, range, and the 250-cap n
   assert.match(html, /cats: 2/);
   assert.match(html, /dogs: 1/);
   assert.match(html, /2026-01-01 – 2026-01-03/);
-  assert.match(html, /Clear selection/);
+  // "Clear selection" moved to the inspector header (T2-204) so a SINGLE selection
+  // can be cleared too — it is no longer this component's to render.
+  assert.doesNotMatch(html, /Clear selection/);
 });
 
 // ---------------------------------------------------------------------------

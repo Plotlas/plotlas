@@ -19,11 +19,20 @@
 // so tests/dom/viewer_panels.dom.test.ts drives the real component rather than a
 // harness. The one interaction that mount cannot reach is SELECTING a cell:
 // handleCanvasClick returns early while stackRef.current is null.
-import { createElement as h, useCallback, useEffect, useReducer, useRef, useState } from "react";
+import {
+  createElement as h,
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import type { ReactElement } from "react";
 import type { Table } from "apache-arrow";
 import { createWorld, fitCamera, fitZoom } from "../renderer/world";
-import type { Viewport, WorldHandle } from "../renderer/world";
+import type { Viewport, WorldHandle, WorldRect } from "../renderer/world";
 import { createCells } from "../renderer/cells";
 import type { Cells } from "../renderer/cells";
 import { createTilePyramid } from "../renderer/tilePyramid";
@@ -64,6 +73,14 @@ import { Minimap } from "./Minimap";
 import { Lightbox, runLocate } from "./Lightbox";
 import { PlotlasMark } from "./PlotlasMark";
 import { ActivityPill } from "./activity/ActivityPill";
+import { isTypingTarget } from "./keys";
+import { InspectorHeader } from "./InspectorHeader";
+import { InspectorSheet } from "./InspectorSheet";
+import type { SheetDetail } from "./InspectorSheet";
+import { TagsPanel } from "./TagsPanel";
+import { ViewerMenu } from "./ViewerMenu";
+import { isNarrowCockpit, measureTopbarFloor, readCockpitLengths } from "./viewerLayoutMode";
+import type { CockpitLengths } from "./viewerLayoutMode";
 
 export interface ViewerScreenProps {
   datasetId: string;
@@ -172,24 +189,89 @@ function searchOptionId(index: number): string {
  *  canvas-click selection. Extracting the rule makes it directly pinnable — the same
  *  move `bandSnapBBox` (T2-136) and `runLocate` (T2-71) made for their own
  *  jsdom-unreachable wiring steps. `setCollapsed` must be a STABLE setter (a
- *  `useState` setter is); an inline closure would re-fire this every render. */
+ *  `useState` setter is); an inline closure would re-fire this every render.
+ *
+ *  Seam M2 §3.3 extends it with the NARROW half of the same rule. Force-opening on
+ *  every selection is right on a desktop rail and hostile on a phone, where the panel
+ *  covers most of the screen — fault S3, "tapping an image hides the atlas". So on a
+ *  narrow holder the Inspector is a bottom SHEET and a selection opens it to PEEK: the
+ *  atlas stays visible above it. `setDetail` is optional and this hook can only ever
+ *  ask for `"peek"` — "never to full" is structural here, not a rule a caller has to
+ *  remember, and a selection made while the user had pulled the sheet full brings it
+ *  back down to peek rather than leaving the atlas buried. */
 export function useRevealOnSelection(
   selectedIds: number[],
   setCollapsed: (collapsed: boolean) => void,
+  setDetail?: (detail: SheetDetail) => void,
 ): void {
   useEffect(() => {
     if (selectedIds.length === 0) return;
     setCollapsed(false);
-  }, [selectedIds, setCollapsed]);
+    setDetail?.("peek");
+  }, [selectedIds, setCollapsed, setDetail]);
+}
+
+/** Does this keypress clear the cell selection? (T2-204.)
+ *
+ *  Escape became a clear-selection key when the coarse pick lost its screen-size
+ *  floor: on a space-filling layout an unfloored click lands on a cell nearly
+ *  everywhere (the letterbox margins outside the layout bbox still miss), so
+ *  click-on-background stopped being a reliable way to empty the selection — and a
+ *  SINGLE selection never had another one.
+ *
+ *  Escape is spoken for three times over, so this is the LOW-PRIORITY fallback — it
+ *  runs only when nothing layered above it consumed the key, following one priority
+ *  order: modal > popover > this. (1) The search box owns it while focus is in a field
+ *  (the `typing` guard). (2) The Lightbox, a MODAL, binds Escape in the CAPTURE phase
+ *  (Lightbox.ts) and stops it, so when it is open this handler never even runs — the
+ *  `lightboxOpen` guard here is belt-and-suspenders. (3) `ActivityPill`, a popover,
+ *  consumes its dismiss Escape on `document` (one hop below `window`) so closing it
+ *  doesn't also clear the selection. With nothing selected this does nothing at all, so
+ *  Escape stays free for whatever is layered on next.
+ *
+ *  Pure + exported for unit tests, like `useRevealOnSelection` above and for the same
+ *  reason: a jsdom mount cannot produce a selection to press Escape against. */
+export function escapeClearsSelection(
+  key: string,
+  ctx: { typing: boolean; lightboxOpen: boolean; selectionCount: number },
+): boolean {
+  if (key !== "Escape") return false;
+  return !ctx.typing && !ctx.lightboxOpen && ctx.selectionCount > 0;
+}
+
+/** Which world rect does a "fit" target? A named layout's bbox from the manifest — the
+ *  DATA — never the `[0,1]²` coordinate space it is expressed in. The single derivation
+ *  behind all three fits: the "⤢ Fit" button, the D-B auto-fit on a layout switch (both
+ *  via `fitToLayout`), and the BOOT fit in the mount effect
+ *  (SCOPE_mobile-viewer D5, approved 2026-08-06).
+ *
+ *  The boot fit cannot call `fitToLayout`, which reads the `manifest` STATE: it runs
+ *  inside the mount effect, whose closure still sees the pre-`setManifest` null, so the
+ *  call would silently no-op. It passes the manifest it already holds (`mf`) instead —
+ *  which is also why no retry loop is needed there, unlike `maybeAutoFit`.
+ *
+ *  Pure + exported for unit tests for the same reason `useRevealOnSelection` /
+ *  `bandSnapBBox` / `runLocate` are: everything after `createWorld` in the mount effect
+ *  is jsdom-unreachable (no WebGL ⇒ createWorld throws). Returns null — meaning "do not
+ *  move the camera" — with no manifest, no layout, or an id the manifest does not carry. */
+export function layoutFitRect(
+  manifest: LayoutManifest | null,
+  layoutId: string | null,
+): WorldRect | null {
+  if (manifest === null || layoutId === null) return null;
+  const entry = manifest.layouts.find((l) => l.layout_id === layoutId);
+  if (entry === undefined) return null;
+  const [xMin, yMin, xMax, yMax] = entry.bbox;
+  return { xMin, yMin, xMax, yMax };
 }
 
 export function ViewerScreen(props: ViewerScreenProps): ReactElement {
   const { datasetId, client } = props;
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const screenRef = useRef<HTMLDivElement | null>(null);
   const holderRef = useRef<HTMLDivElement | null>(null);
   const stackRef = useRef<RendererStack | null>(null);
-  const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
   // Bounded LRU cache of resolved previews (each owns a revocable object URL, so
   // eviction / replace / clear revoke it — see createPreviewCache). Failures are
   // NOT cached, so a transient fetch error retries on the next click.
@@ -279,8 +361,24 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
   const [showDebug, setShowDebug] = useState(false);
   // Collapse state for the two floating rails (component state only per the
   // brief — not persisted): collapsed to a 36px chevron button.
+  //
+  // Seam M2 §3.3: these same two flags govern the NARROW surfaces that replace the rails
+  // — `tagsCollapsed` the full-screen Tags panel, `inspectorCollapsed` the bottom sheet
+  // (no third parallel flag). Their DEFAULT differs by mode and deliberately so: a rail
+  // is expanded by default because it sits beside the atlas, while a surface that covers
+  // the atlas must be a deliberate destination. `measureCockpit` below therefore sets
+  // both to `narrow` on every mode change, in the same batch as the mode itself, so
+  // there is no frame in which a narrow holder shows an unasked-for full-screen panel.
   const [tagsCollapsed, setTagsCollapsed] = useState(false);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
+  // Seam M2 §3.1 — is this HOLDER too narrow for the desktop cockpit? Derived, never a
+  // breakpoint: see measureCockpit below and ui/viewerLayoutMode.ts.
+  const [narrow, setNarrow] = useState(false);
+  // How far the narrow Inspector sheet is open. A SELECTION only ever opens it to peek
+  // (useRevealOnSelection); "full" is always a deliberate pull by the user.
+  const [sheetDetail, setSheetDetail] = useState<SheetDetail>("peek");
+  // The narrow top bar's ☰ menu (SCOPE D2) — the layouts and search live in it.
+  const [menuOpen, setMenuOpen] = useState(false);
   // UI-S1: the search dropdown's OWN collapse state. Before this seam one flag
   // (inspectorCollapsed) governed both, because the results list was a third BODY of
   // the Inspector — hiding the Inspector hid the results and vice versa. They are now
@@ -301,19 +399,53 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
   const searchSeqRef = useRef(0);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  // "/" pressed while the narrow ☰ is closed: open it, then focus the input it mounts.
+  const focusSearchOnMenuOpenRef = useRef(false);
 
   // UI-S1: selecting a cell reveals the Inspector — the panel that shows what was
   // selected. Wired here, ONCE, off the selection itself rather than at each of the
   // three call sites that set it (canvas click, a results-row jump, the lightbox's
-  // "locate"), so a fourth selection path cannot silently miss it.
-  useRevealOnSelection(selectedIds, setInspectorCollapsed);
+  // "locate"), so a fourth selection path cannot silently miss it. Seam M2 adds the
+  // sheet's detail to the same one wiring: on a narrow holder a selection opens the
+  // sheet to PEEK, never to full (fault S3).
+  useRevealOnSelection(selectedIds, setInspectorCollapsed, setSheetDetail);
+
+  // D1 (operator-requested after a physical-iPhone pass, 2026-08-06): a two-finger pinch
+  // that starts on the viewer's CHROME must not become an iOS page zoom.
+  //
+  // `touch-action: none` on `.viewer-screen` (app.css) is half of it and is the whole of
+  // it on Chrome/Android. It is NOT enough on iOS Safari, which drives pinch through the
+  // non-standard `gesturestart` / `gesturechange` / `gestureend` events; those are not
+  // governed by `touch-action` and fire regardless. Preventing them is the documented
+  // lever. The viewport meta is deliberately untouched — SCOPE non-goal §4.2 forbids
+  // `user-scalable=no` / `maximum-scale`, and WebKit ignores both anyway.
+  //
+  // Bound to THIS SCREEN's element, not the document, so the library, admin and wizard
+  // screens — which scroll and must keep native touch — are unaffected. `passive: false`
+  // because a passive listener cannot preventDefault. Holds NO pointer state and reads no
+  // coordinate: M1 owns every pointer in this viewer (SCOPE §2a) and this does not
+  // participate in that at all — it only refuses a page-level zoom.
+  //
+  // NOT ASSERTABLE HEADLESSLY: `gesturestart` is WebKit-only, Chromium never fires it, so
+  // no Playwright run on this stack can observe the behaviour this closes. The e2e case
+  // asserts the risk it INTRODUCES instead (that the panels still scroll under touch);
+  // the fix itself lands on the real-device pass (SCOPE D6).
+  useEffect(() => {
+    const screen = screenRef.current;
+    if (screen === null) return;
+    const swallow = (e: Event): void => e.preventDefault();
+    const types = ["gesturestart", "gesturechange", "gestureend"];
+    for (const t of types) screen.addEventListener(t, swallow, { passive: false });
+    return () => {
+      for (const t of types) screen.removeEventListener(t, swallow);
+    };
+  }, []);
 
   useEffect(() => {
     if (!vizDebugAvailable) return;
     const onKey = (e: KeyboardEvent): void => {
       // Backtick toggles; ignore when typing into an input/textarea.
-      const target = e.target as HTMLElement | null;
-      const typing = target !== null && (target.tagName === "INPUT" || target.tagName === "TEXTAREA");
+      const typing = isTypingTarget(e.target);
       if (e.key === "`" && !typing) setShowDebug((v) => !v);
     };
     window.addEventListener("keydown", onKey);
@@ -327,8 +459,7 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== "Enter") return;
-      const target = e.target as HTMLElement | null;
-      const typing = target !== null && (target.tagName === "INPUT" || target.tagName === "TEXTAREA");
+      const typing = isTypingTarget(e.target);
       if (typing) return;
       if (selectedIds.length === 0 || lightbox !== null) return;
       e.preventDefault();
@@ -338,20 +469,58 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
     return () => window.removeEventListener("keydown", onKey);
   }, [selectedIds, lightbox]);
 
+  // Escape clears the selection (T2-204) — the rule itself is the pure
+  // `escapeClearsSelection` below, since a jsdom mount cannot drive a real selection.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      const typing = isTypingTarget(e.target);
+      const clears = escapeClearsSelection(e.key, {
+        typing,
+        lightboxOpen: lightbox !== null,
+        selectionCount: selectedIds.length,
+      });
+      if (!clears) return;
+      e.preventDefault();
+      clearSelection();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedIds, lightbox]);
+
   // "/" focuses the search box (the kbd hint is rendered in the input placeholder),
   // ignored while already typing so "/" stays a literal character in a field (T2-57).
+  //
+  // On a NARROW holder the search box only exists inside the open ☰ (SCOPE D2), so the
+  // input ref is null while it is closed and this shortcut silently did nothing —
+  // preventDefault, then no-op, with the placeholder still advertising "( / )" (review
+  // #271 F4). It affects narrow DESKTOP windows too, not just phones. So: open the menu,
+  // and focus the input once it has mounted (the flag below), which is the same key doing
+  // the same thing by the route this mode requires.
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== "/") return;
-      const target = e.target as HTMLElement | null;
-      const typing = target !== null && (target.tagName === "INPUT" || target.tagName === "TEXTAREA");
+      const typing = isTypingTarget(e.target);
       if (typing) return;
       e.preventDefault();
-      searchInputRef.current?.focus();
+      if (searchInputRef.current !== null) {
+        searchInputRef.current.focus();
+        return;
+      }
+      focusSearchOnMenuOpenRef.current = true;
+      setMenuOpen(true);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  // ...and the second half: focus the input the frame after the menu mounts it. Gated on
+  // the flag rather than firing for EVERY open, because a pointer user opening the ☰ to
+  // switch layouts must not have a phone keyboard thrown at them.
+  useEffect(() => {
+    if (!menuOpen || !focusSearchOnMenuOpenRef.current) return;
+    focusSearchOnMenuOpenRef.current = false;
+    searchInputRef.current?.focus();
+  }, [menuOpen]);
 
   // Cancel any pending debounced search on unmount (a keyed remount on dataset switch)
   // so a timer cannot fire a fetch/dispatch after teardown.
@@ -369,6 +538,64 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
     }
     setError(errText(err));
   }
+
+  // --- Seam M2 §3.1: the narrow-mode switch ---------------------------------
+  // Compared against the LAST APPLIED mode rather than the `narrow` state so this stays
+  // a stable useCallback (the mount effect closes over it) and so the three setters
+  // below fire exactly once per real mode change — React 18 batches them into one
+  // render, which is why a narrow holder never shows an unasked-for Tags panel or an
+  // open sheet for a frame.
+  const narrowRef = useRef(false);
+  // The top bar's measured requirement (ui/viewerLayoutMode.measureTopbarFloor). A ref,
+  // not state: it must survive the mode flip that unmounts the very bar it describes —
+  // that carried value is what lets the viewer widen back OUT of narrow mode at the
+  // right width instead of oscillating — and it must not itself trigger a render.
+  const topbarFloorRef = useRef<number | null>(null);
+  // The cockpit's declared lengths, read once off the stylesheet (they are CSS custom
+  // properties on .viewer-screen and do not change at runtime).
+  const cockpitLengthsRef = useRef<CockpitLengths | null>(null);
+
+  const measureCockpit = useCallback((): void => {
+    const holder = holderRef.current;
+    if (holder === null) return;
+    if (cockpitLengthsRef.current === null) cockpitLengthsRef.current = readCockpitLengths(holder);
+    const holderWidth = holder.clientWidth;
+    // Only measurable while the desktop bar is mounted; null (narrow mode, or the
+    // layouts have not loaded) carries the previous value forward, by design.
+    topbarFloorRef.current = measureTopbarFloor(holder) ?? topbarFloorRef.current;
+    const next = isNarrowCockpit({
+      ...cockpitLengthsRef.current,
+      holderWidth,
+      topbarFloor: topbarFloorRef.current,
+    });
+    // null = the holder has no width to read (a transient ResizeObserver tick while it is
+    // out of layout). That is an ABSENCE of measurement, not a vote for desktop: acting on
+    // it re-mounted the rails over an open Tags panel (review #271 F15).
+    if (next === null || next === narrowRef.current) return;
+    narrowRef.current = next;
+    setNarrow(next);
+    // A mode change re-homes both auxiliary surfaces, so their open state resets to that
+    // mode's default: rails expanded beside the atlas, sheet/panel closed over it.
+    setTagsCollapsed(next);
+    setInspectorCollapsed(next);
+    setMenuOpen(false);
+  }, []);
+
+  // Two triggers, because the requirement moves for two different reasons. SIZE changes
+  // arrive on M0's ResizeObserver (wired in the mount effect below — deliberately not a
+  // second observer). CONTENT changes do not resize anything: a collection whose layouts
+  // arrive after mount grows the tab row inside a holder of unchanged width, and without
+  // this the deficit would never be re-read. `narrow` is a dependency because leaving
+  // narrow mode re-mounts the tab row that has to be measured again.
+  //
+  // useLayoutEffect, NOT useEffect (review #271 F9): `narrow` starts false, so a passive
+  // effect corrects it only AFTER the browser has painted — one frame of the desktop
+  // cockpit, both rails overlapping, on every mount at a phone width. A layout effect
+  // runs before paint, so the first frame a visitor sees is already the right one. It
+  // reads geometry and sets state, which is exactly what this hook is for.
+  useLayoutEffect(() => {
+    measureCockpit();
+  }, [measureCockpit, layouts, activeLayoutId, narrow]);
 
   // Snapshot the renderer's resident coarse mosaic tiles into the minimap overview
   // (T2-54). Only pushes state when the resident-tile SET changed (a cheap signature
@@ -511,6 +738,41 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
       stackRef.current = { world, cells, pyramid, controller, status };
       await controller.activate(firstLayout);
       if (cancelled) return;
+
+      // BOOT FIT (SCOPE_mobile-viewer D5, approved 2026-08-06): open framed on the
+      // DATA, not on the coordinate space. createWorld starts the camera at
+      // center [0.5, 0.5] / fitZoom(viewport) — the whole of [0,1]² — and activate()
+      // never touches the camera (only switchTo → maybeAutoFit and centerOnCell do),
+      // so until now the first frame framed the whole coordinate space whatever
+      // fraction of it the layout actually occupied. The boot camera is now exactly
+      // what the "⤢ Fit" button produces; measured 2026-08-06 against
+      // golden_dataset_full_v2, boot zoom went 0.0025641 (= fitZoom = 1/390) → 0.00265
+      // at 390×844, and 0.0011442 (= 1/874) → 0.0011825 at 1265×900, both matching the
+      // Fit button's value exactly, which it did not before.
+      //
+      // The SIZE of the win scales with how much of [0,1]² the layout leaves empty, and
+      // is small for a space-filling one: that fixture's grid bbox is
+      // [0.003125, 0.996875]², so the measured change above is essentially fitCamera's
+      // 2% pad. What it does NOT fix — and was never going to — is the empty ground a
+      // SQUARE dataset leaves in a PORTRAIT viewport: fitCamera binds on the same axis
+      // fitZoom does there, so the atlas still letterboxes. That is a property of the
+      // aspect ratios, not of the boot camera.
+      //
+      // Deliberately visible on DESKTOP too: it changes the desktop first frame, and
+      // that is the workstream's ONE approved desktop-visible change (SCOPE §4.1).
+      // fitCamera pads 2% and letterboxes on the binding axis, so a thin or
+      // outlier-stretched bbox degrades safely rather than over-zooming.
+      //
+      // Reads `mf`, not the `manifest` state: see layoutFitRect's header — inside this
+      // effect the state is still null, so fitToLayout would no-op. No retry loop for
+      // the same reason (the bbox is already in hand, unlike maybeAutoFit's in-view
+      // count, which waits on an async position table).
+      const bootRect = layoutFitRect(mf, firstLayout);
+      if (bootRect !== null) {
+        world.setCameraState(fitCamera(bootRect, world.getViewport()));
+        setMinimapView(viewRectOf(world));
+      }
+
       world.start();
 
       // fps proxy (T2-54): drive frameTick from a mount-lifetime rAF loop. The render
@@ -550,12 +812,35 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
     const onResize = (): void => {
       const holder = holderRef.current;
       if (holder !== null && world !== null) world.resize(measure(holder));
+      // Seam M2 §3.1: the SAME observation drives the narrow-mode switch — one
+      // ResizeObserver on the holder, not a second one, and the holder rather than the
+      // viewport because that is the box the floating chrome actually lives in.
+      // Deliberately outside the `world !== null` guard: the mode is a chrome decision
+      // and must still track a resize when the renderer failed to build.
+      measureCockpit();
     };
     window.addEventListener("resize", onResize);
+    // Seam M0 §3.5 (SCOPE_mobile-viewer I5): re-measure when the HOLDER changes size,
+    // not only when the window does. Before this, the WebGL drawing buffer was sized
+    // once at mount from holderRef.current.clientWidth/Height and trusted forever —
+    // and measure() floors at Math.max(1, …), so a mount into a zero-sized holder pins
+    // the buffer at 1×1 with no recovery path. Every resize of the canvas that is not a
+    // window resize missed it: a mobile URL bar collapsing, a rotate, a bfcache
+    // restore, a top bar that reflows to two rows.
+    // window.resize STAYS — it is not redundant: devicePixelRatio can change with no
+    // element resize at all (dragging a window between monitors), and measure() reads
+    // DPR. Feature-detected because jsdom implements no ResizeObserver, and every
+    // existing DOM-tier test mounts this component.
+    const holderObserver =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(onResize);
+    if (holderObserver !== null && holderRef.current !== null) {
+      holderObserver.observe(holderRef.current);
+    }
 
     return () => {
       cancelled = true;
       window.removeEventListener("resize", onResize);
+      holderObserver?.disconnect();
       stackRef.current = null;
       // Stop the fps rAF loop + the minimap-overview poll, and drop the status
       // observable (unsubscribe first so no emit lands after teardown, then dispose).
@@ -573,7 +858,9 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
       mountedRef.current = false; // stop any in-flight preview fetch from touching state (#32)
       previewCacheRef.current.clear(); // revoke any cell-preview object URLs on unmount (#32)
     };
-    // eslint-style note: datasetId/client are stable for this mount (keyed).
+    // eslint-style note: datasetId/client are stable for this mount (keyed), and
+    // measureCockpit is a useCallback with no dependencies — one identity for the whole
+    // mount, so closing over it here cannot go stale.
   }, [datasetId, client]);
 
   async function resolvePreview(cellId: number): Promise<void> {
@@ -641,15 +928,31 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
   // isn't in the manifest / nothing is active.
   function fitToLayout(layoutId: string | null): void {
     const stack = stackRef.current;
-    if (stack === null || manifest === null || layoutId === null) return;
-    const entry = manifest.layouts.find((l) => l.layout_id === layoutId);
-    if (entry === undefined) return;
-    const [xMin, yMin, xMax, yMax] = entry.bbox;
-    stack.world.setCameraState(fitCamera({ xMin, yMin, xMax, yMax }, stack.world.getViewport()));
+    if (stack === null) return;
+    const rect = layoutFitRect(manifest, layoutId);
+    if (rect === null) return;
+    stack.world.setCameraState(fitCamera(rect, stack.world.getViewport()));
     setMinimapView(viewRectOf(stack.world));
   }
   function handleFitView(): void {
     fitToLayout(activeLayoutId);
+  }
+
+  /** Drop the multi-select summary: bump the ticket so an in-flight `getMetadata`
+   *  response (guarded on `summarySeqRef` in handleCanvasClick) can't land afterwards
+   *  and repopulate the panel, then clear the rows. That seq bump is the invariant the
+   *  old inline `onClear` lacked (T2-204) — centralized here so no selection path can
+   *  drop it again. Leaves `selectedIds` alone; each caller sets that to its target. */
+  function resetSummary(): void {
+    summarySeqRef.current += 1;
+    setSummaryRows([]);
+  }
+
+  /** Empty the selection (T2-204): the inspector's "Clear selection" button and the
+   *  Escape key. */
+  function clearSelection(): void {
+    setSelectedIds([]);
+    resetSummary();
   }
 
   function handleCanvasClick(e: {
@@ -662,18 +965,26 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
   }): void {
     const stack = stackRef.current;
     if (stack === null) return;
-    // Ignore clicks that ended a pan drag (the world's pointer handlers own
-    // dragging; a >4px move is not a select).
-    const down = pointerDownRef.current;
-    if (down !== null && (Math.abs(e.clientX - down.x) > 4 || Math.abs(e.clientY - down.y) > 4)) {
-      return;
-    }
+    // Ignore clicks that ended a gesture rather than a tap — a pan drag, or a pinch,
+    // or the second tap of a double-tap. The World owns ALL pointer bookkeeping (Seam
+    // M1 / SCOPE §2a); this used to be a duplicate `pointerDownRef` here plus a 4px
+    // literal, which was a MOUSE tolerance applied to fingers (fault I4) and could not
+    // see how many pointers were involved at all.
+    if (stack.world.consumedGesture()) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const px = e.clientX - rect.left;
     const py = e.clientY - rect.top;
     const picked = stack.cells.pick(px, py).cellId;
     const additive = e.ctrlKey || e.metaKey || e.shiftKey;
 
+    // KNOWN CONSEQUENCE (T2-204 → T2-205): with the coarse-pick floor gone, on a
+    // space-filling layout (grid) zoomed far out `picked` is a sub-pixel cell the user
+    // cannot aim at — never null. For a PLAIN click that IS the point: you inspect the
+    // image under the cursor. For an ADDITIVE click it means Ctrl/Shift-clicking
+    // apparent "background" toggles an unseen cell into the multi-selection, with no
+    // canvas feedback (selection is not drawn on the atlas). Re-adding a size floor
+    // would just recreate the defect T2-204 removed; the real fix is precise/visible
+    // multi-select at zoom-out (box-select + a selection highlight), tracked as T2-205.
     let next: number[];
     if (picked === null) {
       next = additive ? selectedIds : []; // background click clears (plain)
@@ -700,8 +1011,7 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
           if (summarySeqRef.current === seq) surface(err);
         });
     } else {
-      summarySeqRef.current += 1; // invalidate any in-flight summary response
-      setSummaryRows([]);
+      resetSummary(); // single/zero selection: no multi-select summary to show
     }
 
     if (picked !== null) {
@@ -876,6 +1186,16 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
   // categorical layout's v2.5 annotations (T2-72 Seam 2), else the union bbox of its
   // member cells' rects (D-3 fallback), else centering the first member.
   function jumpToRow(row: SearchRow): void {
+    // On a narrow holder the results list lives INSIDE the ☰ popover, so activating a row
+    // otherwise left the menu open over the very cell it just flew to — and the
+    // outside-pointerdown dismiss cannot help, because the click was inside the menu
+    // (review #271 F2). Choosing a LAYOUT already closes it; this makes the two agree.
+    // A no-op in wide mode, where the menu is not rendered at all.
+    //
+    // BEFORE the renderer guard, deliberately: dismissing the menu the user just acted in
+    // is chrome, and it must still happen when the camera cannot move (no stack yet, or a
+    // renderer that failed to build) — otherwise the popover sticks with no way to know why.
+    setMenuOpen(false);
     const stack = stackRef.current;
     if (stack === null) return;
     if (row.kind === "cell") {
@@ -883,8 +1203,7 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
         close: () => {},
         select: () => {
           setSelectedIds([row.id]);
-          summarySeqRef.current += 1;
-          setSummaryRows([]);
+          resetSummary();
           void resolvePreview(row.id);
         },
         center: (id) => stack.controller.centerOnCell(id),
@@ -968,46 +1287,230 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
     fps: rs?.fps ?? null,
   };
 
+  // --- Seam M2: the pieces both modes share, built ONCE ----------------------
+
+  // The search pill (T2-57 / UI-S1), unchanged. Built here rather than inline because
+  // SCOPE D2 MOVES it into the ☰ menu on a narrow holder: one node, handed to whichever
+  // surface owns it in this mode, so there is never a second combobox in the document
+  // and the #227 ARIA contract needs no narrow-mode variant. `.viewer-menu .topbar-search`
+  // in app.css is the only difference — it undoes the pill's top-bar dress.
+  const searchPill = h(
+    "div",
+    { className: "panel-float topbar-search" },
+    h("input", {
+      ref: searchInputRef,
+      type: "search",
+      className: "search-input",
+      role: "combobox",
+      "aria-label": "Search this dataset",
+      "aria-expanded": searchListboxShown,
+      // Gate aria-controls on the same derived flag as aria-expanded /
+      // aria-activedescendant (#227): the listbox id only resolves while the
+      // ready-with-rows listbox is actually rendered, so an IDREF to a
+      // non-existent element is never advertised (collapsed / loading / error /
+      // empty states render a <p>, not the <ul>).
+      "aria-controls": searchListboxShown ? SEARCH_LISTBOX_ID : undefined,
+      "aria-autocomplete": "list",
+      "aria-activedescendant":
+        searchListboxShown && searchState.activeIndex >= 0
+          ? searchOptionId(searchState.activeIndex)
+          : undefined,
+      placeholder: "Search…  ( / )",
+      value: searchQuery,
+      onChange: (e: { currentTarget: { value: string } }) => handleSearchInput(e.currentTarget.value),
+      onKeyDown: handleSearchKeyDown,
+    }),
+    // Re-show control for a dropdown the user hid while the query is still live —
+    // the dropdown's equivalent of a rail's collapsed chevron, kept inside the pill
+    // (the dropdown's own anchor) rather than floating loose over the canvas.
+    searchQuery !== "" && searchCollapsed
+      ? h(
+          "button",
+          {
+            type: "button",
+            className: "btn ghost search-reveal",
+            "aria-label": "Show search results",
+            "aria-expanded": false,
+            onClick: () => {
+              setSearchCollapsed(false);
+              // This button unmounts on click; move focus into the (persistent)
+              // combobox input so keyboard focus isn't dropped to <body> (#227).
+              searchInputRef.current?.focus();
+            },
+          },
+          "⌄",
+        )
+      : null,
+    searchQuery !== ""
+      ? h(
+          "button",
+          {
+            type: "button",
+            className: "btn ghost search-clear",
+            "aria-label": "Clear search",
+            onClick: clearSearch,
+          },
+          "×",
+        )
+      : null,
+    // The dropdown itself: header + hide control mirroring the rails, body = the
+    // SearchResults panel (unchanged — it still owns the listbox/option ids).
+    searchDropdownOpen
+      ? h(
+          "div",
+          { className: "panel-float search-dropdown" },
+          h(
+            "div",
+            { className: "rail-header" },
+            h("span", { className: "rail-title" }, "Results"),
+            h(
+              "button",
+              {
+                type: "button",
+                className: "btn ghost rail-toggle",
+                "aria-label": "Hide search results",
+                "aria-expanded": true,
+                onClick: () => {
+                  setSearchCollapsed(true);
+                  // Reset the active row (#227): the aria layer already reports no
+                  // active option while hidden, so Enter must SUBMIT the catch-all,
+                  // not activate a row the user can no longer see. Also move focus
+                  // off this unmounting button back into the combobox input.
+                  searchDispatch({ type: "move", index: -1 });
+                  searchInputRef.current?.focus();
+                },
+              },
+              "⌃",
+            ),
+          ),
+          h(
+            "div",
+            { className: "rail-body search-dropdown-body" },
+            h(SearchResults, {
+              state: searchState,
+              listboxId: SEARCH_LISTBOX_ID,
+              optionId: searchOptionId,
+              onActivate: jumpToRow,
+              onHover: (index: number) => searchDispatch({ type: "move", index }),
+              activeLayout: activeLayoutEntry,
+            }),
+          ),
+        )
+      : null,
+  );
+
+  // The nav pill's leading control(s). SCOPE D2: on a narrow holder there is ONE back
+  // affordance and it is an icon — the nav pill is the largest single child (measured
+  // 297px at 390px, 390px at desktop) and the lowest-value content on a phone, so
+  // dropping the "← Datasets" label and the brand glyph is the biggest space win
+  // available and costs no function (the same target, the same accessible name).
+  const navLead = narrow
+    ? h(
+        "button",
+        {
+          type: "button",
+          className: "btn ghost topbar-back",
+          title: "Back to library",
+          "aria-label": "Back to library",
+          onClick: props.onBack,
+        },
+        "←",
+      )
+    : h(
+        Fragment,
+        null,
+        // Glyph-only brand mark (board 3b): no wordmark over the canvas. It shares
+        // the back-navigation target, then a 1px divider fences it off from the nav.
+        // `micro` is deliberate here (legible at this small size) — set explicitly
+        // so it doesn't hinge on PlotlasMark's size<18 default.
+        h(
+          "button",
+          {
+            type: "button",
+            className: "topbar-brand",
+            title: "Plotlas — back to library",
+            "aria-label": "Plotlas — back to library",
+            onClick: props.onBack,
+          },
+          h(PlotlasMark, { size: 16, variant: "micro" }),
+        ),
+        h("span", { className: "topbar-divider", "aria-hidden": "true" }),
+        h("button", { type: "button", className: "btn ghost", onClick: props.onBack }, "← Datasets"),
+      );
+
+  // The Inspector's BODY, built once and rendered by either the desktop rail or the
+  // narrow sheet — one branch for what is shown, two surfaces for where.
+  // UI-S1: metadata/summary ONLY, always. Search used to take this body over
+  // as a third state (the spike §3.1 "Inspector-as-results-list"), which is
+  // why one collapse flag governed both; the results list now has its own
+  // dropdown under the search box, so a live query no longer displaces what
+  // the user selected.
+  const inspectorBody =
+    selectedIds.length > 1
+      ? h(SelectionSummary, {
+          count: selectedIds.length,
+          rows: summaryRows,
+          roles,
+        })
+      : h(
+          MetadataPanelDataContext.Provider,
+          { value: { tagsTable, preview } },
+          h(MetadataPanel, {
+            dataset: datasetId,
+            selectedCellId: selectedCell,
+            client,
+            // Schema v2.8: the columns whose values render as links. The
+            // manifest is already held here, so no extra fetch.
+            urlColumns: manifest?.column_roles?.url,
+          }),
+        );
+  // View ⤢ button overlaying the preview's bottom-right: enabled when
+  // a single cell's preview is resolved. Opens the lightbox at this
+  // cell (index 0 of the single-cell selection) AND fires the optional
+  // onViewFull prop so an external consumer, if any, still hears it.
+  const viewFullBtn =
+    preview !== null && selectedCell !== null && preview.cellId === selectedCell
+      ? h(
+          "button",
+          {
+            type: "button",
+            className: "btn ghost view-full-btn",
+            "aria-label": `View cell ${selectedCell} full size`,
+            onClick: () => {
+              setLightbox({ index: 0 });
+              props.onViewFull?.(selectedCell);
+            },
+          },
+          "View ⤢",
+        )
+      : null;
+
   return h(
     "div",
-    { className: "viewer-screen" },
+    // Seam M2 §3.1: the derived mode reaches the stylesheet as a class and nothing else
+    // — there is no viewer media query, because the threshold is dataset-dependent and
+    // measured against the HOLDER, neither of which a media query can express.
+    { ref: screenRef, className: narrow ? "viewer-screen cockpit-narrow" : "viewer-screen" },
     h(
       "div",
       { ref: holderRef, className: "canvas-holder" },
       h("canvas", {
         ref: canvasRef,
         className: "atlas-canvas",
-        onPointerDown: (e: { clientX: number; clientY: number }) => {
-          pointerDownRef.current = { x: e.clientX, y: e.clientY };
-        },
         onPointerMove: handleCanvasMove,
         onClick: handleCanvasClick,
       }),
       vizDebugAvailable && showDebug ? h(DebugOverlay) : null,
-      // Floating top bar: three panels — nav+identity · layout switcher · search.
+      // Floating top bar. DESKTOP: three panels — nav+identity · layout switcher ·
+      // search. NARROW (SCOPE D2): [← icon] [collection name] [count] [☰ <layout>], with
+      // the layouts and the search inside the menu.
       h(
         "header",
         { className: "cockpit-topbar" },
         h(
           "div",
           { className: "panel-float topbar-nav" },
-          // Glyph-only brand mark (board 3b): no wordmark over the canvas. It shares
-          // the back-navigation target, then a 1px divider fences it off from the nav.
-          // `micro` is deliberate here (legible at this small size) — set explicitly
-          // so it doesn't hinge on PlotlasMark's size<18 default.
-          h(
-            "button",
-            {
-              type: "button",
-              className: "topbar-brand",
-              title: "Plotlas — back to library",
-              "aria-label": "Plotlas — back to library",
-              onClick: props.onBack,
-            },
-            h(PlotlasMark, { size: 16, variant: "micro" }),
-          ),
-          h("span", { className: "topbar-divider", "aria-hidden": "true" }),
-          h("button", { type: "button", className: "btn ghost", onClick: props.onBack }, "← Datasets"),
+          navLead,
           // Part B: what the collection is CALLED, with the id as the tooltip so it
           // stays discoverable (it is what the deep link and the CLI use).
           h(
@@ -1017,7 +1520,7 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
           ),
           h("span", { className: "topbar-count" }, `${manifest?.dataset_metadata.image_count ?? "—"}`),
         ),
-        activeLayoutId !== null && layouts.length > 0
+        !narrow && activeLayoutId !== null && layouts.length > 0
           ? h(
               "div",
               { className: "panel-float topbar-layouts" },
@@ -1029,252 +1532,141 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
         // tier-2 catch-all. UI-S1: the results list is now this pill's OWN dropdown,
         // anchored under the input (`.search-dropdown`, absolutely positioned against
         // `.topbar-search`), not a body of the Inspector. The input owns the WAI-ARIA
-        // combobox role + aria-activedescendant; "/" focuses it.
-        h(
-          "div",
-          { className: "panel-float topbar-search" },
-          h("input", {
-            ref: searchInputRef,
-            type: "search",
-            className: "search-input",
-            role: "combobox",
-            "aria-label": "Search this dataset",
-            "aria-expanded": searchListboxShown,
-            // Gate aria-controls on the same derived flag as aria-expanded /
-            // aria-activedescendant (#227): the listbox id only resolves while the
-            // ready-with-rows listbox is actually rendered, so an IDREF to a
-            // non-existent element is never advertised (collapsed / loading / error /
-            // empty states render a <p>, not the <ul>).
-            "aria-controls": searchListboxShown ? SEARCH_LISTBOX_ID : undefined,
-            "aria-autocomplete": "list",
-            "aria-activedescendant":
-              searchListboxShown && searchState.activeIndex >= 0
-                ? searchOptionId(searchState.activeIndex)
-                : undefined,
-            placeholder: "Search…  ( / )",
-            value: searchQuery,
-            onChange: (e: { currentTarget: { value: string } }) => handleSearchInput(e.currentTarget.value),
-            onKeyDown: handleSearchKeyDown,
-          }),
-          // Re-show control for a dropdown the user hid while the query is still live —
-          // the dropdown's equivalent of a rail's collapsed chevron, kept inside the pill
-          // (the dropdown's own anchor) rather than floating loose over the canvas.
-          searchQuery !== "" && searchCollapsed
+        // combobox role + aria-activedescendant; "/" focuses it. Seam M2 / SCOPE D2: on
+        // a narrow holder the same node moves into the ☰ menu instead.
+        narrow ? null : searchPill,
+        // Seam O3: the activity pill — running jobs stay visible mid-view (the inat10k
+        // scatter / 1M-bake blind spot). `float` makes the pill OWN its panel-float
+        // surface and return null (no empty box) when nothing is tracked.
+        h(ActivityPill, { float: true, nameFor: activityNameFor }),
+        // The ☰ (SCOPE D2). Its trigger carries the ACTIVE LAYOUT'S NAME, because
+        // layout-switching is the product's idea and a bare glyph advertises none of it.
+        narrow
+          ? h(ViewerMenu, {
+              layouts,
+              activeLayoutId,
+              onSwitch: handleSwitch,
+              open: menuOpen,
+              setOpen: setMenuOpen,
+              onOpenTags: () => setTagsCollapsed(false),
+              // T2-131(a), narrow half: the SAME summary map the desktop tab row gets
+              // above. Without this the ☰ rows render no second line and M3's fix is
+              // desktop-only — the menu component accepts the prop and silently shows
+              // nothing when it is absent, which is why the gap was invisible.
+              bakedSummary,
+              search: searchPill,
+            })
+          : null,
+      ),
+      error !== null
+        ? h("p", { className: "panel-float error-banner-float error-text", role: "alert" }, error)
+        : null,
+      // The two auxiliary surfaces. On a WIDE holder they are the shipped floating
+      // rails, collapsible to a 36px chevron. On a NARROW one (SCOPE D1) they are not
+      // collapsed — they are NOT RENDERED, and two differently-shaped surfaces replace
+      // them, because the rails do different jobs and the shipped design treats them
+      // symmetrically: Tags is a TOOL you go to deliberately and it wants room (a full
+      // screen), the Inspector is a RESPONSE to a tap and must not hide what was tapped
+      // (a sheet at peek). The tag sidecar Table is provided the same way in both.
+      h(
+        TagTableContext.Provider,
+        { value: tagsTable },
+        narrow
+          ? tagsCollapsed
+            ? null
+            : h(TagsPanel, {
+                roles,
+                selection: tagSelection,
+                onChange: handleTagChange,
+                // T2-120 (Fix B): a RENDERER-side sidecar failure surfaces the retry
+                // affordance even when the UI-side chips (tagsTable) rendered fine.
+                rendererTagsFailed: tagState?.status === "unavailable",
+                onRetryTags: handleRetryTags,
+                onClose: () => setTagsCollapsed(true),
+              })
+          : tagsCollapsed
             ? h(
                 "button",
                 {
                   type: "button",
-                  className: "btn ghost search-reveal",
-                  "aria-label": "Show search results",
+                  className: "panel-float rail-collapsed rail-collapsed-left",
+                  "aria-label": "Expand tags",
                   "aria-expanded": false,
-                  onClick: () => {
-                    setSearchCollapsed(false);
-                    // This button unmounts on click; move focus into the (persistent)
-                    // combobox input so keyboard focus isn't dropped to <body> (#227).
-                    searchInputRef.current?.focus();
-                  },
+                  onClick: () => setTagsCollapsed(false),
                 },
-                "⌄",
+                "›",
               )
-            : null,
-          searchQuery !== ""
-            ? h(
-                "button",
-                {
-                  type: "button",
-                  className: "btn ghost search-clear",
-                  "aria-label": "Clear search",
-                  onClick: clearSearch,
-                },
-                "×",
-              )
-            : null,
-          // The dropdown itself: header + hide control mirroring the rails, body = the
-          // SearchResults panel (unchanged — it still owns the listbox/option ids).
-          searchDropdownOpen
-            ? h(
-                "div",
-                { className: "panel-float search-dropdown" },
+            : h(
+                "aside",
+                { className: "panel-float tag-rail" },
                 h(
                   "div",
                   { className: "rail-header" },
-                  h("span", { className: "rail-title" }, "Results"),
+                  h("span", { className: "rail-title" }, "Tags"),
                   h(
                     "button",
                     {
                       type: "button",
                       className: "btn ghost rail-toggle",
-                      "aria-label": "Hide search results",
+                      "aria-label": "Collapse tags",
                       "aria-expanded": true,
-                      onClick: () => {
-                        setSearchCollapsed(true);
-                        // Reset the active row (#227): the aria layer already reports no
-                        // active option while hidden, so Enter must SUBMIT the catch-all,
-                        // not activate a row the user can no longer see. Also move focus
-                        // off this unmounting button back into the combobox input.
-                        searchDispatch({ type: "move", index: -1 });
-                        searchInputRef.current?.focus();
-                      },
+                      onClick: () => setTagsCollapsed(true),
                     },
-                    "⌃",
+                    "‹",
                   ),
                 ),
                 h(
                   "div",
-                  { className: "rail-body search-dropdown-body" },
-                  h(SearchResults, {
-                    state: searchState,
-                    listboxId: SEARCH_LISTBOX_ID,
-                    optionId: searchOptionId,
-                    onActivate: jumpToRow,
-                    onHover: (index: number) => searchDispatch({ type: "move", index }),
-                    activeLayout: activeLayoutEntry,
+                  { className: "rail-body" },
+                  h(TagControls, {
+                    roles,
+                    selection: tagSelection,
+                    onChange: handleTagChange,
+                    rendererTagsFailed: tagState?.status === "unavailable",
+                    onRetryTags: handleRetryTags,
                   }),
                 ),
-              )
-            : null,
-        ),
-        // Seam O3: the activity pill — running jobs stay visible mid-view (the inat10k
-        // scatter / 1M-bake blind spot). `float` makes the pill OWN its panel-float
-        // surface and return null (no empty box) when nothing is tracked.
-        h(ActivityPill, { float: true, nameFor: activityNameFor }),
+              ),
       ),
-      error !== null
-        ? h("p", { className: "panel-float error-banner-float error-text", role: "alert" }, error)
-        : null,
-      // Floating tag rail (left), collapsible to a 36px chevron button.
-      tagsCollapsed
-        ? h(
-            "button",
-            {
-              type: "button",
-              className: "panel-float rail-collapsed rail-collapsed-left",
-              "aria-label": "Expand tags",
-              "aria-expanded": false,
-              onClick: () => setTagsCollapsed(false),
-            },
-            "›",
-          )
-        : h(
-            "aside",
-            { className: "panel-float tag-rail" },
-            h(
-              "div",
-              { className: "rail-header" },
-              h("span", { className: "rail-title" }, "Tags"),
-              h(
-                "button",
-                {
-                  type: "button",
-                  className: "btn ghost rail-toggle",
-                  "aria-label": "Collapse tags",
-                  "aria-expanded": true,
-                  onClick: () => setTagsCollapsed(true),
-                },
-                "‹",
-              ),
+      narrow
+        ? inspectorCollapsed
+          ? null
+          : h(
+              InspectorSheet,
+              {
+                detail: sheetDetail,
+                setDetail: setSheetDetail,
+                selectionCount: selectedIds.length,
+                onClear: clearSelection,
+                onClose: () => setInspectorCollapsed(true),
+              },
+              inspectorBody,
+              viewFullBtn,
+            )
+        : inspectorCollapsed
+          ? h(
+              "button",
+              {
+                type: "button",
+                className: "panel-float rail-collapsed rail-collapsed-right",
+                "aria-label": "Expand inspector",
+                "aria-expanded": false,
+                onClick: () => setInspectorCollapsed(false),
+              },
+              "‹",
+            )
+          : h(
+              "aside",
+              { className: "panel-float inspector" },
+              h(InspectorHeader, {
+                // T2-204: the one clear-selection control, in the header so it sits in the
+                // same place whatever the body shows (single cell or multi-select summary).
+                selectionCount: selectedIds.length,
+                onClear: clearSelection,
+                onCollapse: () => setInspectorCollapsed(true),
+              }),
+              h("div", { className: "rail-body inspector-body" }, inspectorBody, viewFullBtn),
             ),
-            h(
-              "div",
-              { className: "rail-body" },
-              h(
-                TagTableContext.Provider,
-                { value: tagsTable },
-                h(TagControls, {
-                  roles,
-                  selection: tagSelection,
-                  onChange: handleTagChange,
-                  // T2-120 (Fix B): a RENDERER-side sidecar failure surfaces the retry
-                  // affordance even when the UI-side chips (tagsTable) rendered fine.
-                  rendererTagsFailed: tagState?.status === "unavailable",
-                  onRetryTags: handleRetryTags,
-                }),
-              ),
-            ),
-          ),
-      // Floating inspector (right), collapsible like the rail.
-      inspectorCollapsed
-        ? h(
-            "button",
-            {
-              type: "button",
-              className: "panel-float rail-collapsed rail-collapsed-right",
-              "aria-label": "Expand inspector",
-              "aria-expanded": false,
-              onClick: () => setInspectorCollapsed(false),
-            },
-            "‹",
-          )
-        : h(
-            "aside",
-            { className: "panel-float inspector" },
-            h(
-              "div",
-              { className: "rail-header" },
-              h("span", { className: "rail-title" }, "Inspector"),
-              h(
-                "button",
-                {
-                  type: "button",
-                  className: "btn ghost rail-toggle",
-                  "aria-label": "Collapse inspector",
-                  "aria-expanded": true,
-                  onClick: () => setInspectorCollapsed(true),
-                },
-                "›",
-              ),
-            ),
-            h(
-              "div",
-              { className: "rail-body inspector-body" },
-              // UI-S1: metadata/summary ONLY, always. Search used to take this body over
-              // as a third state (the spike §3.1 "Inspector-as-results-list"), which is
-              // why one collapse flag governed both; the results list now has its own
-              // dropdown under the search box, so a live query no longer displaces what
-              // the user selected.
-              selectedIds.length > 1
-                ? h(SelectionSummary, {
-                    count: selectedIds.length,
-                    rows: summaryRows,
-                    roles,
-                    onClear: () => {
-                      setSelectedIds([]);
-                      setSummaryRows([]);
-                    },
-                  })
-                : h(
-                    MetadataPanelDataContext.Provider,
-                    { value: { tagsTable, preview } },
-                    h(MetadataPanel, {
-                      dataset: datasetId,
-                      selectedCellId: selectedCell,
-                      client,
-                      // Schema v2.8: the columns whose values render as links. The
-                      // manifest is already held here, so no extra fetch.
-                      urlColumns: manifest?.column_roles?.url,
-                    }),
-                  ),
-              // View ⤢ button overlaying the preview's bottom-right: enabled when
-              // a single cell's preview is resolved. Opens the lightbox at this
-              // cell (index 0 of the single-cell selection) AND fires the optional
-              // onViewFull prop so an external consumer, if any, still hears it.
-              preview !== null && selectedCell !== null && preview.cellId === selectedCell
-                ? h(
-                    "button",
-                    {
-                      type: "button",
-                      className: "btn ghost view-full-btn",
-                      "aria-label": `View cell ${selectedCell} full size`,
-                      onClick: () => {
-                        setLightbox({ index: 0 });
-                        props.onViewFull?.(selectedCell);
-                      },
-                    },
-                    "View ⤢",
-                  )
-                : null,
-            ),
-          ),
       // Fit-view control (T2-67): a floating button above the minimap that fits the
       // camera to the active layout's bbox. Ships regardless of the D-B auto-fit.
       h(
@@ -1329,8 +1721,7 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
                 close: () => setLightbox(null),
                 select: () => {
                   setSelectedIds([cellId]);
-                  summarySeqRef.current += 1;
-                  setSummaryRows([]);
+                  resetSummary();
                   void resolvePreview(cellId);
                 },
                 center: (id) => stack !== null && stack.controller.centerOnCell(id),

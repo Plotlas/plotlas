@@ -50,6 +50,17 @@ function tagStatusText(t: TagStatusView): string {
   return `${t.selected} tags highlighted`;
 }
 
+/** Seam M3 §3.4: is the tag read-out saying anything? "0 tags highlighted" is the
+ *  no-filter resting state and reports nothing; a selection ("N of M match" / "3 tags
+ *  highlighted") and a sidecar failure ("tags unavailable") both do.
+ *
+ *  The narrow bar keeps only what a phone visitor needs, and app.css hides the IDLE
+ *  case there — so a filter is announced exactly when there is one. The rule is over
+ *  the DATA, never over a position or a measured width: no shrink ladder. */
+export function tagStatusIdle(t: TagStatusView): boolean {
+  return t.status !== "unavailable" && t.selected === 0;
+}
+
 export interface StatusBarProps {
   status: ViewerStatus;
   /** The collection's source credit (Part D polish), rendered in THIS footer just left
@@ -61,7 +72,14 @@ export interface StatusBarProps {
 
 /** The docked 26px status bar: a mono, muted read-out of the current view.
  *  Left group = layout id · zoom · in-view · loading tiles (accent when > 0) ·
- *  tags highlighted; right group = selected cell · cursor coords · fps. */
+ *  tags highlighted; right group = selected cell · cursor coords · fps.
+ *
+ *  Seam M3 §3.4 — EVERY item carries a semantic class of its own. That is the whole
+ *  mechanism by which the narrow bar shows fewer read-outs: app.css hides the ones a
+ *  phone visitor does not need, keyed on M2's `.cockpit-narrow` (the mode switch's only
+ *  output to the stylesheet — there is no second definition of narrow here, and no
+ *  position-based shrink ladder). Which items are cut, and why, is documented beside
+ *  the rule in app.css; this component stays dumb and renders all of them. */
 export function StatusBar(props: StatusBarProps): ReactElement {
   const s = props.status;
   return h(
@@ -71,16 +89,27 @@ export function StatusBar(props: StatusBarProps): ReactElement {
       "div",
       { className: "status-group" },
       h("span", { className: "status-item status-layout" }, s.layoutId),
-      h("span", { className: "status-item" }, `zoom ${num(s.zoom)}×`),
-      h("span", { className: "status-item" }, `${num(s.inView)} in view`),
+      h("span", { className: "status-item status-zoom" }, `zoom ${num(s.zoom)}×`),
+      h("span", { className: "status-item status-inview" }, `${num(s.inView)} in view`),
       h(
         "span",
-        { className: s.loadingTiles > 0 ? "status-item status-loading" : "status-item" },
+        {
+          className:
+            s.loadingTiles > 0 ? "status-item status-tiles status-loading" : "status-item status-tiles",
+        },
         `loading ${s.loadingTiles} tiles`,
       ),
       h(
         "span",
-        { className: s.tags.status === "unavailable" ? "status-item status-tags-unavailable" : "status-item" },
+        {
+          className: [
+            "status-item status-tags",
+            s.tags.status === "unavailable" ? "status-tags-unavailable" : null,
+            tagStatusIdle(s.tags) ? "status-tags-idle" : null,
+          ]
+            .filter((c) => c !== null)
+            .join(" "),
+        },
         tagStatusText(s.tags),
       ),
     ),
@@ -89,11 +118,11 @@ export function StatusBar(props: StatusBarProps): ReactElement {
       { className: "status-group" },
       h(
         "span",
-        { className: "status-item" },
+        { className: "status-item status-selection" },
         s.selectedCell === null ? "no cell selected" : `cell ${s.selectedCell} selected`,
       ),
-      h("span", { className: "status-item" }, s.cursor === null ? "—" : s.cursor),
-      h("span", { className: "status-item" }, `${num(s.fps)} fps`),
+      h("span", { className: "status-item status-cursor" }, s.cursor === null ? "—" : s.cursor),
+      h("span", { className: "status-item status-fps" }, `${num(s.fps)} fps`),
       // Part D polish: the source credit lives IN this footer, immediately left of the
       // brand signature — not in a second floating strip of its own. Rendered only when
       // set, via the shared helper, so card and footer cannot drift.

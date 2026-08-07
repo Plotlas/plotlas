@@ -42,6 +42,33 @@ https://app.plotlas.com {
 	# (R-S5). Defined in Caddyfile.edge-snippets, imported ONLY here.
 	import security_headers
 
+	# ACCESS LOG — 30-day retention, implementing the commitment published at
+	# plotlas.com/privacy: "Our own server logs for the demo — retained 30 days,
+	# then rotated out automatically." (R-U9.)
+	#
+	# `roll_keep_for 720h` (= 30d) is LOAD-BEARING, not decoration: Caddy's default
+	# is 2160h — NINETY days — so omitting it would silently retain three times
+	# what that page promises. A written retention period that is not implemented is
+	# the one claim on that page anyone could trivially disprove.
+	#
+	# Credentials are safe by DEFAULT and must stay that way: since v2.5 Caddy logs
+	# Cookie / Set-Cookie / Authorization / Proxy-Authorization as REDACTED. Do NOT
+	# enable the global `log_credentials` option — the app's identity bearer (D-24)
+	# and the `viz_ds` static-edge cookie (T2-09) both ride those headers, so turning
+	# redaction off would write live session credentials to disk for 30 days.
+	#
+	# Deliberately scoped to THIS profile, not Caddyfile.edge-snippets: the dev and
+	# prod-parity edges are localhost-only and have no retention commitment. The
+	# http:// block above is left unlogged on purpose — it serves only redirects and
+	# the ACME challenge, so logging it is noise (turn it on if debugging issuance).
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 10MiB
+			roll_keep 10
+			roll_keep_for 720h
+		}
+	}
+
 	# Static versioned dataset assets (D-30), gated by the forward_auth sub-request
 	# (T2-09), and the /api reverse-proxy to uvicorn — both shared byte-identical
 	# with the other edge profiles (T2-76). NOTE on path traversal (R-S10): the

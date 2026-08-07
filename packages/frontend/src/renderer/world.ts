@@ -1,5 +1,16 @@
 import * as THREE from "three";
 
+import {
+  DOUBLE_TAP_ZOOM_STEP,
+  isDoubleTap,
+  pinchCamera,
+  pinchFrame,
+  tapTolerancePx,
+  wheelPixels,
+  zoomAt,
+} from "./gesture.ts";
+import type { PinchFrame, PointerSample, TapRecord } from "./gesture.ts";
+
 export interface Viewport {
   width: number;
   height: number;
@@ -33,9 +44,15 @@ export interface World {
 }
 
 /**
- * Renderer-internal extension of the catalogue `World` interface (the catalogue
- * surface above is implemented verbatim; these extras are consumed only inside
- * `src/renderer/` and by the perf harness — never by `ui/*`).
+ * The concrete handle `createWorld` returns, extending the catalogue `World` interface
+ * (the `World` surface above is implemented verbatim). `World` stays the minimum a
+ * consumer may assume — the overlays and the tile loader take a plain `World` and
+ * feature-detect the rest — while THIS is the type `ui/ViewerScreen.ts` actually holds.
+ *
+ * These are therefore part of the cross-package contract, not renderer-internal:
+ * measured 2026-08-06, `ui/` calls `setCameraState` (5), `getViewport` (5),
+ * `getCameraState` (1) and `consumedGesture` (1). `interface-catalogue.md` documents
+ * `WorldHandle` as a section of its own for that reason; keep the two in step.
  *
  * - `getCameraState`/`getViewport`: synchronous reads for picking math and for
  *   modules that need state before any input event fires.
@@ -62,6 +79,13 @@ export interface WorldHandle extends World {
    *  context re-uploads the surviving geometry/shaders and the repopulating
    *  textures render. No-op if disposed or already running. */
   resumeRenderLoop(): void;
+  /** True when the pointer interaction that just ended must NOT be treated as a click:
+   *  it involved more than one pointer (a pinch), or it moved beyond the tap tolerance
+   *  for its pointer type. Read by `ViewerScreen.handleCanvasClick`; cleared on the next
+   *  `pointerdown` that begins a fresh interaction. Seam M1 / SCOPE §2a — the World owns
+   *  ALL pointer bookkeeping, and `ui/` asks this one question instead of keeping its
+   *  own (which is how a pinch used to end by selecting a cell). */
+  consumedGesture(): boolean;
 }
 
 // Zoom clamps relative to the "fit the [0,1]^2 world" zoom: allow zooming out
@@ -138,6 +162,281 @@ export function cameraForCell(rect: WorldRect, viewport: Viewport, fraction = 1 
   return { center: [cx, cy], zoom: Math.max(zx, zy) };
 }
 
+/** The canvas capabilities the input model uses. Declared structurally rather than
+ *  taking the canvas so the model can be driven without a DOM: `createWorld` needs a
+ *  real WebGL context (pinned by `tests/frontend_skeleton.test.ts` — "createWorld needs
+ *  a real WebGL canvas"), so anything left inside its closure is unreachable in both
+ *  test tiers. An `HTMLCanvasElement` satisfies this as-is. */
+export interface InputSurface {
+  setPointerCapture(pointerId: number): void;
+  hasPointerCapture(pointerId: number): boolean;
+  releasePointerCapture(pointerId: number): void;
+  getBoundingClientRect(): { left: number; top: number };
+}
+
+/** The camera the input model drives — `createWorld`'s own closure state, behind
+ *  getters because `vp` is REPLACED on resize (a captured reference would go stale). */
+export interface InputCamera {
+  /** The live camera state; the input model only reads it. */
+  camera(): CameraState;
+  viewport(): Viewport;
+  /** The SAME clamp `drive` (setCameraState) applies — not a second one. The input
+   *  model needs it BEFORE the anchor math because `setCameraState` clamps zoom but
+   *  not center, so a center computed for a zoom that never lands leaves the anchor
+   *  drifting; the shipped wheel handler already pre-clamped for this reason. */
+  clampZoom(zoom: number): number;
+  drive(partial: Partial<CameraState>, focal?: [number, number]): void;
+}
+
+/** The `PointerEvent` fields the input model reads. Structural, so a real
+ *  `PointerEvent` is assignable to it and a test can hand it a literal. */
+export interface PointerLike {
+  pointerId: number;
+  pointerType: string;
+  clientX: number;
+  clientY: number;
+}
+
+/** The `WheelEvent` fields the input model reads (see `PointerLike`). */
+export interface WheelLike {
+  clientX: number;
+  clientY: number;
+  deltaY: number;
+  deltaMode: number;
+  preventDefault(): void;
+}
+
+export interface PointerInput {
+  onPointerDown(e: PointerLike): void;
+  onPointerMove(e: PointerLike): void;
+  onPointerUp(e: PointerLike): void;
+  /** `pointercancel` — on touch this is ROUTINE (the browser reclaiming the gesture),
+   *  not exceptional. It shares every bit of `onPointerUp`'s bookkeeping, but the
+   *  interaction never COMPLETED, so it is not a tap and must not seed a double-tap.
+   *  Bind it separately; routing it to `onPointerUp` is the defect this pair replaced. */
+  onPointerCancel(e: PointerLike): void;
+  onWheel(e: WheelLike): void;
+  /** See `WorldHandle.consumedGesture`. */
+  consumedGesture(): boolean;
+}
+
+/**
+ * The camera-input model: one-finger/mouse drag to pan, two-finger pinch to zoom and
+ * pan (SCOPE D3), double-tap to zoom in (SCOPE D4), wheel to zoom anchored at the
+ * cursor. Seam M1 — this is the SINGLE owner of pointer bookkeeping: `ui/` keeps none
+ * and asks `consumedGesture()` instead (SCOPE §2a).
+ *
+ * All arbitration is on the ACTIVE POINTER MAP — the fix for fault I2, where one
+ * `dragging` boolean and one `lastX`/`lastY` pair meant a second finger overwrote the
+ * pan origin (measured: a 10px finger move panned 190px) and the first lift killed the
+ * survivor (measured: 0px). Every camera change routes through `cam.drive`, which is
+ * `setCameraState` — nothing here mutates camera state or clamps zoom itself.
+ *
+ * Extracted from `createWorld` because `createWorld` needs a real WebGL canvas
+ * (tests/frontend_skeleton.test.ts), so bookkeeping left inside it is unreachable from
+ * both test tiers.
+ */
+export function createPointerInput(surface: InputSurface, cam: InputCamera): PointerInput {
+  // Active pointers, in insertion order — a Map preserves it, which is what makes
+  // "the first two fingers own the pinch" well-defined.
+  const pointers = new Map<number, PointerSample>();
+  // The pinch frame the next pinch step is differenced against. Re-seated whenever the
+  // leading PAIR changes (a finger down or up), never carried across a different pair.
+  let pinchPrev: PinchFrame | null = null;
+  // True when the interaction that just ended must not be treated as a click.
+  let consumed = false;
+  // Where the current interaction started + the tolerance for the pointer that started
+  // it, so "did this move far enough to be a drag" is answered per pointer TYPE.
+  let tapOrigin: PointerSample | null = null;
+  let tapTolerance = tapTolerancePx("mouse");
+  // The previous completed tap, for double-tap detection (SCOPE D4).
+  let lastTap: TapRecord | null = null;
+
+  // The leading pair, cached: a REUSED two-slot array plus its two ids, re-seated only
+  // when the pointer SET changes (a finger down or up). `pointermove` is the hot path —
+  // it fires at input rate for the whole gesture — so it must not allocate an id array,
+  // a sample array and a Map iterator per frame just to ask "is this one of the two?".
+  // The entries are the same objects the map holds, so `held.x = ...` in onPointerMove
+  // keeps them current with no re-seat.
+  const leadPair: PointerSample[] = [];
+  let leadIdA = -1;
+  let leadIdB = -1;
+
+  function reseatLead(): void {
+    leadPair.length = 0;
+    leadIdA = -1;
+    leadIdB = -1;
+    for (const id of pointers.keys()) {
+      const p = pointers.get(id);
+      if (p === undefined) continue;
+      if (leadPair.length === 0) {
+        leadIdA = id;
+      } else {
+        leadIdB = id;
+      }
+      leadPair.push(p);
+      if (leadPair.length === 2) break;
+    }
+  }
+
+  function onPointerDown(e: PointerLike): void {
+    if (pointers.size === 0) {
+      // A fresh interaction: this is the one place `consumed` is cleared (§2b).
+      consumed = false;
+      tapOrigin = { x: e.clientX, y: e.clientY };
+      tapTolerance = tapTolerancePx(e.pointerType);
+    }
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    reseatLead();
+    if (pointers.size >= 2) {
+      // More than one pointer means a pinch, and a pinch is never a click (§2b) —
+      // without this every pinch would end by selecting whatever is under a finger.
+      consumed = true;
+      pinchPrev = pinchFrame(leadPair);
+    }
+    // Capture LAST: it is the one call here that can throw (setPointerCapture rejects a
+    // pointerId with no active pointer), and no bookkeeping should be lost if it does.
+    surface.setPointerCapture(e.pointerId);
+  }
+
+  function onPointerMove(e: PointerLike): void {
+    const held = pointers.get(e.pointerId);
+    if (held === undefined) return; // a hover move with nothing down
+    const fromX = held.x;
+    const fromY = held.y;
+    // Keep EVERY tracked pointer current, including a third finger the pinch ignores.
+    // This is what makes 2->1 and 3->2 seamless: whoever survives resumes from its own
+    // last position, so there is no accumulated difference to jump by.
+    held.x = e.clientX;
+    held.y = e.clientY;
+
+    if (pointers.size >= 2) {
+      // A third finger must not move the anchor mid-gesture: it is tracked (above) but
+      // does not drive. Checked BEFORE any camera read, so an ignored pointer costs
+      // nothing.
+      if (e.pointerId !== leadIdA && e.pointerId !== leadIdB) return;
+      const next = pinchFrame(leadPair);
+      if (next === null || pinchPrev === null) return;
+      const step = pinchCamera(cam.camera(), cam.viewport(), pinchPrev, next, cam.clampZoom);
+      pinchPrev = next;
+      // `focal` is the midpoint's world position — the same contract the wheel handler
+      // honours; without it the loader silently falls back to the bbox centre.
+      cam.drive({ center: step.center, zoom: step.zoom }, step.focal);
+      return;
+    }
+
+    // One pointer: pan. Content follows the cursor, so dragging right moves the camera
+    // center left — unchanged from pre-M1.
+    if (
+      tapOrigin !== null &&
+      (Math.abs(e.clientX - tapOrigin.x) > tapTolerance ||
+        Math.abs(e.clientY - tapOrigin.y) > tapTolerance)
+    ) {
+      consumed = true; // fault I4: the tolerance is now the POINTER TYPE's, not a 4px literal
+    }
+    const state = cam.camera();
+    const dx = e.clientX - fromX;
+    const dy = e.clientY - fromY;
+    cam.drive({
+      center: [state.center[0] - dx * state.zoom, state.center[1] - dy * state.zoom],
+    });
+  }
+
+  /**
+   * A pointer left the surface. `cancelled` distinguishes `pointercancel` from
+   * `pointerup`, and it is NOT a cosmetic difference: a cancel is the browser
+   * explicitly RECLAIMING the gesture (an OS interruption, palm rejection, a system
+   * edge-swipe), so the interaction never completed and must not be recorded as a tap —
+   * otherwise the next real tap pairs with it and fires a double-tap zoom the user
+   * never asked for. Everything else about the two is identical: the pointer leaves the
+   * map, capture is released, and the pinch re-seats.
+   */
+  function endPointer(e: PointerLike, cancelled: boolean): void {
+    const tracked = pointers.delete(e.pointerId);
+    if (surface.hasPointerCapture(e.pointerId)) surface.releasePointerCapture(e.pointerId);
+    if (!tracked) return;
+
+    // Re-seat against whoever is left: 3->2 changes WHICH pair leads, and a frame from
+    // the old pair would be applied as one huge zoom+pan step. null below two pointers.
+    reseatLead();
+    pinchPrev = pinchFrame(leadPair);
+    // A finger lifting is not a camera event — nothing is driven here, which is half of
+    // why 2->1 does not jump; the other half is that every move kept samples current.
+    if (pointers.size > 0) return;
+
+    // The interaction is over. A gesture (pinch, or a drag past tolerance) is not a tap,
+    // and neither is a cancelled interaction — none of them may seed a double-tap.
+    if (cancelled || consumed || e.pointerType !== "touch") {
+      lastTap = null;
+      return;
+    }
+    // SCOPE D4: double-tap zooms in one step at the tap point. Deliberately NO delay on
+    // the first tap — the accepted consequence is that a double-tap also selects.
+    const tap: TapRecord = { x: e.clientX, y: e.clientY, t: Date.now() };
+    if (!isDoubleTap(lastTap, tap)) {
+      lastTap = tap;
+      return;
+    }
+    lastTap = null; // a third tap starts a fresh pair rather than chaining
+    consumed = true; // suppress the SECOND tap's click; the first tap's selection stands
+    const state = cam.camera();
+    const vp = cam.viewport();
+    const rect = surface.getBoundingClientRect();
+    const step = zoomAt(
+      state,
+      vp,
+      tap.x - rect.left,
+      tap.y - rect.top,
+      cam.clampZoom(state.zoom / DOUBLE_TAP_ZOOM_STEP),
+    );
+    cam.drive({ center: step.center, zoom: step.zoom }, step.focal);
+  }
+
+  function onPointerUp(e: PointerLike): void {
+    endPointer(e, false);
+  }
+
+  function onPointerCancel(e: PointerLike): void {
+    // `cancelled` deliberately suppresses ONE thing — tap-recording — and `consumed`
+    // stays false here. That looks like a gap and is not: no `click` is dispatched after
+    // a `pointercancel`, so `consumedGesture()` is never read for this interaction, and
+    // the next `pointerdown` resets it anyway. Setting it to true was considered and
+    // REJECTED (review of #267): it would guard a path that cannot fire, so no pin could
+    // hold it in place, and by this project's own rule a mutation that causes no failure
+    // is a finding rather than a gap to paper over. Seam M2 shares this path — if you
+    // are about to "fix" this, that is the reasoning you are overriding.
+    endPointer(e, true);
+  }
+
+  function onWheel(e: WheelLike): void {
+    e.preventDefault();
+    const state = cam.camera();
+    const vp = cam.viewport();
+    const rect = surface.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    // Fault I6: `deltaMode` was ignored, so Firefox's line-mode notch (deltaY 3) was
+    // read as 3 pixels. Mode 0 passes through untouched — Chrome/Safari are unchanged.
+    const deltaPx = wheelPixels(e.deltaY, e.deltaMode);
+    const newZoom = cam.clampZoom(state.zoom * Math.exp(deltaPx * WHEEL_ZOOM_RATE));
+    // Keep the world point under the cursor fixed while zooming; `zoomAt` IS the
+    // expression this handler shipped with, and its `focal` is that world point — the
+    // load focal point (§0.4 / audit A2), so the pager orders loads outward from the
+    // cursor instead of the bbox centre.
+    const step = zoomAt(state, vp, px, py, newZoom);
+    cam.drive({ center: step.center, zoom: step.zoom }, step.focal);
+  }
+
+  return {
+    onPointerDown,
+    onPointerMove,
+    onPointerUp,
+    onPointerCancel,
+    onWheel,
+    consumedGesture: () => consumed,
+  };
+}
+
 export function createWorld(canvas: HTMLCanvasElement, viewport: Viewport): WorldHandle {
   const scene = new THREE.Scene();
 
@@ -201,62 +500,20 @@ export function createWorld(canvas: HTMLCanvasElement, viewport: Viewport): Worl
   }
 
   // ---- input: drag-to-pan, wheel-to-zoom anchored at the cursor ----
-  let dragging = false;
-  let lastX = 0;
-  let lastY = 0;
+  // The bookkeeping lives in `createPointerInput` (above) so it is reachable from a
+  // test; this is the wiring of that model to THIS world's canvas and camera.
+  const input = createPointerInput(canvas, {
+    camera: () => state,
+    viewport: () => vp,
+    clampZoom: (zoom: number) => Math.min(maxZoom, Math.max(minZoom, zoom)),
+    drive: setCameraState,
+  });
 
-  function onPointerDown(e: PointerEvent): void {
-    dragging = true;
-    lastX = e.clientX;
-    lastY = e.clientY;
-    canvas.setPointerCapture(e.pointerId);
-  }
-
-  function onPointerMove(e: PointerEvent): void {
-    if (!dragging) return;
-    const dx = e.clientX - lastX;
-    const dy = e.clientY - lastY;
-    lastX = e.clientX;
-    lastY = e.clientY;
-    // Content follows the cursor: dragging right moves the camera center left.
-    setCameraState({
-      center: [state.center[0] - dx * state.zoom, state.center[1] - dy * state.zoom],
-    });
-  }
-
-  function onPointerUp(e: PointerEvent): void {
-    dragging = false;
-    if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
-  }
-
-  function onWheel(e: WheelEvent): void {
-    e.preventDefault();
-    const rect = canvas.getBoundingClientRect();
-    const px = e.clientX - rect.left;
-    const py = e.clientY - rect.top;
-    const newZoom = Math.min(
-      maxZoom,
-      Math.max(minZoom, state.zoom * Math.exp(e.deltaY * WHEEL_ZOOM_RATE)),
-    );
-    // Keep the world point under the cursor fixed while zooming. (wx,wy) is also
-    // the load focal point (§0.4 / audit A2): emit it so the pager orders loads
-    // outward from the cursor instead of the bbox centre.
-    const wx = state.center[0] + (px - vp.width / 2) * state.zoom;
-    const wy = state.center[1] + (py - vp.height / 2) * state.zoom;
-    setCameraState(
-      {
-        center: [wx - (px - vp.width / 2) * newZoom, wy - (py - vp.height / 2) * newZoom],
-        zoom: newZoom,
-      },
-      [wx, wy],
-    );
-  }
-
-  canvas.addEventListener("pointerdown", onPointerDown);
-  canvas.addEventListener("pointermove", onPointerMove);
-  canvas.addEventListener("pointerup", onPointerUp);
-  canvas.addEventListener("pointercancel", onPointerUp);
-  canvas.addEventListener("wheel", onWheel, { passive: false });
+  canvas.addEventListener("pointerdown", input.onPointerDown);
+  canvas.addEventListener("pointermove", input.onPointerMove);
+  canvas.addEventListener("pointerup", input.onPointerUp);
+  canvas.addEventListener("pointercancel", input.onPointerCancel);
+  canvas.addEventListener("wheel", input.onWheel, { passive: false });
 
   function renderFrame(): void {
     // Allocation-free hot path: a single render call. Cell positions and texture
@@ -322,11 +579,11 @@ export function createWorld(canvas: HTMLCanvasElement, viewport: Viewport): Worl
       disposed = true;
       running = false;
       renderer.setAnimationLoop(null);
-      canvas.removeEventListener("pointerdown", onPointerDown);
-      canvas.removeEventListener("pointermove", onPointerMove);
-      canvas.removeEventListener("pointerup", onPointerUp);
-      canvas.removeEventListener("pointercancel", onPointerUp);
-      canvas.removeEventListener("wheel", onWheel);
+      canvas.removeEventListener("pointerdown", input.onPointerDown);
+      canvas.removeEventListener("pointermove", input.onPointerMove);
+      canvas.removeEventListener("pointerup", input.onPointerUp);
+      canvas.removeEventListener("pointercancel", input.onPointerCancel);
+      canvas.removeEventListener("wheel", input.onWheel);
       // Fire teardown hooks (the tile-pyramid loader aborts in-flight fetches)
       // BEFORE we drop the camera subscriptions, then clear both sets.
       for (const cb of disposeCallbacks) {
@@ -347,6 +604,7 @@ export function createWorld(canvas: HTMLCanvasElement, viewport: Viewport): Worl
       return { ...vp };
     },
     setCameraState,
+    consumedGesture: input.consumedGesture,
     onDispose(cb: () => void): void {
       if (disposed) {
         cb();

@@ -107,18 +107,17 @@ export interface CellsHandle extends Cells {
   /** T2-66/T2-48 (v2.2): register a COARSE-TIER pick fallback. When `pick()` finds
    *  no resident fine-tier cell under the point (the common case zoomed out, where
    *  only mosaic overview quads are drawn — nothing per-cell to hit), it calls this
-   *  fn with the WORLD coordinates plus the camera `zoom` (world units per CSS px,
-   *  I-09 — so the fn can apply its screen-size pick floor); the fn returns the cell
-   *  id from the layout's position table (or null). The tile-pyramid loader owns the
+   *  fn with the WORLD coordinates; the fn returns the cell id from the layout's
+   *  position table (or null). It took the camera `zoom` too until T2-204, purely so
+   *  it could apply a screen-size pick floor — that floor is gone (see
+   *  `hitTestPositionTable`), and with it the argument. The tile-pyramid loader owns the
    *  position table (it fetches/caches it per layout and releases it on a
    *  dataset/layout switch) and registers the scan here; passing `null` clears it
    *  (no table ⇒ fine-tier-only picking, exactly the pre-2.2 behaviour — graceful
    *  absence). Keeping the table OUT of cells.ts (which is GL/geometry only, with no
    *  client/network) and wiring it through this hook preserves the module boundary.
    *  Optional: a test double may omit it. */
-  setCoarsePickFallback?(
-    fn: ((worldX: number, worldY: number, zoom: number) => number | null) | null,
-  ): void;
+  setCoarsePickFallback?(fn: ((worldX: number, worldY: number) => number | null) | null): void;
 }
 
 // Cells render AT iTranslation directly: positions snap on arrival (setBuffers).
@@ -266,20 +265,19 @@ export function parsePositionsTable(table: Table): PositionTable {
  *  at 1M — deliberately behind this one function so a spatial index can replace it
  *  later with no caller change (the follow-up). Pure + exported for unit tests.
  *
- *  `minWorldSize` is the SCREEN-SIZE FLOOR (world units; 0 = no floor): a cell whose
- *  larger dimension is below it is skipped — un-aimably small on screen. Callers pass
- *  `MIN_CSS_PX * zoom` (zoom is world units per CSS px, I-09) so at extreme zoom-out
- *  a sub-pixel cell is a MISS rather than an arbitrary-feeling pick; on space-filling
- *  layouts (grid tiles the whole world) this is also what keeps the plain
- *  click-on-background-clears-selection gesture reachable when zoomed far out. */
+ *  NO screen-size floor (T2-204): a cell resolves at ANY zoom, exactly like the
+ *  fine-tier `hitTestCells`, which never had one either. This used to be floored at
+ *  ~3 CSS px so a sub-pixel cell was a MISS; that made the click dead across most of
+ *  the zoom-out range (rijks "By date" is 0.6 px/cell at fit — never clickable) and
+ *  its stated purpose, keeping click-on-background-clears-selection reachable, is now
+ *  served by an explicit affordance (Escape / the inspector's "Clear selection"). */
 export function hitTestPositionTable(
   worldX: number,
   worldY: number,
   table: PositionTable,
-  minWorldSize = 0,
 ): number | null {
   const best = { id: -1, d2: Number.POSITIVE_INFINITY };
-  hitTestPositionCore(worldX, worldY, table, best, minWorldSize);
+  hitTestPositionCore(worldX, worldY, table, best);
   return best.id >= 0 ? best.id : null;
 }
 
@@ -292,11 +290,9 @@ function hitTestPositionCore(
   worldY: number,
   table: PositionTable,
   best: { id: number; d2: number },
-  minWorldSize: number,
 ): void {
   const { x, y, w, h, count } = table;
   for (let i = 0; i < count; i++) {
-    if (w[i] < minWorldSize && h[i] < minWorldSize) continue; // sub-floor: un-aimable
     const hw = w[i] / 2;
     const hh = h[i] / 2;
     const cx = x[i];
@@ -416,8 +412,7 @@ export function createCells(world: World): CellsHandle {
   // T2-66/T2-48: the coarse-tier pick fallback the tile-pyramid loader registers
   // (a scan over the layout's position table). null ⇒ no table for this layout
   // (pre-2.2 dataset or not yet loaded) ⇒ fine-tier-only picking.
-  let coarsePickFallback: ((worldX: number, worldY: number, zoom: number) => number | null) | null =
-    null;
+  let coarsePickFallback: ((worldX: number, worldY: number) => number | null) | null = null;
 
   // Latest camera state for picking (world emits immediately on subscribe).
   let camState: CameraState | null = null;
@@ -891,14 +886,11 @@ export function createCells(world: World): CellsHandle {
       // the loader registered a scan that resolves a cell rect at ANY zoom. null when
       // no table is registered (pre-2.2 dataset) — then this is the pre-2.2 behaviour.
       if (best.id >= 0) return { cellId: best.id };
-      // zoom (world per CSS px, I-09) lets the fallback apply its screen-size floor.
-      if (coarsePickFallback !== null) return { cellId: coarsePickFallback(wx, wy, camState.zoom) };
+      if (coarsePickFallback !== null) return { cellId: coarsePickFallback(wx, wy) };
       return { cellId: null };
     },
 
-    setCoarsePickFallback(
-      fn: ((worldX: number, worldY: number, zoom: number) => number | null) | null,
-    ): void {
+    setCoarsePickFallback(fn: ((worldX: number, worldY: number) => number | null) | null): void {
       coarsePickFallback = fn;
     },
 
