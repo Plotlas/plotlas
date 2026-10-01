@@ -43,6 +43,12 @@ function failingClient(status: number): ApiClient {
     async listLayouts(): Promise<never> {
       throw apiError(status);
     },
+    // Boot reads the presentation record alongside the layout list (D-iv). The real
+    // client never rejects here, so a stub must not either — this is the "no record"
+    // answer, which is every collection committed before 2026-09-07.
+    async getPresentation() {
+      return {};
+    },
     async getManifest(): Promise<never> {
       throw apiError(status);
     },

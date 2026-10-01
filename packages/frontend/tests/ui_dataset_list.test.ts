@@ -1,8 +1,8 @@
 // Tier-1 (Phase C, brief §3.2): a renderToString smoke for the recut DatasetList
 // card gallery (board 1f) covering the ready / processing / error / empty states.
 // Complements the shared admin smoke in ui_components.test.ts; this file pins the
-// card-specific structure the recut introduces (media area, the ⋯ menu with the
-// relocated delete-confirm, the indeterminate processing bar, the error card's
+// card-specific structure the recut introduces (media area, Open + Edit — the ⋯ menu
+// retired with seam L3, D-xxiv — the indeterminate processing bar, the error card's
 // View-log reveal, and the empty-state CTA). The card COVER (T2-55) is fetched
 // client-side in an effect (not run by server render), so a ready card's initial
 // markup is still the flat --surface block here; the cover fetch/objectURL lifecycle
@@ -17,8 +17,11 @@ import {
   statusChip,
   updatingBadge,
   shouldFlipMenu,
-  CARD_MENU_EST_HEIGHT,
 } from "../src/ui/admin/DatasetList.ts";
+
+/** The dropdown height the flip tests reason about (the retired card menu's estimate,
+ *  180px; the helper itself is height-agnostic and now serves the activity pill). */
+const CARD_MENU_EST_HEIGHT = 180;
 import type { ApiClient } from "../src/api-client/client.ts";
 import type { DatasetSummary } from "../src/api-client/types.ts";
 
@@ -44,10 +47,8 @@ const CLIENT = {
 
 const NOOP = {
   client: CLIENT,
-  busyId: null,
   onOpen: () => {},
-  onDelete: () => {},
-  onAddLayout: () => {},
+  onEdit: () => {},
   onNewDataset: () => {},
 };
 
@@ -57,8 +58,8 @@ test("statusChip stays the outline pill export (status-chip status-<status>)", (
   assert.match(renderToString(statusChip("error")), /status-chip status-error/);
 });
 
-test("ready card: accent Open + ⋯ menu; media area renders (cover fetched client-side)", () => {
-  const html = renderToString(h(DatasetList, { datasets: [summary("a", "ready")], ...NOOP }));
+test("ready card, OWNER: accent Open + Edit, no ⋯ menu; media area renders", () => {
+  const html = renderToString(h(DatasetList, { datasets: [summary("a", "ready")], username: "ada", ...NOOP }));
   assert.match(html, /dataset-card/);
   // The cover is fetched in an effect (not run by server render), so the ready card's
   // initial markup is the flat --surface block; the cover swaps in client-side (T2-55).
@@ -67,9 +68,31 @@ test("ready card: accent Open + ⋯ menu; media area renders (cover fetched clie
   assert.match(html, /42 images · v3 · ada/); // mono meta line
   assert.match(html, /class="layout-chip">grid/); // layout chips
   assert.match(html, /class="btn pri"[^>]*>Open<\/button>/); // accent Open, enabled
-  assert.match(html, /card-menu-btn/); // the ⋯ menu trigger
-  // Delete lives inside the ⋯ popover (closed by default → not yet in the DOM).
-  assert.ok(!/Confirm delete/.test(html));
+  assert.match(html, /<button[^>]*>Edit<\/button>/); // D-xxiv: Edit for the owner
+  assert.ok(!/card-menu-btn/.test(html), "the ⋯ menu retired (D-xxiv)");
+  assert.ok(!/Delete/.test(html), "delete lives in the designer's Overview now");
+});
+
+test("ready card, NOT the owner: Open alone", () => {
+  for (const username of ["someone_else", null]) {
+    const html = renderToString(h(DatasetList, { datasets: [summary("a", "ready")], username, ...NOOP }));
+    assert.match(html, /class="btn pri"[^>]*>Open<\/button>/);
+    assert.ok(!/>Edit<\/button>/.test(html), `no Edit for username=${String(username)}`);
+  }
+});
+
+test("a read-only (anonymous) card never offers Edit, even for a matching owner string", () => {
+  const html = renderToString(
+    h(DatasetList, { datasets: [summary("a", "ready")], username: "ada", readOnly: true, ...NOOP }),
+  );
+  assert.ok(!/>Edit<\/button>/.test(html));
+});
+
+test("a processing or errored card offers no Edit — the designer needs a baked layout", () => {
+  const html = renderToString(
+    h(DatasetList, { datasets: [summary("p", "processing"), summary("e", "error")], username: "ada", ...NOOP }),
+  );
+  assert.ok(!/>Edit<\/button>/.test(html));
 });
 
 test("processing card: dimmed media + indeterminate bar + disabled 'Open when ready' (no fake %)", () => {

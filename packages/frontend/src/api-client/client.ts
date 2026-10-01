@@ -1,22 +1,29 @@
 import { tableFromIPC } from "apache-arrow";
 import type { Table } from "apache-arrow";
 import type { LayoutManifest } from "../renderer/layout";
+import type { Presentation } from "../generated/presentation";
+import type { ColumnRoles } from "../generated/column_roles";
 import type {
   AddLayoutsRequest,
   AddLayoutsResponse,
   CheckFile,
   CheckResponse,
+  ColumnListResponse,
   CreateDatasetRequest,
   CreateDatasetResponse,
   DatasetPresentation,
   DatasetSummary,
+  DeleteLayoutResponse,
   JobStatus,
   LayoutInfo,
   LoginRequest,
   MetadataRow,
   SearchResponse,
+  SetColumnRolesResponse,
   SignupRequest,
   TokenResponse,
+  UploadAlreadyCreatedDetail,
+  UploadCapsResponse,
   UploadFilesPage,
   UploadHandle,
   UploadSessionSummary,
@@ -27,8 +34,40 @@ import type {
 export interface ApiClient {
   listDatasets(): Promise<DatasetSummary[]>;
   getDataset(dsId: string): Promise<DatasetSummary>;
-  listLayouts(dsId: string): Promise<LayoutInfo[]>;
+  /** GET /api/datasets/{ds_id}/layouts — every layout, committed ones first.
+   *
+   *  `includePending` (seam L1, default false — and then NO query parameter is sent, so
+   *  the request is byte-identical to before) asks the API to APPEND the layouts that are
+   *  in flight but not yet committed (`state` "queued"/"baking"). It stays off for the
+   *  viewer's switcher, where an entry with no tiles is a control that cannot work; the
+   *  designer, which renders a queue, opts in. */
+  listLayouts(dsId: string, opts?: { includePending?: boolean }): Promise<LayoutInfo[]>;
+  /** DELETE /api/datasets/{ds_id}/layouts/{layout_id} → 202 + `{ job_id }` (seam L1/L2).
+   *  ENQUEUED, not done: the manifest is worker-written, so the layout goes away when the
+   *  job lands. 404 unknown layout, 409 the last layout or a job in flight, 403
+   *  not-owner — all ApiError with the server's detail. */
+  deleteLayout(dsId: string, layoutId: string): Promise<DeleteLayoutResponse>;
+  /** POST /api/datasets/{ds_id}/column-roles → 202 + `{ job_id }` (seam L1). Re-declares
+   *  the committed roles with NO bake. `roles` is the FULL replacement map, never a
+   *  patch. The authoritative stale set arrives on the finished job's `result`. */
+  setColumnRoles(dsId: string, roles: ColumnRoles): Promise<SetColumnRolesResponse>;
+  /** GET /api/datasets/{ds_id}/columns (seam L1) — the collection's metadata columns and
+   *  the `source` that answered. Read `source`, never `columns.length`. `uploadId` names
+   *  one of the caller's own finalized bundles to read the RAW headers from instead. */
+  listColumns(dsId: string, opts?: { uploadId?: string }): Promise<ColumnListResponse>;
   getManifest(dsId: string, layoutId: string): Promise<LayoutManifest>;
+  /** GET /api/datasets/{ds_id}/presentation — the collection's presentation record
+   *  (D-xv), merged server-side over the bake record's defaults. The GET pair of the
+   *  PATCH that has always lived at this path.
+   *
+   *  NEVER REJECTS, and that is the contract, not defensive coding: every collection
+   *  committed before 2026-09-07 has no record, an absent record must mean exactly
+   *  today's behaviour (D-xvi), and a viewer cannot tell "no record" from "the read
+   *  failed" — nor should it, since both mean the same thing on screen. So a 404, a
+   *  500, an offline network and a body that is not an object all resolve to `{}`.
+   *  A malformed FIELD is dropped without taking its siblings with it
+   *  (`coercePresentation`). */
+  getPresentation(dsId: string): Promise<Presentation>;
   /** v2 (decision D-33): URL of a layout's whole spatial-tile-pyramid PMTiles
    *  container, HTTP-Range-read tile-by-tile ({z}/{x}/{y}) by the renderer's
    *  PMTiles client. Prefers the STATIC Caddy path once the manifest is cached
@@ -170,16 +209,42 @@ export interface ApiClient {
   /** DELETE /api/datasets/{ds_id} → 204. 403 not-owner, 404 unknown, and the
    *  409-while-running all surface as ApiError with the server's detail. */
   deleteDataset(dsId: string): Promise<void>;
-  /** PATCH /api/datasets/{ds_id}/presentation — set the collection's display name
-   *  and/or attribution (Part B). Owner-only: 403 not-owner, 404 unknown to
-   *  app-state, 422 too long. PARTIAL BY KEY PRESENCE — an omitted key is left
+  /** PATCH /api/datasets/{ds_id}/presentation — set the collection's presentation
+   *  record. Owner-only: 403 not-owner, 404 unknown to app-state, 422 a value the
+   *  contract refuses, 409 a dataset tree that cannot be written (the showcase profile
+   *  mounts its content `:ro`). PARTIAL BY KEY PRESENCE — an omitted key is left
    *  untouched, a key present as null or "" CLEARS it (so a bad name is always
-   *  recoverable). Presentation only: `dataset_id` never changes, so a rename cannot
-   *  break a shared deep link. Returns the values AS STORED (trimmed). */
+   *  recoverable), and the same rule applies one level down inside `columns`/`layouts`.
+   *  Presentation only: `dataset_id` never changes, so a rename cannot break a shared
+   *  deep link. Returns the three dataset-level scalars AS STORED (trimmed) — that echo
+   *  shape is unchanged by D-xv's move of the storage into `presentation.json`. */
   setDatasetPresentation(
     dsId: string,
-    patch: { display_name?: string | null; attribution?: string | null; attribution_url?: string | null },
+    patch: {
+      display_name?: string | null;
+      attribution?: string | null;
+      attribution_url?: string | null;
+      default_layout?: string | null;
+      title_column?: string | null;
+      // Per-column / per-layout display. `{col: {render: null}}` clears one key of an
+      // entry; `{col: null}` removes the entry outright.
+      columns?: Record<string, Record<string, unknown> | null> | null;
+      layouts?: Record<string, Record<string, unknown> | null> | null;
+    },
   ): Promise<DatasetPresentation>;
+  /** Seam A2: GET /api/uploads/caps — the upload ceilings THIS deployment enforces
+   *  (env-tuned, read per request server-side). Session-independent, so it is
+   *  reachable before a session exists and on a resume that never opens one — which
+   *  is what lets the pre-flight run against the real limits instead of a compiled-in
+   *  mirror. Not validated here — `uploadSelection.capsFromServer` validates it
+   *  downstream, and the caller keeps DEFAULT_UPLOAD_CAPS both when this rejects and
+   *  when it resolves with a body that is not three usable numbers.
+   *
+   *  MEMOISED per client: the caps are a process-lifetime constant server-side, while
+   *  the wizard remounts on every Library→New-dataset round trip (and twice per open
+   *  under StrictMode). A rejection is evicted, so a transient failure does not pin
+   *  the session to the compiled-in defaults. */
+  getUploadCaps(): Promise<UploadCapsResponse>;
   /** POST /api/uploads — open an upload session in the caller's jail. */
   createUpload(): Promise<UploadHandle>;
   /** POST /api/uploads/{id}/parts (multipart field "part"). A `.zip` part is
@@ -193,7 +258,15 @@ export interface ApiClient {
    *  aborts the in-flight part (cancel / unmount). A 200 with `already_present` (an
    *  idempotent re-send the server already holds) resolves normally; every non-2xx throws
    *  the same typed ApiError as the fetch paths (so 409 mismatch / 413 cap surface their
-   *  detail). Bearer auth is attached exactly as the fetch client does (authHeaders). */
+   *  detail). Bearer auth is attached exactly as the fetch client does (authHeaders).
+   *
+   *  Seam A3: a part LARGER than the deployment's served `max_part_bytes` is sent as a
+   *  serial sequence of byte-range appends (`chunk_offset` + `part_size` on the same
+   *  route) instead of one request, and the returned status is the final chunk's — so a
+   *  caller sees one call per part either way, and one `onProgress` ramp from 0 to the
+   *  part's size. Chunking is used ONLY when this client has already read the caps
+   *  (Seam A2's `getUploadCaps`, which the wizard issues at mount); with no readable
+   *  cap the whole part is sent as before and the server remains the authority. */
   uploadPartWithProgress(
     uploadId: string,
     part: File,
@@ -236,16 +309,41 @@ export const CREDENTIAL_REFRESH_COOLDOWN_MS = 30_000;
 
 /** Typed transport error: every non-2xx response is thrown as ApiError carrying
  *  the HTTP status and the server's `detail` message, so the UI renders real
- *  messages (409-while-running on delete, 413 upload caps, 401 → re-login). */
+ *  messages (409-while-running on delete, 413 upload caps, 401 → re-login).
+ *
+ *  `structured` is the server's `detail` when it is an OBJECT rather than a string —
+ *  today only the minted create's 409 (`UploadAlreadyCreatedDetail`) — kept whole so a
+ *  caller can act on its fields instead of parsing text; `detail` is then its `message`.
+ *  Null for every string `detail`. */
 export class ApiError extends Error {
   readonly status: number;
   readonly detail: string;
-  constructor(status: number, detail: string) {
+  readonly structured: Record<string, unknown> | null;
+  constructor(status: number, detail: string, structured: Record<string, unknown> | null = null) {
     super(`API error ${status}: ${detail}`);
     this.name = "ApiError";
     this.status = status;
     this.detail = detail;
+    this.structured = structured;
   }
+}
+
+/** The minted create's "this upload already backs a collection" 409, read off a thrown
+ *  error — or null for any other error. Structural like `isApiError`, and it checks every
+ *  field it hands back, so a caller that adopts on a non-null answer can trust the id and
+ *  job. Shape transcribed from docs/interface-catalogue.md, `create_dataset`. */
+export function uploadAlreadyCreated(err: unknown): UploadAlreadyCreatedDetail | null {
+  if (!isApiError(err) || err.status !== 409) return null;
+  const s = (err as { structured?: unknown }).structured;
+  if (!isRecord(s) || s.code !== "upload_already_created") return null;
+  if (typeof s.dataset_id !== "string" || s.dataset_id === "") return null;
+  if (s.job_id !== null && typeof s.job_id !== "string") return null;
+  return {
+    code: "upload_already_created",
+    message: typeof s.message === "string" ? s.message : err.detail,
+    dataset_id: s.dataset_id,
+    job_id: s.job_id,
+  };
 }
 
 /** Structural ApiError check that works across module instances (components
@@ -686,6 +784,71 @@ export function validateLayoutManifest(data: unknown): LayoutManifest {
 }
 
 // ---------------------------------------------------------------------------
+// D-xv/D-xvi — the presentation record, narrowed rather than validated
+// ---------------------------------------------------------------------------
+
+/** The subset of an unknown body that matches `schemas/v2/presentation.schema.json`.
+ *
+ *  Deliberately NOT shaped like `validateLayoutManifest`, which throws and takes the
+ *  viewer to its error screen. The two records have opposite failure contracts: the
+ *  manifest is the bake record and a malformed one means the renderer cannot draw, while
+ *  presentation is optional, absent for every collection committed before 2026-09-07, and
+ *  fails soft BY CONTRACT (D-xvi) — so anything that does not fit is DROPPED and the
+ *  viewer shows exactly what it shows today. Nothing here checks that a `layout_id` or a
+ *  column name RESOLVES: that is the consumer's fallback (ui/presentation.ts), and a
+ *  cross-file check here would re-couple the two files the split exists to separate.
+ *
+ *  Per-key rather than all-or-nothing on purpose: one bad `columns` entry must not cost
+ *  the user their `default_layout`. */
+export function coercePresentation(body: unknown): Presentation {
+  if (!isRecord(body)) return {};
+  const out: Presentation = {};
+  const str = (v: unknown): string | undefined =>
+    typeof v === "string" && v.length > 0 ? v : undefined;
+
+  if (typeof body.presentation_version === "string") out.presentation_version = body.presentation_version;
+
+  if (isRecord(body.dataset)) {
+    const src = body.dataset;
+    const dataset: Presentation["dataset"] = {};
+    for (const key of ["display_name", "attribution", "attribution_url", "default_layout", "title_column"] as const) {
+      const value = str(src[key]);
+      if (value !== undefined) dataset[key] = value;
+    }
+    if (Object.keys(dataset).length > 0) out.dataset = dataset;
+  }
+
+  if (isRecord(body.layouts)) {
+    const layouts: NonNullable<Presentation["layouts"]> = {};
+    for (const [layoutId, entry] of Object.entries(body.layouts)) {
+      if (!isRecord(entry)) continue;
+      const label = str(entry.label);
+      if (label !== undefined) layouts[layoutId] = { label };
+    }
+    if (Object.keys(layouts).length > 0) out.layouts = layouts;
+  }
+
+  if (isRecord(body.columns)) {
+    const columns: NonNullable<Presentation["columns"]> = {};
+    for (const [column, entry] of Object.entries(body.columns)) {
+      if (!isRecord(entry)) continue;
+      const one: NonNullable<Presentation["columns"]>[string] = {};
+      const label = str(entry.label);
+      if (label !== undefined) one.label = label;
+      // The one shipped `render` value. An unknown kind (a future `email`/`image` served
+      // by a newer API) is dropped rather than passed through, so an old client renders
+      // plain text — which is what every unknown kind has to degrade to anyway.
+      if (entry.render === "url") one.render = "url";
+      if (typeof entry.hidden === "boolean") one.hidden = entry.hidden;
+      if (Object.keys(one).length > 0) columns[column] = one;
+    }
+    if (Object.keys(columns).length > 0) out.columns = columns;
+  }
+
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // The client
 // ---------------------------------------------------------------------------
 
@@ -774,6 +937,13 @@ export function createApiClient(
   // (CREDENTIAL_REFRESH_COOLDOWN_MS) reads this so a post-refresh 401 does not
   // trigger a second refresh and tight-loop against an unsatisfiable request.
   const lastRefreshAt = new Map<string, number>();
+
+  // Seam A2: the in-flight/resolved upload-caps read. ONE entry, not a Map — the caps
+  // are server-wide, not per-dataset. The wizard remounts on every Library→New-dataset
+  // round trip (AdminScreen renders it only while tab === "create"), and StrictMode
+  // double-mounts in dev, so an un-memoised read issues an authenticated request per
+  // mount for a value that cannot change within the process. Nulled on rejection.
+  let capsFetch: Promise<UploadCapsResponse> | null = null;
 
   function authHeaders(): Record<string, string> {
     const token = getToken?.() ?? null;
@@ -869,14 +1039,20 @@ export function createApiClient(
 
   async function toApiError(res: Response): Promise<ApiError> {
     let detail = res.statusText || `HTTP ${res.status}`;
+    let structured: Record<string, unknown> | null = null;
     try {
       const body: unknown = await res.json();
       if (isRecord(body) && typeof body.detail === "string") detail = body.detail;
-      else if (typeof body === "string") detail = body;
+      else if (isRecord(body) && isRecord(body.detail)) {
+        // An object `detail` (the minted create's 409): keep it whole for the caller, and
+        // show its `message` wherever the error is rendered as text.
+        structured = body.detail;
+        if (typeof structured.message === "string") detail = structured.message;
+      } else if (typeof body === "string") detail = body;
     } catch {
       // Non-JSON error body: keep the status text.
     }
-    return new ApiError(res.status, detail);
+    return new ApiError(res.status, detail, structured);
   }
 
   /** JSON round-trip with bearer auth. `body` present ⇒ POST (or `method`). */
@@ -978,6 +1154,142 @@ export function createApiClient(
     return joinPath(`${base}/api/datasets/${encodeURIComponent(dsId)}`, relPath);
   }
 
+  // --- Seam O4/A3: the XHR upload path ---------------------------------------
+
+  /** The deployment's per-part cap off a raw caps body, or null when it is not a
+   *  finite positive number. Same all-or-nothing discipline as
+   *  `uploadSelection.capsFromServer` and for the same reason — an `undefined` cap
+   *  would make `part.size > cap` NaN-false, which here would silently DISABLE
+   *  chunking rather than loosen a check. Read locally instead of importing that
+   *  module: the api-client is the layer the UI imports, never the reverse. */
+  function servedMaxPartBytes(caps: UploadCapsResponse): number | null {
+    const value: unknown = (caps as unknown as Record<string, unknown>).max_part_bytes;
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+  }
+
+  /** POST one multipart body to the parts route over XMLHttpRequest (fetch exposes no
+   *  upload-progress events) and resolve the `UploadStatus`. Only the bearer is set —
+   *  the runtime supplies the multipart boundary Content-Type, as in `uploadPart`.
+   *  Auth rides the shared `authHeaders()`, so this does not fight the fetch client's
+   *  auth pattern. A 200 `already_present` resolves normally; every non-2xx rejects the
+   *  same typed ApiError the fetch paths throw. `onProgress` receives THIS request's
+   *  bytes; the chunked caller re-bases them onto the whole part. */
+  function sendPartRequest(
+    uploadId: string,
+    form: FormData,
+    onProgress?: (loadedBytes: number, totalBytes: number) => void,
+    signal?: AbortSignal,
+  ): Promise<UploadStatus> {
+    const url = `${base}/api/uploads/${encodeURIComponent(uploadId)}/parts`;
+    return new Promise<UploadStatus>((resolve, reject) => {
+      if (signal?.aborted === true) {
+        reject(abortError());
+        return;
+      }
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", url);
+      for (const [key, value] of Object.entries(authHeaders())) xhr.setRequestHeader(key, value);
+      const onAbort = (): void => xhr.abort();
+      if (signal !== undefined) signal.addEventListener("abort", onAbort, { once: true });
+      const detach = (): void => {
+        if (signal !== undefined) signal.removeEventListener("abort", onAbort);
+      };
+      if (onProgress !== undefined) {
+        xhr.upload.addEventListener("progress", (e: ProgressEvent) => {
+          if (e.lengthComputable) onProgress(e.loaded, e.total);
+        });
+      }
+      xhr.addEventListener("load", () => {
+        detach();
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText) as UploadStatus);
+          } catch {
+            reject(new ApiError(xhr.status, "malformed upload response body"));
+          }
+        } else {
+          signalAuthExpiredIf401(xhr.status, "Authorization" in authHeaders()); // T2-123 (Fix A)
+          reject(xhrError(xhr));
+        }
+      });
+      xhr.addEventListener("error", () => {
+        detach();
+        reject(new ApiError(0, "network error during upload"));
+      });
+      xhr.addEventListener("timeout", () => {
+        detach();
+        reject(new ApiError(0, "upload timed out"));
+      });
+      xhr.addEventListener("abort", () => {
+        detach();
+        reject(abortError());
+      });
+      xhr.send(form);
+    });
+  }
+
+  /** One whole part in one request — the shape every part took before Seam A3, and
+   *  still the only shape for a part inside the cap. Carries NO chunk fields, which is
+   *  what tells the server this is a complete part. */
+  function sendWholePart(
+    uploadId: string,
+    part: File,
+    onProgress?: (loadedBytes: number, totalBytes: number) => void,
+    signal?: AbortSignal,
+  ): Promise<UploadStatus> {
+    const form = new FormData();
+    form.append("part", part, part.name);
+    return sendPartRequest(uploadId, form, onProgress, signal);
+  }
+
+  /** Seam A3: send one part as a sequence of byte-range appends of at most
+   *  `chunkBytes` each, SERIALLY and in order — the server verifies that every chunk
+   *  continues the staged prefix, so parallel chunks within one part would only race
+   *  each other into 409s. Concurrency across parts is Seam O4's and is unaffected.
+   *
+   *  Progress is re-based onto the whole part (`sent + this request's loaded`, clamped
+   *  to `part.size` because a request's `e.total` includes multipart framing the part
+   *  itself does not), so the transport's byte accounting sees one monotonic ramp per
+   *  part whether it went in one request or thirty.
+   *
+   *  A rejected chunk rejects the whole call, which is exactly what Seam O4's per-part
+   *  retry already handles: it re-invokes this function, which starts again at offset 0
+   *  and the server truncates the stale prefix. A partial part is deliberately NOT
+   *  resumable across that boundary — `/check` is name+size, and a half-part has
+   *  neither, so there is nothing it could honestly answer. */
+  async function sendChunkedPart(
+    uploadId: string,
+    part: File,
+    chunkBytes: number,
+    onProgress?: (loadedBytes: number, totalBytes: number) => void,
+    signal?: AbortSignal,
+  ): Promise<UploadStatus> {
+    let sent = 0;
+    let last: UploadStatus | null = null;
+    while (sent < part.size) {
+      const end = Math.min(sent + chunkBytes, part.size);
+      const base_ = sent;
+      const form = new FormData();
+      form.append("part", part.slice(base_, end), part.name);
+      form.append("chunk_offset", String(base_));
+      form.append("part_size", String(part.size));
+      last = await sendPartRequest(
+        uploadId,
+        form,
+        onProgress === undefined
+          ? undefined
+          : (loaded) => onProgress(Math.min(base_ + loaded, part.size), part.size),
+        signal,
+      );
+      sent = end;
+    }
+    // Unreachable for a non-empty part: the loop runs at least once. A zero-byte file
+    // never reaches here — it is not over any positive cap — so this is a type guard,
+    // not a case.
+    if (last === null) throw new ApiError(0, "chunked upload sent no chunks");
+    return last;
+  }
+
   return {
     async listDatasets(): Promise<DatasetSummary[]> {
       const body = (await requestJson("/api/datasets")) as { datasets: DatasetSummary[] };
@@ -988,15 +1300,53 @@ export function createApiClient(
       return (await requestJson(`/api/datasets/${encodeURIComponent(dsId)}`)) as DatasetSummary;
     },
 
-    async listLayouts(dsId: string): Promise<LayoutInfo[]> {
-      const body = (await requestJson(`/api/datasets/${encodeURIComponent(dsId)}/layouts`)) as {
+    async listLayouts(dsId: string, opts: { includePending?: boolean } = {}): Promise<LayoutInfo[]> {
+      // Only the opt-in adds a parameter, so every existing caller's request is unchanged.
+      const query = opts.includePending === true ? "?include_pending=true" : "";
+      const body = (await requestJson(
+        `/api/datasets/${encodeURIComponent(dsId)}/layouts${query}`,
+      )) as {
         layouts: LayoutInfo[];
       };
       return body.layouts;
     },
 
+    async deleteLayout(dsId: string, layoutId: string): Promise<DeleteLayoutResponse> {
+      return (await requestJson(
+        `/api/datasets/${encodeURIComponent(dsId)}/layouts/${encodeURIComponent(layoutId)}`,
+        { method: "DELETE" },
+      )) as DeleteLayoutResponse;
+    },
+
+    async setColumnRoles(dsId: string, roles: ColumnRoles): Promise<SetColumnRolesResponse> {
+      return (await requestJson(`/api/datasets/${encodeURIComponent(dsId)}/column-roles`, {
+        body: { column_roles: roles },
+      })) as SetColumnRolesResponse;
+    },
+
+    async listColumns(dsId: string, opts: { uploadId?: string } = {}): Promise<ColumnListResponse> {
+      const query =
+        opts.uploadId !== undefined ? `?${new URLSearchParams({ upload_id: opts.uploadId }).toString()}` : "";
+      return (await requestJson(
+        `/api/datasets/${encodeURIComponent(dsId)}/columns${query}`,
+      )) as ColumnListResponse;
+    },
+
     async getManifest(dsId: string, layoutId: string): Promise<LayoutManifest> {
       return getManifestImpl(dsId, layoutId);
+    },
+
+    async getPresentation(dsId: string): Promise<Presentation> {
+      // The `catch` covers a genuinely absent record as well as a failed read — see the
+      // interface docstring for why the viewer must not distinguish them. It deliberately
+      // does NOT swallow a 401 side effect: requestJson has already fired the
+      // session-expiry hook by the time it throws, so an expired session is still
+      // signalled; only the ERROR is dropped.
+      try {
+        return coercePresentation(await requestJson(`/api/datasets/${encodeURIComponent(dsId)}/presentation`));
+      } catch {
+        return {};
+      }
     },
 
     refreshDatasetCredential(dsId: string): Promise<boolean> {
@@ -1227,7 +1577,15 @@ export function createApiClient(
 
     async setDatasetPresentation(
       dsId: string,
-      patch: { display_name?: string | null; attribution?: string | null; attribution_url?: string | null },
+      patch: {
+        display_name?: string | null;
+        attribution?: string | null;
+        attribution_url?: string | null;
+        default_layout?: string | null;
+        title_column?: string | null;
+        columns?: Record<string, Record<string, unknown> | null> | null;
+        layouts?: Record<string, Record<string, unknown> | null> | null;
+      },
     ): Promise<DatasetPresentation> {
       // PARTIAL BY KEY PRESENCE (routers/datasets.py): an omitted key is left alone,
       // a key present as null or "" CLEARS that field. `patch` is handed to
@@ -1239,6 +1597,22 @@ export function createApiClient(
         `/api/datasets/${encodeURIComponent(dsId)}/presentation`,
         { method: "PATCH", body: patch },
       )) as DatasetPresentation;
+    },
+
+    getUploadCaps(): Promise<UploadCapsResponse> {
+      // Seam A2 + PR #316 review: one read per client, shared by every wizard mount.
+      // Same shape as tagFetches/positionFetches — cache the PROMISE (so concurrent
+      // mounts coalesce rather than racing two requests) and evict on rejection so a
+      // later mount retries instead of inheriting a dead read forever.
+      if (capsFetch === null) {
+        capsFetch = (requestJson("/api/uploads/caps") as Promise<UploadCapsResponse>).catch(
+          (err: unknown) => {
+            capsFetch = null;
+            throw err;
+          },
+        );
+      }
+      return capsFetch;
     },
 
     async createUpload(): Promise<UploadHandle> {
@@ -1269,60 +1643,30 @@ export function createApiClient(
       onProgress?: (loadedBytes: number, totalBytes: number) => void,
       signal?: AbortSignal,
     ): Promise<UploadStatus> {
-      // Seam O4: the SAME multipart POST as uploadPart, but over XMLHttpRequest so the
-      // upload can emit byte-level progress (fetch has no upload-progress events). Only
-      // the bearer is set — the runtime supplies the multipart boundary Content-Type, as
-      // in uploadPart. Auth is attached via the shared authHeaders(), so this does not
-      // fight the fetch client's auth pattern. A 200 `already_present` resolves normally;
-      // every non-2xx rejects the same typed ApiError the fetch paths throw.
-      const url = `${base}/api/uploads/${encodeURIComponent(uploadId)}/parts`;
-      const form = new FormData();
-      form.append("part", part, part.name);
-      return new Promise<UploadStatus>((resolve, reject) => {
-        if (signal?.aborted === true) {
-          reject(abortError());
-          return;
-        }
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", url);
-        for (const [key, value] of Object.entries(authHeaders())) xhr.setRequestHeader(key, value);
-        const onAbort = (): void => xhr.abort();
-        if (signal !== undefined) signal.addEventListener("abort", onAbort, { once: true });
-        const detach = (): void => {
-          if (signal !== undefined) signal.removeEventListener("abort", onAbort);
-        };
-        if (onProgress !== undefined) {
-          xhr.upload.addEventListener("progress", (e: ProgressEvent) => {
-            if (e.lengthComputable) onProgress(e.loaded, e.total);
-          });
-        }
-        xhr.addEventListener("load", () => {
-          detach();
-          if (xhr.status >= 200 && xhr.status < 300) {
-            try {
-              resolve(JSON.parse(xhr.responseText) as UploadStatus);
-            } catch {
-              reject(new ApiError(xhr.status, "malformed upload response body"));
-            }
-          } else {
-            signalAuthExpiredIf401(xhr.status, "Authorization" in authHeaders()); // T2-123 (Fix A)
-            reject(xhrError(xhr));
-          }
-        });
-        xhr.addEventListener("error", () => {
-          detach();
-          reject(new ApiError(0, "network error during upload"));
-        });
-        xhr.addEventListener("timeout", () => {
-          detach();
-          reject(new ApiError(0, "upload timed out"));
-        });
-        xhr.addEventListener("abort", () => {
-          detach();
-          reject(abortError());
-        });
-        xhr.send(form);
-      });
+      // Seam A3: a part over THIS deployment's per-part cap is sent as a sequence of
+      // byte-range appends instead of one request — same route, same session, same
+      // retry/abort contract, so Seam O4's scheduler above is untouched and sees one
+      // `uploadOne` call per part exactly as before.
+      //
+      // The chunk size is the served `max_part_bytes` — DERIVED, not chosen: it is the
+      // largest request this server will accept, so it minimises round trips without a
+      // new number anyone has to defend. When this client has never read the caps
+      // (`capsFetch === null`), or the read failed, or its body was not usable, NOTHING
+      // is chunked and the whole part goes as it always did — the server stays the
+      // authority, and a client that cannot hear the cap does not guess at it. In the
+      // app that read is the wizard's mount-time `getUploadCaps()` (Seam A2), issued
+      // long before a byte moves; it is deliberately not issued from here, so this
+      // method never adds a network request of its own.
+      if (capsFetch === null) return sendWholePart(uploadId, part, onProgress, signal);
+      return capsFetch.then(
+        (caps) => {
+          const cap = servedMaxPartBytes(caps);
+          return cap !== null && part.size > cap
+            ? sendChunkedPart(uploadId, part, cap, onProgress, signal)
+            : sendWholePart(uploadId, part, onProgress, signal);
+        },
+        () => sendWholePart(uploadId, part, onProgress, signal),
+      );
     },
 
     async finalizeUpload(uploadId: string): Promise<UploadHandle> {

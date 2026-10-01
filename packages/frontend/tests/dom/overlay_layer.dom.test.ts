@@ -474,6 +474,35 @@ test("domainSampleCount config drives the endpoint sample size (was inert; PR-17
   w.holder.remove();
 });
 
+test("the pre-2.5 axis shim reads a stored timestamp's ISO strings whatever format is committed (#391)", async () => {
+  // A collection with `unix_millis` committed over a stored timestamp (set-roles wrote that
+  // before D-xxxii's check). The API serves the timestamp as ISO strings, so reading them by
+  // the declared format gave NaN for every sample and no axis. They are read by type now.
+  const w = makeDomWorld();
+  const served = ["1100-01-01T00:00:00", "2020-01-01T00:00:00"];
+  const client = {
+    getMetadata: async (_ds: string, ids: number[]) => ids.map((id) => ({ id, fields: { date: served[id] } })),
+  } as unknown as ApiClient;
+  // No injected resolver ⇒ the REAL defaultResolveTimeDomain runs.
+  const layer = createOverlayLayer(w.world, client);
+  const { manifest, positions } = dateContext(2); // pre-2.5: no producer axis
+  const committedMillis = {
+    ...manifest,
+    column_roles: { ...manifest.column_roles, datetime: { column: "date", label: "Date", format: "unix_millis" } },
+  } as unknown as LayoutManifest;
+  w.emit({ center: [0.5, 0.5], zoom: 1 / 1000 }, VP);
+  layer.setContext({ manifest: committedMillis, layoutId: "by_date", positions } as OverlayContext);
+  await settle();
+  flushRaf();
+  assert.ok(layer.hasAxis(), "the shim fitted a domain from the ISO strings");
+  const years = [...w.holder.querySelectorAll<HTMLElement>(".overlay-axis-tick .overlay-axis-label")]
+    .map((el) => Number(el.textContent));
+  assert.ok(years.length >= 3, `several year ticks: ${years}`);
+  assert.ok(years.every((y) => y >= 1100 && y <= 2020), `ticks on the served dates, 1100..2020: ${years}`);
+  layer.dispose();
+  w.holder.remove();
+});
+
 test("dispose removes the DOM layer and releases the subscription", () => {
   const w = makeDomWorld();
   const layer = createOverlayLayer(w.world, stubClient);

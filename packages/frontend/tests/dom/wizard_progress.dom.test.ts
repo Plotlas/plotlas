@@ -105,11 +105,8 @@ test("wizard reaches the done screen under StrictMode when the job finishes on a
     ),
   );
 
-  // Fill the source step: a valid dataset id + one image file (images-only is a
-  // complete dataset — grid layout, no CSV/roles step).
-  fireEvent.change(screen.getByPlaceholderText("my_dataset"), {
-    target: { value: "my_dataset" },
-  });
+  // Fill the source step: one image file (images-only is a complete dataset — grid
+  // layout, no CSV/roles step). There is no id to type: the API mints it (D-xxviii).
   // Target the Images input by its accept filter (image/*,.zip) rather than the
   // first file input by position — robust if the optional-CSV input is reordered.
   const imageInput = container.querySelector('input[type="file"][accept="image/*,.zip"]');

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections import OrderedDict
 from collections.abc import Iterator
 from functools import lru_cache
@@ -157,6 +158,50 @@ def dataset_dir(data_root: Path, ds_id: str) -> Path:
 def is_dataset(ds_dir: Path) -> bool:
     """A directory with a ``layout_manifest.json`` is a dataset (brief / module-map)."""
     return (ds_dir / _MANIFEST_FILENAME).is_file()
+
+
+# The upload-id charset and bundle-layout constants, re-derived here rather than
+# imported from ``routers/uploads.py`` (routers may not import one another, and this
+# module must not depend on a router either — every router already imports ``db.py``,
+# so the dependency can only point this way). ``^...+$`` anchoring means a
+# traversal/separator — or the empty string — can never match.
+_UPLOAD_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_UPLOAD_IMAGES_SUBDIR = "images"
+_UPLOAD_FINALIZED_MARKER = ".finalized"
+
+
+def resolve_recorded_bundle(owner: str, source_upload_id: str | None) -> Path | None:
+    """The finalized upload bundle a dataset's app-state row names as its source
+    (``appstate.DatasetRecord.source_upload_id``), resolved under ``owner``'s jail
+    (``DATA_ROOT/users/{owner}/uploads/``, D-30) — or ``None`` when it names nothing,
+    names an id that fails the upload-id charset, or names a bundle that is not (or
+    no longer) a finalized upload.
+
+    The charset check is defence in depth, not a caller-input rejection: every writer
+    of ``source_upload_id`` (``create_dataset``, an explicit re-ingest) validates the
+    id via ``routers/jobs.py::_resolve_finalized_bundle`` BEFORE ever recording it, so
+    a stored value failing this check should be unreachable outside a corrupted row —
+    the reasoning this function's predecessor (``routers/datasets.py::_recorded_bundle``,
+    before this PR) already stated for the same re-check.
+
+    Shared by ``routers/datasets.py::list_columns`` and
+    ``routers/jobs.py::_resolve_add_layouts_bundle`` (review of PR #390, round 3,
+    findings 5+7): both independently re-derived this same regex-and-jail-path check
+    against ``routers/uploads.py``'s layout, and by the time of that review they had
+    already drifted apart in what they did with a malformed id — one route's copy
+    fell through to a 400 an untouched request should never see. One implementation,
+    used from both, is what keeps that from happening again. Lives here rather than
+    in either router because routers may not import one another (module-map) and
+    both already import this module."""
+    if source_upload_id is None or not _UPLOAD_ID_RE.match(source_upload_id):
+        return None
+    upload_dir = resolve_under(users_root(), owner, "uploads", source_upload_id)
+    if (
+        not (upload_dir / _UPLOAD_IMAGES_SUBDIR).is_dir()
+        or not (upload_dir / _UPLOAD_FINALIZED_MARKER).exists()
+    ):
+        return None
+    return upload_dir
 
 
 # Bound on the parsed-manifest cache (see ``load_manifest``). Manifests are small

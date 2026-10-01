@@ -1,0 +1,211 @@
+{
+  "about": [
+    "LAYOUT_DESIGNER D-xxx: which add-layouts roles overrides the worker's stale-knob guards refuse.",
+    "ONE file read by TWO suites: packages/pipeline/tests/test_knob_guard_fingerprint.py runs each case through",
+    "worker._guard_no_stale_scatter_config / _guard_no_stale_geographic_config, and",
+    "packages/frontend/tests/ui_designer_layouts_commit.test.ts runs it through layoutsCommit.knobConflicts.",
+    "Neither side can change what it refuses without the other going red.",
+    "",
+    "A case builds a committed manifest from the two real manifests beside this file:",
+    "  roles    - the fixtures' column_roles (identical in both files, measured), with any family in `declare` replaced;",
+    "  layouts  - each entry is the fixture entry `entry` (default: layout_id) taken from `from`, filed under `layout_id`.",
+    "             `from: 2.10` records source_fingerprint, `from: 2.9` records none.",
+    "  edit     - knob patches merged into the committed roles, by family and entry index: the override the run carries.",
+    "  replace  - the committed layouts the run re-bakes (exempt from both guards).",
+    "  refuses  - per family, the layout the guard names, or null when it lets the run through.",
+    "",
+    "Every mix is a state production reaches: `add-layouts --replace X` on a pre-2.10 tree re-bakes X at 2.10 (a fresh",
+    "record) and carries every other entry byte-preserved (no record). The guards read only a layout's id and whether",
+    "it records a fingerprint, so an entry lifted from the other file stands for that state exactly."
+  ],
+  "cases": [
+    {
+      "name": "all fingerprinted: every layout baked since 2.10, so both guards stand down",
+      "layouts": [
+        {"layout_id": "grid", "from": "2.10"},
+        {"layout_id": "datetime", "from": "2.10"},
+        {"layout_id": "scatter", "from": "2.10"},
+        {"layout_id": "categorical_group", "from": "2.10"},
+        {"layout_id": "categorical_bucket", "from": "2.10"},
+        {"layout_id": "geographic", "from": "2.10"}
+      ],
+      "edit": {"scatter": [{"normalize": "none"}], "geographic": [{"projection": "mercator"}]},
+      "replace": ["datetime"],
+      "refuses": {"scatter": null, "geographic": null}
+    },
+    {
+      "name": "none fingerprinted: every layout baked before 2.10, so both guards hold",
+      "layouts": [
+        {"layout_id": "grid", "from": "2.9"},
+        {"layout_id": "datetime", "from": "2.9"},
+        {"layout_id": "scatter", "from": "2.9"},
+        {"layout_id": "categorical_group", "from": "2.9"},
+        {"layout_id": "categorical_bucket", "from": "2.9"},
+        {"layout_id": "geographic", "from": "2.9"}
+      ],
+      "edit": {"scatter": [{"normalize": "none"}], "geographic": [{"projection": "mercator"}]},
+      "replace": ["datetime"],
+      "refuses": {"scatter": "scatter", "geographic": "geographic"}
+    },
+    {
+      "name": "none fingerprinted, but the run re-bakes both pairs: replace still exempts them",
+      "layouts": [
+        {"layout_id": "grid", "from": "2.9"},
+        {"layout_id": "datetime", "from": "2.9"},
+        {"layout_id": "scatter", "from": "2.9"},
+        {"layout_id": "categorical_group", "from": "2.9"},
+        {"layout_id": "categorical_bucket", "from": "2.9"},
+        {"layout_id": "geographic", "from": "2.9"}
+      ],
+      "edit": {"scatter": [{"normalize": "none"}], "geographic": [{"projection": "mercator"}]},
+      "replace": ["datetime", "scatter", "geographic"],
+      "refuses": {"scatter": null, "geographic": null}
+    },
+    {
+      "name": "none fingerprinted, only labels change: only a KNOB change is guarded",
+      "layouts": [
+        {"layout_id": "grid", "from": "2.9"},
+        {"layout_id": "datetime", "from": "2.9"},
+        {"layout_id": "scatter", "from": "2.9"},
+        {"layout_id": "categorical_group", "from": "2.9"},
+        {"layout_id": "categorical_bucket", "from": "2.9"},
+        {"layout_id": "geographic", "from": "2.9"}
+      ],
+      "edit": {"scatter": [{"label": "Renamed"}], "geographic": [{"label": "Where"}]},
+      "replace": ["datetime"],
+      "refuses": {"scatter": null, "geographic": null}
+    },
+    {
+      "name": "mixed: the scatter re-baked since 2.10, the rest not; a scatter-only edit is let through, as other layouts' missing records do not count",
+      "layouts": [
+        {"layout_id": "grid", "from": "2.9"},
+        {"layout_id": "datetime", "from": "2.9"},
+        {"layout_id": "scatter", "from": "2.10"},
+        {"layout_id": "categorical_group", "from": "2.9"},
+        {"layout_id": "categorical_bucket", "from": "2.9"},
+        {"layout_id": "geographic", "from": "2.9"}
+      ],
+      "edit": {"scatter": [{"normalize": "none"}]},
+      "replace": ["datetime"],
+      "refuses": {"scatter": null, "geographic": null}
+    },
+    {
+      "name": "mixed: the scatter re-baked since 2.10, the map not; only the map is refused",
+      "layouts": [
+        {"layout_id": "grid", "from": "2.9"},
+        {"layout_id": "datetime", "from": "2.9"},
+        {"layout_id": "scatter", "from": "2.10"},
+        {"layout_id": "categorical_group", "from": "2.9"},
+        {"layout_id": "categorical_bucket", "from": "2.9"},
+        {"layout_id": "geographic", "from": "2.9"}
+      ],
+      "edit": {"scatter": [{"normalize": "none"}], "geographic": [{"projection": "mercator"}]},
+      "replace": ["datetime"],
+      "refuses": {"scatter": null, "geographic": "geographic"}
+    },
+    {
+      "name": "mixed: the map re-baked since 2.10, the scatter not; only the scatter is refused",
+      "layouts": [
+        {"layout_id": "grid", "from": "2.9"},
+        {"layout_id": "datetime", "from": "2.9"},
+        {"layout_id": "scatter", "from": "2.9"},
+        {"layout_id": "categorical_group", "from": "2.9"},
+        {"layout_id": "categorical_bucket", "from": "2.9"},
+        {"layout_id": "geographic", "from": "2.10"}
+      ],
+      "edit": {"scatter": [{"normalize": "none"}], "geographic": [{"projection": "mercator"}]},
+      "replace": ["datetime"],
+      "refuses": {"scatter": "scatter", "geographic": null}
+    },
+    {
+      "name": "one pair declared twice, both layouts fingerprinted: stands down",
+      "declare": {"scatter": [
+        {"x_column": "sx", "y_column": "sy", "label": "Fitted"},
+        {"x_column": "sx", "y_column": "sy", "label": "Also fitted"}
+      ]},
+      "layouts": [
+        {"layout_id": "grid", "from": "2.10"},
+        {"layout_id": "scatter_sx", "from": "2.10", "entry": "scatter"},
+        {"layout_id": "scatter_sx-1", "from": "2.10", "entry": "scatter"}
+      ],
+      "edit": {"scatter": [{"normalize": "none"}, {"normalize": "none"}]},
+      "replace": [],
+      "refuses": {"scatter": null, "geographic": null}
+    },
+    {
+      "name": "one pair declared twice, the SECOND layout records nothing: refused, naming it",
+      "declare": {"scatter": [
+        {"x_column": "sx", "y_column": "sy", "label": "Fitted"},
+        {"x_column": "sx", "y_column": "sy", "label": "Also fitted"}
+      ]},
+      "layouts": [
+        {"layout_id": "grid", "from": "2.10"},
+        {"layout_id": "scatter_sx", "from": "2.10", "entry": "scatter"},
+        {"layout_id": "scatter_sx-1", "from": "2.9", "entry": "scatter"}
+      ],
+      "edit": {"scatter": [{"normalize": "none"}, {"normalize": "none"}]},
+      "replace": [],
+      "refuses": {"scatter": "scatter_sx-1", "geographic": null}
+    },
+    {
+      "name": "one pair declared twice, the FIRST layout records nothing: refused, naming it, though the pair compares against the second",
+      "declare": {"scatter": [
+        {"x_column": "sx", "y_column": "sy", "label": "Fitted"},
+        {"x_column": "sx", "y_column": "sy", "label": "Also fitted"}
+      ]},
+      "layouts": [
+        {"layout_id": "grid", "from": "2.10"},
+        {"layout_id": "scatter_sx", "from": "2.9", "entry": "scatter"},
+        {"layout_id": "scatter_sx-1", "from": "2.10", "entry": "scatter"}
+      ],
+      "edit": {"scatter": [{"normalize": "none"}, {"normalize": "none"}]},
+      "replace": [],
+      "refuses": {"scatter": "scatter_sx", "geographic": null}
+    },
+    {
+      "name": "one pair declared twice, neither records anything: refused, naming the last, as before D-xxx",
+      "declare": {"scatter": [
+        {"x_column": "sx", "y_column": "sy", "label": "Fitted"},
+        {"x_column": "sx", "y_column": "sy", "label": "Also fitted"}
+      ]},
+      "layouts": [
+        {"layout_id": "grid", "from": "2.9"},
+        {"layout_id": "scatter_sx", "from": "2.9", "entry": "scatter"},
+        {"layout_id": "scatter_sx-1", "from": "2.9", "entry": "scatter"}
+      ],
+      "edit": {"scatter": [{"normalize": "none"}, {"normalize": "none"}]},
+      "replace": [],
+      "refuses": {"scatter": "scatter_sx-1", "geographic": null}
+    },
+    {
+      "name": "one lon/lat pair as two maps (two projections), the FIRST map records nothing: swapping the projections is refused, naming it, though the pair compares against the second",
+      "declare": {"geographic": [
+        {"lon_column": "lon", "lat_column": "lat", "label": "Flat"},
+        {"lon_column": "lon", "lat_column": "lat", "label": "Web map", "projection": "mercator"}
+      ]},
+      "layouts": [
+        {"layout_id": "grid", "from": "2.10"},
+        {"layout_id": "geographic_lon", "from": "2.9", "entry": "geographic"},
+        {"layout_id": "geographic_lon-1", "from": "2.10", "entry": "geographic"}
+      ],
+      "edit": {"geographic": [{"projection": "mercator"}, {"projection": "equirectangular"}]},
+      "replace": [],
+      "refuses": {"scatter": null, "geographic": "geographic_lon"}
+    },
+    {
+      "name": "one lon/lat pair as two maps (two projections), the SECOND map records nothing: swapping the projections is refused, naming it",
+      "declare": {"geographic": [
+        {"lon_column": "lon", "lat_column": "lat", "label": "Flat"},
+        {"lon_column": "lon", "lat_column": "lat", "label": "Web map", "projection": "mercator"}
+      ]},
+      "layouts": [
+        {"layout_id": "grid", "from": "2.10"},
+        {"layout_id": "geographic_lon", "from": "2.10", "entry": "geographic"},
+        {"layout_id": "geographic_lon-1", "from": "2.9", "entry": "geographic"}
+      ],
+      "edit": {"geographic": [{"projection": "mercator"}, {"projection": "equirectangular"}]},
+      "replace": [],
+      "refuses": {"scatter": null, "geographic": "geographic_lon-1"}
+    }
+  ]
+}

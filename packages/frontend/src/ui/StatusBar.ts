@@ -22,6 +22,10 @@ export interface ViewerStatus {
   selectedCell: number | null;
   cursor: string | null;
   fps: number | null;
+  /** Seam R2 P3: the loader's tile reads are failing right now. Optional because it is
+   *  the one field the shell can be missing (an older caller, a test double) and because
+   *  absent must mean "nothing to report", never a claim either way. */
+  tilesFailing?: boolean;
 }
 
 /** T2-120/T2-121 (Fix C): the tag read-out model. Replaces the old `highlighted`
@@ -99,6 +103,16 @@ export function StatusBar(props: StatusBarProps): ReactElement {
         },
         `loading ${s.loadingTiles} tiles`,
       ),
+      // Seam R2 P3. A sibling of the loading count, in the footer that is ALREADY
+      // `role="status"` and always mounted — so it is announced without a new live region
+      // and without a new write cadence (the loader pushes only when the answer changes).
+      // Deliberately NOT the recovery panel: that is a `role="alert"`, is view-scoped,
+      // carries "Retry this view", and renders null for `ready` — which is exactly the
+      // state this fires in. Rendered only when there is something to say; an absent
+      // read-out is the resting state, not a claim that everything is fine.
+      s.tilesFailing === true
+        ? h("span", { className: "status-item status-tiles-failing" }, "images not loading")
+        : null,
       h(
         "span",
         {

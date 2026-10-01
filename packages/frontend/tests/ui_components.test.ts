@@ -268,6 +268,39 @@ test("summarizeRows aggregates categorical counts and the datetime range", () =>
   });
 });
 
+// The date range reads each VALUE's type, not the declared format (#391). The API serves a
+// stored timestamp as an ISO string whatever format was committed, and a unix-ingested
+// column as its stored integer. Rows are out of order so first/last cannot pass for min/max.
+const withFormat = (format: "iso8601" | "unix_seconds" | "unix_millis"): ColumnRoles => ({
+  ...SUMMARY_ROLES,
+  datetime: { column: "shot_date", label: "Shot date", format },
+});
+const dates = (...values: (string | number)[]): MetadataRow[] =>
+  values.map((shot_date, id) => ({ id, fields: { category: "cats", shot_date } }));
+
+test("summarizeRows ranges ISO strings on a timestamp committed as unix_millis", () => {
+  // A collection whose committed format is `unix_millis` over a stored timestamp: the API
+  // serves ISO strings. Read as numbers, every one was NaN and the range vanished.
+  const rows = dates("2021-03-05T00:00:00", "2021-01-01T00:00:00", "2021-09-01T12:30:00");
+  assert.deepEqual(summarizeRows(rows, withFormat("unix_millis")).dateRange, {
+    column: "shot_date",
+    label: "Shot date",
+    min: "2021-01-01T00:00:00",
+    max: "2021-09-01T12:30:00",
+  });
+});
+
+test("summarizeRows scales a number by the declared unix format and shows its date", () => {
+  // 2026-01-02, 2026-01-01 and 2026-01-12 00:00 UTC, as a unix-ingested int64 column.
+  const seconds = [1767312000, 1767225600, 1768176000];
+  const expected = { column: "shot_date", label: "Shot date", min: "2026-01-01T00:00:00.000Z", max: "2026-01-12T00:00:00.000Z" };
+  assert.deepEqual(summarizeRows(dates(...seconds), withFormat("unix_seconds")).dateRange, expected);
+  assert.deepEqual(
+    summarizeRows(dates(...seconds.map((s) => s * 1000)), withFormat("unix_millis")).dateRange,
+    expected,
+  );
+});
+
 test("SelectionSummary renders the count, value counts, range, and the 250-cap note", () => {
   const html = renderToString(
     h(SelectionSummary, { count: 5, rows: SUMMARY_ROWS, roles: SUMMARY_ROLES }),
@@ -304,20 +337,19 @@ test("DatasetList renders processing/ready/error chips from mocked summaries", (
     h(DatasetList, {
       datasets: [summary("a", "processing"), summary("b", "ready"), summary("c", "error")],
       client: {} as ApiClient, // T2-55 cover fetch runs in an effect; server render never fires it
-      busyId: null,
       onOpen: () => {},
-      onDelete: () => {},
-      onAddLayout: () => {},
+      onEdit: () => {},
+      username: "ada",
       onNewDataset: () => {},
     }),
   );
   assert.match(html, /status-chip status-processing/);
   assert.match(html, /status-chip status-ready/);
   assert.match(html, /status-chip status-error/);
-  // Delete lives in the ready card's ⋯ menu (closed by default, so its trigger is
-  // present); the web Re-ingest action was removed (fix/reingest-safety — CLI-only).
+  // The ready card's owner actions are Open + Edit (D-xxiv — delete moved into the
+  // designer); the web Re-ingest action was removed (fix/reingest-safety — CLI-only).
   assert.ok(!/Re-ingest/.test(html));
-  assert.match(html, /card-menu-btn/);
+  assert.match(html, />Edit<\/button>/);
   // The ready card exposes an enabled accent Open; the processing card shows a
   // disabled "Open when ready" and the error card offers no Open at all.
   assert.match(html, /class="btn pri"[^>]*>Open<\/button>/);
@@ -329,10 +361,7 @@ test("DatasetList empty state points at the wizard", () => {
     h(DatasetList, {
       datasets: [],
       client: {} as ApiClient, // T2-55: unused by the empty state, but a required prop
-      busyId: null,
       onOpen: () => {},
-      onDelete: () => {},
-      onAddLayout: () => {},
       onNewDataset: () => {},
     }),
   );

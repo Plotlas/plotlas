@@ -1,7 +1,7 @@
 // T2-58 / T2-92 — the "Add layout" data edges, in the existing admin-UI test style
 // (the REAL ApiClient with fetch mocked; node cannot click, so the client contract and
-// the error→message path are driven directly — which is what the AddLayoutWizard wires
-// to via AdminScreen; the wizard's own DOM flow is covered by tests/dom/*).
+// the error→message path are driven directly — which is what the designer's Review &
+// commit sends (ui/designer/layouts.ts, seam L5; its DOM flow is covered by tests/dom/*).
 //
 // Covers: the client POSTs the chosen layout specs (T2-92 submits expanded layout_ids)
 // to the add-layouts route with the bearer AND forwards the column_roles override (the

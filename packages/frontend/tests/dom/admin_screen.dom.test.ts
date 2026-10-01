@@ -10,6 +10,8 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ApiClient } from "../../src/api-client/client.ts";
 import type { DatasetSummary } from "../../src/api-client/types.ts";
 import { AdminScreen, hasActiveWork } from "../../src/ui/admin/AdminScreen.ts";
+import { ActivityProvider } from "../../src/ui/activity/activityContext.ts";
+import { ACTIVITY_STORAGE_KEY } from "../../src/ui/activity/activityStore.ts";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -81,4 +83,49 @@ test("R1: hasActiveWork keeps the list refreshing during ready-while-baking (act
   assert.equal(hasActiveWork([readyBaking]), true, "ready + active_job_id ⇒ keep refreshing (T2-104)");
   assert.equal(hasActiveWork([processing]), true, "a first bake still refreshes");
   assert.equal(hasActiveWork([{ ...READY, active_job_id: "" }]), false, "empty string is not an active job");
+});
+
+// D-xxviii (seam L3, from review): the activity panel names a job's collection through the
+// SAME rule as every other surface. The job is for a collection the web intake created a
+// moment ago — a minted id — and the list this screen loaded does not carry it yet (the
+// create lands between two re-lists). The fallback used to be the raw id: twelve hex
+// characters as a name.
+test("the activity panel names a job for an unlisted MINTED collection “Untitled collection”", async () => {
+  globalThis.fetch = (async () => new Response(null, { status: 404 })) as typeof fetch;
+  const MINTED = "3f9c2a71e0b4";
+  localStorage.setItem(ACTIVITY_STORAGE_KEY, JSON.stringify([{ jobId: "j1", dsId: MINTED }]));
+  const client = {
+    async listDatasets(): Promise<DatasetSummary[]> {
+      return [READY]; // not the new collection
+    },
+    async getJob(jobId: string) {
+      // A running ingest, as the job route serves it (no progress written yet).
+      return { job_id: jobId, state: "started", dataset_id: MINTED, log_tail: [], error: null, progress: null };
+    },
+    coverUrl: (dsId: string) => `/api/datasets/${dsId}/cover`,
+    authHeaders: () => ({}),
+  } as unknown as ApiClient;
+  try {
+    render(
+      h(
+        ActivityProvider,
+        { client },
+        h(AdminScreen, {
+          client,
+          username: "ada",
+          onOpenDataset: () => {},
+          onEditDataset: () => {},
+          onAuthExpired: () => {},
+          onLogout: () => {},
+          onLogin: () => {},
+        }),
+      ),
+    );
+    await screen.findByText("1 dataset");
+    fireEvent.click(await screen.findByRole("button", { name: /^Activity:/ }));
+    assert.ok(await screen.findByText("Untitled collection"));
+    assert.equal(screen.queryAllByText(MINTED).length, 0, "the minted id is not shown as a name");
+  } finally {
+    localStorage.removeItem(ACTIVITY_STORAGE_KEY);
+  }
 });

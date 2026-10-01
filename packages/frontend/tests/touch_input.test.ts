@@ -45,19 +45,36 @@ interface Harness {
   move(pointerId: number, x: number, y: number, pointerType?: string): void;
   up(pointerId: number, x: number, y: number, pointerType?: string): void;
   cancel(pointerId: number, x: number, y: number, pointerType?: string): void;
+  lostCapture(pointerId: number, x: number, y: number, pointerType?: string): void;
   wheel(x: number, y: number, deltaY: number, deltaMode?: number): void;
+}
+
+/** Options that model the two things about a real canvas the default stub cannot:
+ *  where it sits in the viewport, and a `setPointerCapture` the browser refuses. */
+interface HarnessOptions {
+  /** The surface's offset within the viewport. DEFAULT (0,0) is what `.canvas-holder`
+   *  happens to be today — which is exactly why a rect-handling bug in the pinch path
+   *  was invisible until a test used something else (review of #267). */
+  rect?: { left: number; top: number };
+  /** Pointer ids `setPointerCapture` throws for, as the spec says it must when there is
+   *  no ACTIVE pointer behind the id — which also means no up/cancel is ever coming. */
+  captureThrowsFor?: ReadonlySet<number>;
 }
 
 /** A `createPointerInput` over a recording camera + a canvas stub. The camera APPLIES
  *  what it is driven with (so consecutive events compose exactly as they do live) and
  *  records every drive. `clampZoom` has the real world's shape around Z0. */
-function harness(zoom = Z0): Harness {
+function harness(zoom = Z0, opts: HarnessOptions = {}): Harness {
   const cam: CameraState = { center: [0.5, 0.5], zoom };
   const drives: { partial: Partial<CameraState>; focal?: [number, number] }[] = [];
   const captured = new Set<number>();
+  const rect = opts.rect ?? { left: 0, top: 0 };
   const input = createPointerInput(
     {
       setPointerCapture(id: number): void {
+        if (opts.captureThrowsFor?.has(id) === true) {
+          throw new DOMException(`InvalidPointerId: ${id}`, "NotFoundError");
+        }
         captured.add(id);
       },
       hasPointerCapture(id: number): boolean {
@@ -66,7 +83,7 @@ function harness(zoom = Z0): Harness {
       releasePointerCapture(id: number): void {
         captured.delete(id);
       },
-      getBoundingClientRect: () => ({ left: 0, top: 0 }),
+      getBoundingClientRect: () => rect,
     },
     {
       camera: () => cam,
@@ -94,6 +111,7 @@ function harness(zoom = Z0): Harness {
     move: (id, x, y, t = "touch") => input.onPointerMove(ev(id, x, y, t)),
     up: (id, x, y, t = "touch") => input.onPointerUp(ev(id, x, y, t)),
     cancel: (id, x, y, t = "touch") => input.onPointerCancel(ev(id, x, y, t)),
+    lostCapture: (id, x, y, t = "touch") => input.onLostPointerCapture(ev(id, x, y, t)),
     wheel: (x, y, deltaY, deltaMode = 0) =>
       input.onWheel({ clientX: x, clientY: y, deltaY, deltaMode, preventDefault() {} }),
   };
@@ -222,6 +240,141 @@ test("pinchCamera keeps the world point under the old midpoint under the NEW mid
   assert.ok(Math.abs(sy - next.midY) < 1e-9, `the anchor landed at y=${sy}, not ${next.midY}`);
   // ...and that anchored world point is what gets emitted as the load focal point.
   assert.deepEqual(after.focal, w, "focal is not the midpoint's world position");
+});
+
+test("a pinch anchors in CANVAS pixels, not client ones — the offset the wheel already subtracts", () => {
+  // Review of #267. `pinchFrame` reads the pointer SAMPLES, which are client coordinates,
+  // but `pinchCamera` measures its anchor from the viewport's own centre
+  // (`midX - vp.width / 2`) — a canvas-relative frame. `onWheel` and the double-tap both
+  // subtract `getBoundingClientRect()` first; the pinch did not, so its anchor and the
+  // `focal` the tile loader orders by were off by the canvas's offset in the viewport.
+  //
+  // It reads correct at (0,0), which is where `.canvas-holder` sits today — and is an
+  // ASSUMPTION app.css already flags as due to break under `env(safe-area-inset-top)`.
+  // Every other pin in this file uses the default (0,0) stub and could not see it; the
+  // e2e pinch asserts only the DIRECTION of the zoom, so it could not either.
+  const rect = { left: 37, top: 61 };
+  const h = harness(Z0, { rect });
+
+  // Two fingers 100px apart, centred on CLIENT (200, 400).
+  h.down(1, 150, 400);
+  h.down(2, 250, 400);
+
+  // The world point under the anchor, derived from the camera projection's definition
+  // with the midpoint expressed in CANVAS pixels — which is the whole claim.
+  const mid0: [number, number] = [200 - rect.left, 400 - rect.top];
+  const w: [number, number] = [
+    h.cam.center[0] + (mid0[0] - VIEWPORT.width / 2) * h.cam.zoom,
+    h.cam.center[1] + (mid0[1] - VIEWPORT.height / 2) * h.cam.zoom,
+  ];
+
+  // Spread AND drift, in two steps, so the frame-to-frame composition is exercised too.
+  h.move(1, 160, 430);
+  h.move(2, 360, 430);
+
+  const mid1: [number, number] = [260 - rect.left, 430 - rect.top];
+  const [sx, sy] = screenOf(h.cam, VIEWPORT, w);
+  assert.ok(
+    Math.abs(sx - mid1[0]) < 1e-9 && Math.abs(sy - mid1[1]) < 1e-9,
+    `the anchor landed at canvas (${sx}, ${sy}), not (${mid1[0]}, ${mid1[1]}) — the pinch ` +
+      "read client coordinates as canvas ones",
+  );
+  // ...and the emitted focal is that same world point, not one shifted by the offset.
+  const last = h.drives[h.drives.length - 1];
+  assert.ok(last.focal !== undefined, "the pinch stopped emitting a load focal point");
+  assert.ok(
+    Math.abs(last.focal[0] - w[0]) < 1e-12 && Math.abs(last.focal[1] - w[1]) < 1e-12,
+    `focal ${JSON.stringify(last.focal)} is not the anchored world point ${JSON.stringify(w)}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The pointer map must never leak an id — a leak is unrecoverable
+// ---------------------------------------------------------------------------
+
+test("a setPointerCapture the browser REJECTS does not leak a pointer that can never end", () => {
+  // Review of #267. `consumed` / `tapOrigin` are only reset while `pointers.size === 0`,
+  // so one id that can never be ended makes every later tap read as a second finger:
+  // `consumedGesture()` wedges true and `ViewerScreen.handleCanvasClick` returns early
+  // FOREVER. The pre-M1 model could not have this bug — it kept one boolean and reset it
+  // on every press. Per spec `setPointerCapture` throws exactly when there is no ACTIVE
+  // pointer behind the id, which is also why no up or cancel is coming for it.
+  const h = harness(Z0, { captureThrowsFor: new Set([2]) });
+
+  h.down(1, 100, 200);
+  h.up(1, 100, 200);
+  assert.equal(h.input.consumedGesture(), false, "a plain tap was already a gesture");
+
+  // The browser refuses the capture. The handler must absorb that, not propagate it — a
+  // listener that throws leaves the rest of `onPointerDown` unrun in a real browser too.
+  assert.doesNotThrow(() => h.down(2, 300, 400), "a rejected capture escaped the handler");
+  h.up(2, 300, 400); // never arrives in life; harmless if it does
+
+  // Far from the first tap, so this is a fresh single tap and not a double-tap.
+  h.down(1, 300, 600);
+  h.up(1, 300, 600);
+  assert.equal(
+    h.input.consumedGesture(),
+    false,
+    "a rejected capture leaked a pointer — every later tap now reads as a pinch and can " +
+      "never select a cell again",
+  );
+});
+
+test("lostpointercapture ends a pointer the browser never sent an up or a cancel for", () => {
+  // The other half of the same leak: a capture that goes away on its own (the capturing
+  // element leaving the DOM, the browser reclaiming it) with neither `pointerup` nor
+  // `pointercancel` behind it. Treated as a cancel — the interaction did not complete, so
+  // it must not seed a double-tap either.
+  const h = harness();
+  h.down(1, 200, 400);
+  h.move(1, 260, 400); // a real drag, so `consumed` is set
+  assert.equal(h.input.consumedGesture(), true, "a 60px drag was not a gesture");
+
+  h.lostCapture(1, 260, 400);
+
+  h.down(1, 100, 200);
+  h.up(1, 100, 200);
+  assert.equal(
+    h.input.consumedGesture(),
+    false,
+    "a lost capture leaked a pointer — tap-to-select is dead for the rest of the session",
+  );
+  assert.equal(h.cam.zoom, Z0, "the lost capture was recorded as a tap and seeded a double-tap zoom");
+});
+
+test("lostpointercapture is a no-op on the ordinary path, where it fires AFTER pointerup", () => {
+  // Every real pointerup is followed by an implicit capture release, so this handler runs
+  // on the happy path too. It must change nothing there — in particular it must not undo
+  // the tap the pointerup just recorded, or double-tap would never fire on a real device.
+  const h = harness();
+  h.down(1, 300, 200);
+  h.up(1, 300, 200);
+  h.lostCapture(1, 300, 200); // the browser's implicit release
+  h.down(1, 300, 200);
+  h.up(1, 300, 200);
+  assert.ok(
+    h.cam.zoom < Z0,
+    `two taps with the browser's implicit capture release between them did not zoom ` +
+      `(${h.cam.zoom}) — the release path swallowed the first tap`,
+  );
+});
+
+test("createWorld binds the lost-capture recovery to the canvas, and unbinds it on dispose", () => {
+  // `createWorld` needs a real WebGL canvas (tests/frontend_skeleton.test.ts pins it), so
+  // the WIRING is unreachable in both tiers: the model above can be driven directly, but
+  // nothing here can prove the canvas ever hears the event. A source pin is the honest
+  // instrument — the same one §2a uses for `handleCanvasClick` — and it covers the
+  // removeEventListener too, which is the half a leak-fix loses silently.
+  const src = readFileSync(new URL("../src/renderer/world.ts", import.meta.url), "utf8");
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  for (const verb of ["addEventListener", "removeEventListener"]) {
+    assert.equal(
+      code.includes(`canvas.${verb}("lostpointercapture", input.onLostPointerCapture)`),
+      true,
+      `createWorld does not ${verb} lostpointercapture — a leaked pointer has no recovery path`,
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------

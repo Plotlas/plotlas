@@ -15,6 +15,7 @@ import type { ReactElement } from "react";
 import type { Table } from "apache-arrow";
 import type { ColumnRoles } from "../generated/column_roles";
 import type { TagSelection } from "../renderer/layout";
+import { blockedControl } from "./blockedControl";
 
 export interface TagControlsProps {
   roles: ColumnRoles | null; // null for images-only datasets (decision D-25); controls render disabled
@@ -29,6 +30,12 @@ export interface TagControlsProps {
   // Re-attempt the renderer-side sidecar load (re-applies the current selection). Wired
   // to the retry affordance; absent ⇒ the affordance shows the message without a button.
   onRetryTags?: () => void;
+  /** Seam R2 P1: why the renderer cannot serve a tag change right now, or null/absent
+   *  when it can. EVERY control in this panel routes through `onChange` / `onRetryTags`,
+   *  and the shell refuses both while the stack cannot serve them — so without a marking
+   *  the chips and the mode buttons toggle, the canvas does not move, and nothing says
+   *  why. That is the inverse of the rule `blockedControl.ts` states in its own header. */
+  blockedReason?: string | null;
 }
 
 /** The fetched D-14 tag sidecar table (id + one list<string> column per
@@ -96,13 +103,27 @@ function disabledNote(reason: string): ReactElement {
 /** T2-120 (Fix B): the renderer-side-failure affordance — a visible "Tag filtering
  *  unavailable" line + a Retry button (when a handler is wired). role="status" so it
  *  reads as an actionable notice, not console-only. */
-function retryBanner(onRetry?: () => void): ReactElement {
+function retryBanner(onRetry?: () => void, blockedReason?: string | null): ReactElement {
+  // Seam R2 P1: the retry re-applies the selection through the renderer, so it is refused
+  // exactly like a chip is.
+  const { blocked, ...blockedProps } = blockedControl(blockedReason, { className: "btn ghost tag-retry-btn" });
   return h(
     "div",
     { className: "tag-retry-banner", role: "status" },
     h("span", { className: "muted" }, "Tag filtering unavailable"),
     onRetry !== undefined
-      ? h("button", { type: "button", className: "btn ghost tag-retry-btn", onClick: onRetry }, "Retry")
+      ? h(
+          "button",
+          {
+            type: "button",
+            ...blockedProps,
+            onClick: () => {
+              if (blocked) return;
+              onRetry();
+            },
+          },
+          "Retry",
+        )
       : null,
   );
 }
@@ -137,7 +158,7 @@ export function TagControls(props: TagControlsProps): ReactElement {
         "section",
         { className: "tag-controls tag-controls-disabled", "aria-disabled": true },
         h("h3", { className: "panel-title" }, "Tags"),
-        retryBanner(props.onRetryTags),
+        retryBanner(props.onRetryTags, props.blockedReason),
       );
     }
     return disabledNote("Tag values are unavailable; tag filtering is disabled.");
@@ -146,6 +167,17 @@ export function TagControls(props: TagControlsProps): ReactElement {
   const needle = filter.trim().toLowerCase();
   const isSelected = (column: string, value: string): boolean =>
     props.selection.selected.some((p) => p.column === column && p.value === value);
+  // Seam R2 P1: every control below drives `onChange`, which the shell refuses while the
+  // renderer cannot serve it — so they all take the same treatment from the same helper
+  // the two switching surfaces use. `blocked` is what actually refuses the click;
+  // `aria-disabled` is advisory and a real click still arrives. The FILTER box is left
+  // alone deliberately: it narrows which chips are drawn and never reaches the renderer.
+  const blocked = blockedControl(props.blockedReason, { className: "" }).blocked;
+  /** The presentational half for one control of this panel, from the shared helper. */
+  const marked = (className: string): { className: string; title: string | undefined; "aria-disabled": true | undefined } => {
+    const { blocked: _refusedByCaller, ...rest } = blockedControl(props.blockedReason, { className });
+    return rest;
+  };
 
   return h(
     "section",
@@ -154,7 +186,7 @@ export function TagControls(props: TagControlsProps): ReactElement {
     // T2-120 (Fix B): the chips rendered from the UI-side fetch, but the RENDERER's copy
     // failed — the highlight would silently no-op. Surface the mismatch + a retry above
     // the chips so it is visible, not console-only.
-    rendererTagsFailed ? retryBanner(props.onRetryTags) : null,
+    rendererTagsFailed ? retryBanner(props.onRetryTags, props.blockedReason) : null,
     h(
       "div",
       { className: "tag-mode", role: "radiogroup", "aria-label": "Combine mode" },
@@ -164,9 +196,12 @@ export function TagControls(props: TagControlsProps): ReactElement {
           {
             key: mode,
             type: "button",
-            className: props.selection.mode === mode ? "mode-btn mode-btn-active" : "mode-btn",
+            ...marked(props.selection.mode === mode ? "mode-btn mode-btn-active" : "mode-btn"),
             "aria-pressed": props.selection.mode === mode,
-            onClick: () => props.onChange({ selected: props.selection.selected, mode }),
+            onClick: () => {
+              if (blocked) return;
+              props.onChange({ selected: props.selection.selected, mode });
+            },
           },
           mode === "or" ? "Match any" : "Match all",
         ),
@@ -176,8 +211,11 @@ export function TagControls(props: TagControlsProps): ReactElement {
             "button",
             {
               type: "button",
-              className: "mode-btn",
-              onClick: () => props.onChange({ selected: [], mode: props.selection.mode }),
+              ...marked("mode-btn"),
+              onClick: () => {
+                if (blocked) return;
+                props.onChange({ selected: [], mode: props.selection.mode });
+              },
             },
             `Clear (${props.selection.selected.length})`,
           )
@@ -208,9 +246,12 @@ export function TagControls(props: TagControlsProps): ReactElement {
               {
                 key: chip.value,
                 type: "button",
-                className: isSelected(role.column, chip.value) ? "chip chip-selected" : "chip",
+                ...marked(isSelected(role.column, chip.value) ? "chip chip-selected" : "chip"),
                 "aria-pressed": isSelected(role.column, chip.value),
-                onClick: () => props.onChange(toggleTagValue(props.selection, role.column, chip.value)),
+                onClick: () => {
+                  if (blocked) return;
+                  props.onChange(toggleTagValue(props.selection, role.column, chip.value));
+                },
               },
               `${chip.value} (${chip.count})`,
             ),

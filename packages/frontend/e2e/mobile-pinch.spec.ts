@@ -39,6 +39,11 @@ const PHONE = { width: 390, height: 844 };
 // number that can drift out of step with this one.
 test.use({ hasTouch: true, viewport: PHONE });
 
+/** The CDP `Input.dispatchTouchEvent` phase names. Spelled out rather than `string`
+ *  so a typo is a compile error, not a silently-ignored CDP call at runtime
+ *  (caught by the e2e typecheck project, SCOPE_e2e-strategy.md D3). */
+type TouchEventType = "touchStart" | "touchEnd" | "touchMove" | "touchCancel";
+
 interface TouchPoint {
   x: number;
   y: number;
@@ -67,7 +72,7 @@ test("a two-finger pinch zooms the atlas", async ({ page, request, baseURL }) =>
   const cy = box!.y + box!.height / 2;
 
   const cdp = await page.context().newCDPSession(page);
-  const touch = async (type: string, points: TouchPoint[]): Promise<void> => {
+  const touch = async (type: TouchEventType, points: TouchPoint[]): Promise<void> => {
     await cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points });
   };
   /** Drive the two fingers from `from` px apart to `to` px apart, horizontally about

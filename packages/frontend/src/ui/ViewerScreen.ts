@@ -32,7 +32,7 @@ import {
 import type { ReactElement } from "react";
 import type { Table } from "apache-arrow";
 import { createWorld, fitCamera, fitZoom } from "../renderer/world";
-import type { Viewport, WorldHandle, WorldRect } from "../renderer/world";
+import type { CameraState, Viewport, WorldHandle, WorldRect } from "../renderer/world";
 import { createCells } from "../renderer/cells";
 import type { Cells } from "../renderer/cells";
 import { createTilePyramid } from "../renderer/tilePyramid";
@@ -41,11 +41,24 @@ import { createLayoutController, shouldAutoFit } from "../renderer/layout";
 import type { LayoutController, LayoutManifest, TagRenderState, TagSelection } from "../renderer/layout";
 import { createViewerStatus } from "../renderer/viewerStatus";
 import type { ViewerStatusHandle, RendererStatus } from "../renderer/viewerStatus";
+import {
+  createRendererHealth,
+  failureResolvedBySwitch,
+  clearResumedReadoutFailure,
+  guardScheduledWork,
+  layoutFailureFrom,
+  rendererControlState,
+  rendererFailureFrom,
+} from "../renderer/health";
+import type { RendererHealth, RendererHealthHandle } from "../renderer/health";
+import { RendererRecoveryPanel } from "./RendererRecoveryPanel";
 import type { MinimapOverview } from "./Minimap";
 import { METADATA_MAX_IDS } from "../api-client/client";
 import type { ApiClient } from "../api-client/client";
 import type { LayoutInfo, MetadataRow } from "../api-client/types";
 import { collectionName } from "../api-client/types";
+import type { Presentation } from "../generated/presentation";
+import { layoutsWithLabels } from "./presentation";
 import { attributionCredit } from "./attributionCredit";
 import { applyDocumentTitle } from "./documentTitle";
 import { LayoutSwitcher } from "./LayoutSwitcher";
@@ -70,6 +83,7 @@ import type { CellPreviewFetch } from "./cellPreview";
 import { StatusBar } from "./StatusBar";
 import type { TagStatusView, ViewerStatus } from "./StatusBar";
 import { Minimap } from "./Minimap";
+import { blockedControl } from "./blockedControl";
 import { Lightbox, runLocate } from "./Lightbox";
 import { PlotlasMark } from "./PlotlasMark";
 import { ActivityPill } from "./activity/ActivityPill";
@@ -265,6 +279,113 @@ export function layoutFitRect(
   return { xMin, yMin, xMax, yMax };
 }
 
+/** Which layout a (re)boot activates. Three-deep, and the ORDER is the whole function:
+ *
+ *  1. **the layout the user is already on**, when it is still declared (review R1-02). A
+ *     REBUILD — "Retry renderer" re-running the mount effect — tears the whole stack down
+ *     and previously reset them to the first layout without asking. This case is
+ *     UNCHANGED by D-iv and must stay that way: a collection's declared default is a
+ *     statement about how it OPENS, not a licence to yank someone off the layout they
+ *     were looking at when the renderer happened to fall over.
+ *  2. else the record's `default_layout` (D-iv), when it resolves. `activeLayoutId` is
+ *     null on a fresh mount, which is exactly when this is the interesting answer.
+ *  3. else the manifest's first, exactly as before.
+ *
+ *  Both (1) and (2) are membership-checked against the layouts the bake actually
+ *  produced, so a remembered layout a re-bake dropped and a `default_layout` naming
+ *  nothing behave identically: fall through, silently (D-xvi — operator: "if it
+ *  disappears it should fallback to the default (e.g. first layout)"). Null only when the
+ *  collection declares no layouts at all, which the caller already treats as fatal. */
+export function bootLayoutId(
+  layouts: LayoutInfo[],
+  activeLayoutId: string | null,
+  defaultLayoutId?: string | null,
+): string | null {
+  if (layouts.length === 0) return null;
+  if (activeLayoutId !== null && layouts.some((l) => l.layout_id === activeLayoutId)) return activeLayoutId;
+  if (defaultLayoutId !== undefined && defaultLayoutId !== null && layouts.some((l) => l.layout_id === defaultLayoutId)) {
+    return defaultLayoutId;
+  }
+  return layouts[0].layout_id;
+}
+
+/** What a tap on a layout control does, given the renderer's health (Seam R1 P6).
+ *
+ *  Three outcomes, and the middle one is the decision this seam had to make:
+ *  - **queue** while the renderer is still booting. The control stays LIVE — refusing it
+ *    for an ordinary healthy boot is worse than the rare wait — but the tap is not
+ *    applied yet, and crucially the HIGHLIGHT does not move. Moving it optimistically is
+ *    what #279 did, and boot's own `setActiveLayoutId` then overwrote it, leaving the
+ *    canvas on one layout and the highlight on another.
+ *  - **refuse** once boot has settled but the renderer cannot serve a switch: there is no
+ *    stack, the context is lost (a swap there is destructive), or a renderer-scoped
+ *    failure stands. Both switching surfaces already suppress the click (P5); this is the
+ *    same decision at the one place a QUEUED tap could otherwise land on a dead stack.
+ *  - **apply** otherwise, including under a layout-scoped failure — switching away from
+ *    the view that broke is the escape route, not something to block.
+ *
+ *  Exported + pure for the same reason `layoutFitRect` / `useRevealOnSelection` are: a
+ *  healthy boot is unreachable in jsdom (no WebGL ⇒ createWorld throws), so "the queued
+ *  tap applies when boot completes" can only be pinned here. `rendererControlState` is
+ *  the single encoding of blockedness — this adds the boot case, it does not re-decide it. */
+export type LayoutTapIntent = "queue" | "apply" | "refuse";
+
+export function layoutTapIntent(health: RendererHealth, hasStack: boolean): LayoutTapIntent {
+  // The stack is the pivot, not the health kind (review R1-03/R1-12). Queueing is only
+  // ever right while there is genuinely nothing to switch: with a stack in hand a tap
+  // APPLIES, and a boot that has ended — which now always publishes a transition — must
+  // REFUSE rather than swallow taps into a ref nothing will ever drain.
+  if (!hasStack) return health.kind === "starting" ? "queue" : "refuse";
+  return rendererControlState(health).usable ? "apply" : "refuse";
+}
+
+/**
+ * Run a control's stack-reaching work only while the renderer can serve it, and hand back
+ * what it returned (Seam R2 P1).
+ *
+ * `blockedControl.ts` states the reason this has to exist: **`aria-disabled` does NOT stop
+ * a click, so every caller must also refuse the action.** R1 gave the two layout-switching
+ * surfaces both halves; ⤢ Fit, the minimap jump, tag apply, tag retry, a search-result
+ * jump and the Lightbox's "Locate on canvas" had neither, and drove the camera and the
+ * controller on a dead renderer.
+ *
+ * It wraps the stack-reaching CALL, never the top of a handler, because two handlers have
+ * deliberately ordered pre-stack side effects a handler-top guard would swallow:
+ * `jumpToRow` dismisses the ☰ the user just acted in (review #271 F2), and
+ * `handleTagChange` records the tag selection the boot chain re-applies on a rebuild —
+ * refusing that would leave a later "Retry renderer" applying a stale selection while the
+ * rail shows the new one.
+ *
+ * Callers pass `health.snapshot()`, never the React render mirror (directive 7 / R1-13):
+ * `markContextLost` is published from a native listener and the watchdog's failure from a
+ * `setTimeout`, so a click already queued would be dispatched against a stale `ready`.
+ * Taking the health as an ARGUMENT is what makes that a call-site decision a test can
+ * count, and keeps this pure.
+ */
+/**
+ * Whether two tag selections would filter the canvas identically (Seam R2, review A9).
+ *
+ * `applyTags` is not free — measured 26.6 ms at 1M cells, 2.85 ms even for an empty
+ * selection, and it rebuilds the instanced mesh — and a context loss is common and usually
+ * brief. The recovery re-apply exists for the case where the user CHANGED the filter while
+ * the renderer was refusing, so it is conditional on the selection having actually moved;
+ * in every other loss the canvas already shows what the rail says.
+ *
+ * Order-insensitive over the pairs: the rail rebuilds the array on every toggle, so two
+ * equivalent selections routinely differ in order.
+ */
+export function sameTagSelection(a: TagSelection, b: TagSelection): boolean {
+  if (a.mode !== b.mode || a.selected.length !== b.selected.length) return false;
+  const key = (p: { column: string; value: string }): string => JSON.stringify([p.column, p.value]);
+  const seen = new Set(a.selected.map(key));
+  return b.selected.every((p) => seen.has(key(p)));
+}
+
+export function whenStackUsable<T>(health: RendererHealth, action: () => T): T | false {
+  if (!rendererControlState(health).usable) return false;
+  return action();
+}
+
 export function ViewerScreen(props: ViewerScreenProps): ReactElement {
   const { datasetId, client } = props;
 
@@ -291,6 +412,20 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
   // Signature of the last minimap overview snapshot pushed to state, so refreshOverview
   // only setState when the resident coarse-tile set actually changes (not every poll).
   const overviewSigRef = useRef<string>("");
+  // Seam R1: the renderer's health observable, created once per MOUNT (App keys this
+  // component on datasetId, so that is once per collection) and mirrored into state
+  // below so the shell re-renders when the renderer's condition changes. The RENDERER
+  // owns this state — the shell only subscribes, which is what lets it tell a
+  // layout-scoped failure from a dead stack instead of showing one string for both.
+  const healthRef = useRef<RendererHealthHandle | null>(null);
+  if (healthRef.current === null) healthRef.current = createRendererHealth();
+  const health = healthRef.current;
+  // A layout tapped while the renderer is still booting, held until boot settles (P6).
+  const pendingSwitchRef = useRef<string | null>(null);
+  // The camera a dying stack was holding, handed to the stack that replaces it (R1-02).
+  // Written by the mount effect's cleanup and consumed by the next boot; null on a fresh
+  // mount, which is what makes the boot fit a fresh-mount-only behaviour.
+  const restoreCameraRef = useRef<CameraState | null>(null);
 
   const [layouts, setLayouts] = useState<LayoutInfo[]>([]);
   const [activeLayoutId, setActiveLayoutId] = useState<string | null>(null);
@@ -305,8 +440,11 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
   const [summaryRows, setSummaryRows] = useState<MetadataRow[]>([]);
   const [preview, setPreview] = useState<CellPreviewData | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Part B presentation, from app-state via GET /api/datasets/{id} — NOT the manifest,
-  // so renaming or crediting a collection never needs a re-bake. Fetched alongside the
+  // Part B presentation, read via GET /api/datasets/{id}. This comment used to add
+  // "NOT the manifest, so renaming never needs a re-bake" — a false justification that
+  // appeared in four files; editing a manifest does not imply re-baking. The values are
+  // slated to move into the manifest so they travel with the dataset, and this route
+  // stays the frontend's source either way. Fetched alongside the
   // boot load and deliberately NON-FATAL: a failure here leaves the title as the id and
   // the credit hidden, which is exactly the un-named state. Chrome must never be able to
   // stop a collection from rendering.
@@ -320,6 +458,16 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
     attribution?: string | null;
     attribution_url?: string | null;
   } | null>(null);
+  // D-xv's presentation RECORD — the second file in the dataset directory, merged over
+  // the bake record by the API. Distinct state from `presentation` above because it is a
+  // distinct read: the name + credit ride on GET /api/datasets/{id} (and always have),
+  // while the record carries what the manifest has no field for — `title_column`, the
+  // per-column display map, per-layout label overrides, and `default_layout`. `{}` until
+  // boot resolves, and `{}` FOREVER for a collection that has no record, which is every
+  // collection committed before 2026-09-07 — so `{}` must be, and is, today's behaviour.
+  const [presentationRecord, setPresentationRecord] = useState<Presentation>({});
+  const declaredColumns = presentationRecord.columns;
+  const declaredTitleColumn = presentationRecord.dataset?.title_column ?? null;
 
   // Name the tab after the collection, restoring the app title when the viewer
   // unmounts. Runs on the RESOLVED name, so an unnamed collection shows its id here
@@ -349,6 +497,50 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
   // fps / loading-tile / cursor-cell here (coalesced to ~one update per frame by the
   // observable). null until the stack + first emit exist.
   const [rendererStatus, setRendererStatus] = useState<RendererStatus | null>(null);
+  // The health mirror the shell renders from, and the epoch that rebuilds the stack.
+  // Bumping `rendererEpoch` re-runs the mount effect below — its cleanup disposes the
+  // dead stack first — which is exactly what "Retry renderer" has to do.
+  const [rendererHealth, setRendererHealth] = useState<RendererHealth>(health.snapshot());
+  const [rendererEpoch, setRendererEpoch] = useState(0);
+  // Seam R2 P3: are the loader's tile reads failing right now? Pushed by the loader only
+  // when the answer CHANGES (it judges a window at a time), so this is a couple of
+  // setStates per outage rather than one per failed read.
+  const [tilesFailing, setTilesFailing] = useState(false);
+  // Seam R2 P2: releases the latches on the two SHELL-owned guarded sites (the fps proxy
+  // and the minimap poll). They are created inside the mount effect, so a recovery out
+  // here reaches them through this ref; null before the stack is built and after teardown.
+  const resumeScheduledRef = useRef<(() => void) | null>(null);
+  // Seam R2 P2 (review A2): the GUARDED minimap-overview poll, so the two call sites
+  // outside the mount effect reach the same guard the interval does instead of throwing
+  // into a promise tail or the boot chain.
+  const refreshOverviewRef = useRef<(() => void) | null>(null);
+  /** Seam R2 P2: release the shell's scheduled-site latches, and RETRACT the report they
+   *  made — one owner for both, so they cannot drift ([[T2-232]]). Every caller is a point
+   *  where the shell has decided the renderer can serve those sites again. */
+  function resumeScheduled(): void {
+    resumeScheduledRef.current?.();
+    clearResumedReadoutFailure(health);
+  }
+
+  // Seam R2 (review C1): the health kind the LAST render saw, so an effect can tell a
+  // transition apart from a re-render. A context loss recovers IN PLACE — no rebuild —
+  // and it is the one blocked state nothing else re-applies the shell's own state after.
+  const prevHealthKindRef = useRef<RendererHealth["kind"]>("starting");
+  // Review A9: the selection the canvas was actually filtered by when it stopped
+  // accepting changes. Non-null only for the duration of a lost context.
+  const tagSelectionAtLossRef = useRef<TagSelection | null>(null);
+  useEffect(() => health.subscribe(setRendererHealth), [health]);
+  // The one encoding of "may a stack-dependent control be used", shared by both
+  // switching surfaces and by the tap intent.
+  const rendererControls = rendererControlState(rendererHealth);
+  // Seam R2 P1: the same treatment for the ⤢ Fit button. `blocked` is dropped because the
+  // refusal happens in `fitToLayout` against LIVE health — this object is presentation
+  // only, and a component-level boolean read off the render mirror would be the stale
+  // read R1-13 removed. The tooltip stays "Fit view", with the reason appended.
+  const { blocked: _fitClickBlocked, ...fitBlocked } = blockedControl(rendererControls.reason, {
+    className: "panel-float fit-view-btn",
+    title: "Fit view",
+  });
   // Minimap overview imagery (T2-54): the resident coarse mosaic tiles + the layout
   // bbox, refreshed on layout activation and as coarse tiles bind. null ⇒ neutral
   // field (the minimap still shows the viewport box). Plus the live view rect for the
@@ -579,6 +771,14 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
     setTagsCollapsed(next);
     setInspectorCollapsed(next);
     setMenuOpen(false);
+    // ...and withdraw any pending "focus the search box once the ☰ mounts it" request
+    // along with the ☰ itself. The flag is only cleared by the effect OBSERVING
+    // `menuOpen === true`, so a "/" that queues `setMenuOpen(true)` in the same batch as
+    // this `setMenuOpen(false)` leaves it set with no open to consume it — and the next
+    // time the user taps ☰ themselves they get a focused search field and a phone
+    // keyboard they did not ask for, which is the exact outcome the flag exists to
+    // prevent (review of #267).
+    focusSearchOnMenuOpenRef.current = false;
   }, []);
 
   // Two triggers, because the requirement moves for two different reasons. SIZE changes
@@ -625,6 +825,22 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
   // datasetId by App (D-31), so this is once per dataset.
   useEffect(() => {
     mountedRef.current = true; // (re)arm for this mount; the cleanup below sets it false
+    // A rebuild ("Retry renderer") re-enters here with a failed health; a first mount is
+    // already `starting`, so this is a no-op there (the observable is value-equal).
+    health.markStarting();
+    // R1-20: the cleanup below revokes every preview object URL, and on a rebuild that
+    // runs while the `preview` state still points at one — so an Inspector <img> that was
+    // mid-load stays broken, with "View ⤢" still offered against a stale cell id, until
+    // the user happens to re-click the same cell. The state is not the effect's to own, so
+    // it is reset HERE rather than from the cleanup: a no-op on a fresh mount, and it
+    // avoids setting state from an unmount path.
+    setPreview(null);
+    previewRequestRef.current = null;
+    // Seam R2 P3: the same reasoning one line up. A rebuild builds a fresh loader whose
+    // ledger is empty, and an empty ledger has nothing to push — so without this the
+    // status bar would keep saying "images not loading" about a loader that no longer
+    // exists, with no event that could ever clear it.
+    setTilesFailing(false);
     let cancelled = false;
     let world: WorldHandle | null = null;
     let cells: Cells | null = null;
@@ -656,12 +872,28 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
     })();
 
     (async () => {
-      const layoutInfos = await client.listLayouts(datasetId);
-      if (layoutInfos.length === 0) throw new Error("This dataset declares no layouts.");
-      const firstLayout = layoutInfos[0].layout_id;
+      // The presentation record is fetched INSIDE the boot chain, unlike the name/credit
+      // above, because `default_layout` decides which manifest is fetched next — a record
+      // that arrived later could only "fix" the opening layout by re-activating one, i.e.
+      // by visibly switching the collection out from under the visitor. In PARALLEL, so
+      // it adds no latency to the layout list, and `getPresentation` never rejects, so it
+      // cannot make `Promise.all` fail boot: an absent or unreadable record is `{}`.
+      const [baked, record] = await Promise.all([
+        client.listLayouts(datasetId),
+        client.getPresentation(datasetId),
+      ]);
+      // D-xviii: the owner's layout names, applied once here so every switching surface
+      // (the tab row AND the ☰ menu below ~855px) reads from the same list.
+      const layoutInfos = layoutsWithLabels(baked, record.layouts);
+      // Review R1-02: on a REBUILD this is the layout the user was on, not layouts[0] and
+      // not the declared default. `activeLayoutId` is null on a fresh mount, which is
+      // where `default_layout` (D-iv) applies.
+      let firstLayout = bootLayoutId(layoutInfos, activeLayoutId, record.dataset?.default_layout);
+      if (firstLayout === null) throw new Error("This dataset declares no layouts.");
       // Validated at the client boundary (issue #4) before the renderer sees it.
       const mf = await client.getManifest(datasetId, firstLayout);
       if (cancelled) return;
+      setPresentationRecord(record);
       setLayouts(layoutInfos);
       setManifest(mf);
       setActiveLayoutId(firstLayout);
@@ -678,10 +910,45 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
       }
       if (cancelled) return;
 
+      // Review R1-11(b)/R1-12: BOOT ADOPTS A TAP THAT ARRIVED WHILE IT WAS LOADING.
+      // Everything above here is network — the layout list, the manifest, a tag sidecar
+      // that is megabytes on a real collection — and the tabs are live throughout, so a
+      // tap in that window is ordinary. Holding it until after boot meant boot activated
+      // layout A to completion (every visible tile fetched, decoded and uploaded, plus an
+      // un-abortable ~16 MB position table at 1M) and the drain then threw all of it away
+      // to activate B. Adopting it here costs nothing and activates B once.
+      //
+      // The highlight moves WITH the adoption, not at tap time: this is the point where
+      // the switch actually applies, so P6 holds — and boot's own `setActiveLayoutId`
+      // cannot overwrite it afterwards, because this IS boot's assignment.
+      const adopted = pendingSwitchRef.current;
+      if (adopted !== null && layoutInfos.some((l) => l.layout_id === adopted)) {
+        pendingSwitchRef.current = null;
+        firstLayout = adopted;
+        setActiveLayoutId(adopted);
+      }
+
       const canvas = canvasRef.current;
       const holder = holderRef.current;
-      if (canvas === null || holder === null) return;
-      world = createWorld(canvas, measure(holder));
+      if (canvas === null || holder === null) {
+        // R1-03: this exit published nothing at all, so health sat at `starting` forever
+        // behind a live, silent switcher.
+        if (!cancelled) health.fail({ code: "boot-failed", layoutId: null, detail: "the canvas went away during boot" });
+        return;
+      }
+      // Seam R1 P1: a browser that cannot give us a WebGL 2 context throws HERE, and
+      // used to reach the outer catch as an unlabelled error rendered through the one
+      // generic banner. It is now published as the named failure it is — the panel says
+      // the browser has no WebGL 2, and offers the only action that can help.
+      try {
+        world = createWorld(canvas, measure(holder), health);
+      } catch (err) {
+        if (!cancelled) {
+          console.error("[viewer] the renderer stack could not be built", err);
+          health.fail(rendererFailureFrom(err, errText(err)));
+        }
+        return;
+      }
       // DEV-only camera drive (window.__vizCamera): lets an external script move the
       // camera along a computed path — used by the hero-loop capture
       // (docs/launch/SEAM_hero-capture.md). No-op in a production build (the handle
@@ -701,9 +968,41 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
         // Surface a reload prompt rather than leave the user on a frozen/grey canvas.
         // Guarded on `cancelled` so a watchdog racing teardown can't setState after
         // unmount (world.dispose() also cancels the watchdog — this is belt-and-braces).
+        //
+        // Seam R1: published as a failure rather than set as a banner string, so the
+        // prompt arrives with the action that matches it. The WORDING is unchanged and
+        // deliberately so — `e2e/contextloss.spec.ts` waits for role="alert" to contain
+        // /reload the page/i, and that test must pass unmodified.
         if (!cancelled) {
-          setError("Rendering was interrupted and could not recover. Reload the page to continue.");
+          health.fail({ code: "context-unrecoverable", layoutId: null, detail: null });
         }
+        // Seam R2 P2: `deps` is left at its default (no injected fakes) and the health
+        // sink is passed as the loader's own report channel — the same report-only shape
+        // `createWorld` takes, for its two guarded scheduled sites.
+      }, undefined, health);
+      // Seam R1 P1, detection point 3, second half (R1-05). The FIRST half — an
+      // activation that rejects — is caught below and at the switch. This is the half
+      // that rejects nothing: on a healthy boot the controller holds the manifest, so a
+      // switch awaits no network at all, `activateLayout` awaits nothing, and the tiles
+      // load fire-and-forget — so with the API down the switch RESOLVED, the backdrop
+      // watchdog cleared the old layout 2s later, and the user was left on an empty
+      // canvas with healthy-looking chrome and no error of any kind (reproduced in a
+      // browser 2026-08-21 against rijks_pilot). The loader now says when a whole view
+      // failed to stream; the scope is the same layout-scoped one either way, so the
+      // switcher stays live and the panel offers "Retry this view".
+      pyramid.setViewFailureListener((failedLayout, detail) => {
+        if (cancelled) return;
+        console.error(`[viewer] every tile of '${failedLayout}' failed to load`, detail);
+        health.fail({ code: "layout-assets-failed", layoutId: failedLayout, detail });
+      });
+      // Seam R2 P3: the transient, session-level "images aren't loading right now". NOT a
+      // health failure and NOT the recovery panel: that panel is view-scoped, carries
+      // "Retry this view", and returns null for `ready` — which is precisely the state
+      // this fires in, with the stack drawing and the picture merely going stale. It is a
+      // status-bar read-out, and it clears itself.
+      pyramid.setTilesFailingListener((failing) => {
+        if (cancelled) return;
+        setTilesFailing(failing);
       });
       // Pass the concrete world handle so the controller's centerOnCell (T2-54/T2-71)
       // can drive the camera; every other controller method is camera-free.
@@ -726,6 +1025,9 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
         countCellsInView: (view) => controller.countCellsInView(view),
         getLoadingTiles: () => pyramid.loadingTileCount(),
         getResidentTiles: () => pyramid.residentTileCount(),
+        // Seam R2 P2, site 3: the emit is the single point both inputs funnel through,
+        // and the only one that can throw.
+        health,
       });
       const unsubStatus = status.subscribe((s) => {
         if (cancelled) return;
@@ -736,7 +1038,37 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
       statusUnsubRef.current = unsubStatus;
 
       stackRef.current = { world, cells, pyramid, controller, status };
-      await controller.activate(firstLayout);
+      // Seam R1 P1, detection point 3: a layout whose tiles cannot be made renderable is
+      // a LAYOUT-scoped failure — the stack is fine and nothing needs rebuilding, so the
+      // user is offered "Retry this view" and the switcher stays live. Caught here rather
+      // than left to the outer catch, which also covers the API/data errors before this
+      // point (no such collection, an unreadable manifest) and must keep showing the
+      // generic banner for them.
+      let layoutReady = true;
+      try {
+        await controller.activate(firstLayout);
+      } catch (err) {
+        if (cancelled) return;
+        // R1-16: `activate` re-fetches the manifest, so a 404 here means the collection
+        // went away (deleted or un-shared) between the boot fetch and this one. On `main`
+        // that rejection reached the outer catch's deep-link hand-back; this local catch
+        // intercepts it first, so the branch has to exist here too — otherwise the visitor
+        // is stranded on "Retry this view", which re-runs the same 404 forever.
+        if (errStatus(err) === 404 && props.onUnavailable !== undefined) {
+          props.onUnavailable(datasetId);
+          return;
+        }
+        if (errStatus(err) === 401) {
+          surface(err); // a genuine expiry routes to onAuthExpired, exactly as before
+          return;
+        }
+        // "the boot layout", not "the first": since D-iv it is whichever of the three
+        // bootLayoutId branches won, and naming the wrong one sends a reader hunting
+        // through layouts[0] for a failure that was about a declared default.
+        console.error("[viewer] the boot layout could not be activated", err);
+        layoutReady = false;
+        health.fail(layoutFailureFrom(err, firstLayout, errText(err)));
+      }
       if (cancelled) return;
 
       // BOOT FIT (SCOPE_mobile-viewer D5, approved 2026-08-06): open framed on the
@@ -767,19 +1099,48 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
       // effect the state is still null, so fitToLayout would no-op. No retry loop for
       // the same reason (the bbox is already in hand, unlike maybeAutoFit's in-view
       // count, which waits on an async position table).
+      //
+      // Review R1-02: a REBUILD ("Retry renderer") restores the camera the dead stack was
+      // holding, because recovering the renderer must not also throw away where the user
+      // had navigated to. It is a BRANCH ABOVE the boot fit rather than a replacement for
+      // it: `restoreCameraRef` is null on a fresh mount, and the fit below is pinned
+      // verbatim — call site and ordering — by tests/dom/mobile_containment.dom.test.ts.
       const bootRect = layoutFitRect(mf, firstLayout);
-      if (bootRect !== null) {
+      const savedCamera = restoreCameraRef.current;
+      restoreCameraRef.current = null; // consumed — a later fresh boot must frame the data
+      if (savedCamera !== null) {
+        world.setCameraState(savedCamera);
+        setMinimapView(viewRectOf(world));
+      } else if (bootRect !== null) {
         world.setCameraState(fitCamera(bootRect, world.getViewport()));
         setMinimapView(viewRectOf(world));
       }
+      // ...and the tag filter the user had applied. `activate` rebuilds the renderer's
+      // visibility from scratch, so without this the chips still read "selected" while
+      // nothing on the canvas is filtered (review R1-02). No-op for the common empty
+      // selection, and for an images-only collection (applyTags reports `none`).
+      if (tagSelection.selected.length > 0) {
+        const restored = controller.applyTags(tagSelection);
+        if (!cancelled) setTagState(restored);
+      }
 
       world.start();
+      // The stack is up and drawing. Only when the layout actually activated: marking a
+      // failed boot `ready` would clear the failure the user is looking at.
+      if (layoutReady) health.markReady();
 
       // fps proxy (T2-54): drive frameTick from a mount-lifetime rAF loop. The render
       // loop (world.start) also runs on rAF, so this ticks at the same display cadence
       // — an accurate fps read without reaching into the renderer's private loop
       // (boundary). The observable only re-emits when the rounded fps changes, so this
       // is cheap. Cancelled on unmount.
+      //
+      // Seam R2 P2, site 3 — guarded in `viewerStatus.ts`, NOT here. A guard around
+      // `frameTick` was code that could never fire: the tick is a `frameTimes.push` plus
+      // arithmetic plus `scheduleEmit()`, and everything fallible (the O(N) in-view scan,
+      // these very subscribers' setState) runs inside the observable's `emit()`, on a
+      // separate scheduled callback. So the guard sits at the emit, which is the one point
+      // this loop and the camera subscription both funnel through.
       const tick = (): void => {
         if (cancelled || status === null) return;
         status.frameTick();
@@ -791,10 +1152,36 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
       // immediately (initial floor) and on a modest interval as coarse tiles bind —
       // NOT per frame (the coarse floor is static within a layout; per-frame setState
       // would thrash React). refreshOverview also runs on every layout switch.
-      refreshOverview(pyramid);
-      overviewTimer = setInterval(() => {
-        if (!cancelled) refreshOverview(pyramid);
-      }, 750);
+      //
+      // Seam R2 P2, site 4. `overview-poll-failed` for the same reason as the fps proxy:
+      // this paints a 300x188 minimap thumbnail, and a throw in it must not take the
+      // shell's controls down. The interval is deliberately LEFT RUNNING when the guard
+      // latches — it then ticks a single boolean check every 750 ms, which is what lets a
+      // recovery resume it. `clearInterval` on a latch instead made a failed boot kill the
+      // minimap permanently: the throw latched, `fail()` dropped the report (a `"none"`
+      // over the standing layout failure), and a successful "Retry this view" then had
+      // nothing left to restart. The unmount cleanup below still clears it.
+      const pollOverview = guardScheduledWork({
+        work: () => {
+          if (!cancelled) refreshOverview(pyramid);
+        },
+        code: "overview-poll-failed",
+        fail: (failure) => health.fail(failure),
+      });
+      // Published BEFORE the first paint, and every `refreshOverview` call in the shell
+      // goes through the guard. There are three: this one, the interval, and the one
+      // `maybeAutoFit` makes after a switch resolves. Only the interval used to be
+      // guarded — so a throw painting the minimap thumbnail escaped to the boot chain's
+      // catch, was escalated into `boot-failed` over a live canvas, AND aborted before
+      // this assignment, leaving both recovery hooks permanently null.
+      const statusHandle = status;
+      resumeScheduledRef.current = () => {
+        pollOverview.reset();
+        statusHandle?.resume();
+      };
+      refreshOverviewRef.current = pollOverview;
+      pollOverview();
+      overviewTimer = setInterval(pollOverview, 750);
     })().catch((err: unknown) => {
       if (cancelled) return;
       // Deep links (scope Part A): a 404 HERE means the collection could not be opened at
@@ -806,7 +1193,24 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
         props.onUnavailable(datasetId);
         return;
       }
-      surface(err);
+      // An expiry still routes to the auth flow, which unmounts this screen.
+      if (errStatus(err) === 401) {
+        surface(err);
+        health.fail({ code: "boot-failed", layoutId: null, detail: errText(err) });
+        return;
+      }
+      // R1-03 (BLOCKER): this called ONLY `surface(err)`. Health stayed at `starting`,
+      // which renders both switching surfaces live and un-annotated while every tap is
+      // queued into a ref — so after a transient 503 behind "Retry renderer" (where
+      // `layouts` and `activeLayoutId` survive from the first boot, so the tab row is
+      // still mounted) the viewer silently swallowed every click with no panel and no
+      // escape but a browser reload.
+      //
+      // The panel REPLACES the banner here rather than joining it: two alerts saying the
+      // same thing is worse than one, and only the panel carries an action — a rebuild,
+      // which re-runs this whole chain and is exactly the retry a transient failure wants.
+      console.error("[viewer] the collection could not be opened", err);
+      health.fail({ code: "boot-failed", layoutId: null, detail: errText(err) });
     });
 
     const onResize = (): void => {
@@ -846,6 +1250,8 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
       // observable (unsubscribe first so no emit lands after teardown, then dispose).
       if (rafHandle !== null) window.cancelAnimationFrame(rafHandle);
       if (overviewTimer !== null) clearInterval(overviewTimer);
+      resumeScheduledRef.current = null; // the guards it re-armed no longer exist
+      refreshOverviewRef.current = null;
       statusUnsubRef.current?.();
       statusUnsubRef.current = null;
       status?.dispose();
@@ -853,6 +1259,10 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
       // world.dispose() releases the tile-pyramid loader / LayoutController camera
       // subscriptions (documented at their subscription sites).
       publishCameraDrive(null); // withdraw the DEV camera drive before the world goes
+      // Review R1-02: hand the view to whatever replaces this stack. Read BEFORE dispose,
+      // and harmless on a real unmount — the ref dies with the component (App keys this
+      // on datasetId, so a collection switch is a new instance with a fresh ref).
+      if (world !== null) restoreCameraRef.current = world.getCameraState();
       cells?.dispose();
       world?.dispose();
       mountedRef.current = false; // stop any in-flight preview fetch from touching state (#32)
@@ -860,8 +1270,11 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
     };
     // eslint-style note: datasetId/client are stable for this mount (keyed), and
     // measureCockpit is a useCallback with no dependencies — one identity for the whole
-    // mount, so closing over it here cannot go stale.
-  }, [datasetId, client]);
+    // mount, so closing over it here cannot go stale. `health` is a ref-held handle with
+    // one identity per mount for the same reason. `rendererEpoch` is the ONE dependency
+    // that changes within a mount: bumping it tears the stack down and builds a new one,
+    // which is what "Retry renderer" means (Seam R1 P3).
+  }, [datasetId, client, rendererEpoch]);
 
   async function resolvePreview(cellId: number): Promise<void> {
     previewRequestRef.current = cellId;
@@ -918,8 +1331,12 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
   function handleMinimapJump(worldX: number, worldY: number): void {
     const stack = stackRef.current;
     if (stack === null) return;
-    stack.world.setCameraState({ center: [worldX, worldY] });
-    setMinimapView(viewRectOf(stack.world));
+    // Seam R2 P1. The minimap is a click/drag target with no other affordance, so on a
+    // dead renderer it would slide the viewport box over a canvas that cannot follow.
+    whenStackUsable(health.snapshot(), () => {
+      stack.world.setCameraState({ center: [worldX, worldY] });
+      setMinimapView(viewRectOf(stack.world));
+    });
   }
 
   // Fit the camera to a layout's bbox (T2-67). Defaults to the active layout (the
@@ -931,11 +1348,21 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
     if (stack === null) return;
     const rect = layoutFitRect(manifest, layoutId);
     if (rect === null) return;
+    // NOT guarded here (review A6). This has two callers and only one is a gesture: the
+    // ⤢ Fit button, guarded below, and `maybeAutoFit`, which is automatic, has no surface
+    // to explain a refusal, and whose bounded retry re-arms only for `inView === null` —
+    // never for one. Guarding the function stranded the user on empty black space after a
+    // context loss landed inside a layout switch, with no panel and nothing to retry it.
+    // The refusal was not even protective: `setCameraState` is `applyCamera()` + `emit()`,
+    // pure CPU with no GL call, and pointer pan and wheel zoom drive it unguarded a second
+    // later anyway.
     stack.world.setCameraState(fitCamera(rect, stack.world.getViewport()));
     setMinimapView(viewRectOf(stack.world));
   }
   function handleFitView(): void {
-    fitToLayout(activeLayoutId);
+    // Seam R2 P1: the CONTROL is what refuses, so it matches the blocked treatment the
+    // button already carries. The system auto-fit above keeps working, as it did on `main`.
+    whenStackUsable(health.snapshot(), () => fitToLayout(activeLayoutId));
   }
 
   /** Drop the multi-select summary: bump the ticket so an in-flight `getMetadata`
@@ -1021,7 +1448,19 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
 
   function handleSwitch(layoutId: string): void {
     const stack = stackRef.current;
-    if (stack === null) return;
+    // Seam R1 P6 — see `layoutTapIntent`. The highlight below moves only on "apply".
+    //
+    // The LIVE health, not the React render mirror (review R1-13): `markContextLost` is
+    // published from a native listener and the watchdog's failure from a setTimeout, and
+    // React schedules the resulting re-render on a macrotask — so a click already in the
+    // task queue is dispatched with a stale `ready` and would swap layouts against a dead
+    // context. This is the same read `retryView` and the switch-success clear already make.
+    const intent = layoutTapIntent(health.snapshot(), stack !== null);
+    if (intent === "queue") pendingSwitchRef.current = layoutId;
+    // R1-30: four lines, and `stack === null` narrows for free — the previous 11-line
+    // switch ended in `case "apply": break;` followed by a runtime-unreachable guard kept
+    // only for the type checker, and bought no exhaustiveness (no `never` default) either.
+    if (intent !== "apply" || stack === null) return;
     const prev = activeLayoutId;
     setActiveLayoutId(layoutId); // optimistic: highlight the target immediately
     previewCacheRef.current.clear(); // revoke object URLs (#32); detail is layout-independent but keep it simple
@@ -1035,6 +1474,24 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
         // reading countCellsInView (null while unready ⇒ shouldAutoFit false ⇒ hold);
         // re-read the overview afterwards so the minimap reflects the new floor.
         maybeAutoFit(layoutId);
+        // Seam R2 P2: a switch that landed is a recovery, so release the two shell-owned
+        // latches. The minimap poll in particular latches on a view that could not be
+        // read, and `fail()` drops its `"none"` report over any standing failure — so
+        // nothing on the observable would ever say the minimap had stopped.
+        resumeScheduled();
+        // Seam R1: a layout-scoped failure is recoverable by SWITCHING AWAY as well as by
+        // retrying, and this is where that succeeded — so the panel must stop describing a
+        // view the user has left.
+        //
+        // `failureResolvedBySwitch` decides WHICH failure that is, and the distinction is
+        // the whole point: this switch may have taken many frames (after a failed boot it
+        // routes through activate(), which awaits a manifest fetch), and a render-loop
+        // throw in that window halts the loop and publishes a failure this success did not
+        // fix. Clearing on `kind === "failed"` alone erased it — along with the watchdog's
+        // terminal context-unrecoverable — leaving a frozen canvas that looks healthy.
+        // Read the LIVE snapshot, not the render mirror: the failure standing NOW is the
+        // only one this resolution can speak for.
+        if (failureResolvedBySwitch(health.snapshot())) health.markReady();
       })
       .catch((err: unknown) => {
         // The switch failed — put the switcher back on the layout that is actually
@@ -1042,8 +1499,149 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
         // resolution owns the state). A superseded switch resolves quietly (no
         // rejection), so only real failures land here.
         setActiveLayoutId((cur) => (cur === layoutId ? prev : cur));
-        surface(err);
+        if (errStatus(err) === 401) {
+          surface(err); // an expiry routes to onAuthExpired, exactly as before
+          return;
+        }
+        // Seam R1 P1/P3: the tiles for THAT view could not be made renderable. The stack
+        // is untouched, so this is not "rendering was interrupted" and the remedy is not
+        // a page reload — it is re-streaming this one layout.
+        console.error("[viewer] layout switch failed", err);
+        health.fail(layoutFailureFrom(err, layoutId, errText(err)));
       });
+  }
+
+  // Seam R1 P6: apply a tap that arrived during boot, once boot has settled. Runs on the
+  // health change rather than from inside the mount effect so it sees the CURRENT
+  // render's handleSwitch (an effect closing over the first render's copy would read a
+  // stale activeLayoutId). handleSwitch itself decides whether the settled state can take
+  // it — after a failed boot the answer is no, and the tap is dropped rather than
+  // replayed onto a dead stack.
+  useEffect(() => {
+    if (rendererHealth.kind === "starting") return;
+    const queued = pendingSwitchRef.current;
+    if (queued === null) return;
+    pendingSwitchRef.current = null;
+    if (queued !== activeLayoutId) handleSwitch(queued);
+    // handleSwitch is re-created every render; this effect deliberately runs only when
+    // the renderer's condition (or the active layout) changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rendererHealth, activeLayoutId]);
+
+  // Seam R2 (review C1): re-apply what the shell OWNS and the renderer REFUSED, once the
+  // renderer can serve it again.
+  //
+  // `handleTagChange` deliberately records the user's selection before the guard, because
+  // the boot chain re-applies it on a rebuild — true for a stack failure, and FALSE for a
+  // lost context, which also refuses and then recovers IN PLACE with nothing re-running
+  // that boot step. Measured consequence: "cats" selected and matching, context drops for
+  // ~1s, the user clicks "dogs" and the chip toggles; the context restores to `ready`
+  // with no panel; the rail now says "dogs", the canvas still highlights cats and the
+  // status bar still reads the old match count — permanently, with `tags.selected` fresh
+  // and `tags.matched` stale.
+  //
+  // Unconditional, unlike boot's `selected.length > 0` guard: CLEARING a filter while the
+  // context is lost is refused exactly the same way, and leaves the canvas filtered by a
+  // selection the rail no longer shows.
+  useEffect(() => {
+    const prev = prevHealthKindRef.current;
+    prevHealthKindRef.current = rendererHealth.kind;
+    // Review A9: remember what the canvas is actually filtered by at the moment it stops
+    // accepting changes, so the recovery can tell "the user retagged while blocked" from
+    // "nothing happened" without paying for `applyTags` either way.
+    if (rendererHealth.kind === "context-lost") {
+      // Keep the FIRST capture. If a previous restore was refused (below), the canvas
+      // still shows what it showed then, not what the rail shows now.
+      if (tagSelectionAtLossRef.current === null) tagSelectionAtLossRef.current = tagSelection;
+      return;
+    }
+    if (prev !== "context-lost" || rendererHealth.kind !== "ready") return;
+    // Review A7: this is ALSO the shell's two scheduled sites' recovery, and the one
+    // window where they cannot report for themselves — a `"none"` failure raised while
+    // health is `context-lost` is dropped by precedence, guaranteed, so nothing
+    // downstream could ever notice they had latched. The transition detector is here, so
+    // the release is here.
+    resumeScheduled();
+    const atLoss = tagSelectionAtLossRef.current;
+    const stack = stackRef.current;
+    if (stack === null) return;
+    // Review A10: `rendererHealth` above is the RENDER MIRROR, which is right for
+    // detecting the transition and wrong for gating the stack call underneath it.
+    // `markContextRestored` is published from a native listener and React flushes this
+    // effect on a later task, so a SECOND `webglcontextlost` can land in that window — the
+    // repeat-loss case the loader explicitly anticipates — leaving live health
+    // `context-lost` while the mirror still reads `ready`. `applyTags` would then walk the
+    // visibility buffers of a stack whose GPU handles `onContextLost`'s `freeActive` had
+    // just released. Same live read as the other seven sites.
+    const applied = whenStackUsable(health.snapshot(), () => {
+      if (atLoss === null || !sameTagSelection(atLoss, tagSelection)) {
+        setTagState(stack.controller.applyTags(tagSelection));
+      }
+      return true;
+    });
+    // Only consume the baseline if the re-apply actually got to happen; a refused restore
+    // leaves it standing for the next one.
+    if (applied !== false) tagSelectionAtLossRef.current = null;
+    // Reads the CURRENT render's tagSelection; running on anything but a health
+    // transition would re-apply a selection nothing refused.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rendererHealth]);
+
+  /** "Retry this view" — re-stream the layout whose assets failed. The stack is fine, so
+   *  this is an ordinary switch; a second failure republishes and the panel returns.
+   *
+   *  TWO shapes reach here and they need different retries (R1-05). An activation that
+   *  REJECTED left the loader somewhere else, and `switchTo` re-runs the whole activation
+   *  for it. A view that failed to STREAM after its switch already resolved left the
+   *  loader on that very layout — and `switchTo` no-ops against its own target
+   *  (layout.ts), so a switch there would clear the panel and re-fetch nothing, making
+   *  the one action offered do literally nothing. The loader's own re-stream is the
+   *  retry for that one. Which shape it is comes from the LOADER, not from
+   *  `activeLayoutId`: boot sets that state before it activates, so a failed boot has
+   *  them equal while the loader holds no layout at all.
+   *
+   *  Guarded by the same predicate as the switch-success clear above, for the same reason
+   *  in miniature: the panel only ever offers this button for a layout-scoped failure, but
+   *  it is read off the RENDER MIRROR, and a renderer-scoped failure published between that
+   *  render and this click would be erased by the `markReady` below before React swapped
+   *  the button. The live snapshot closes that window; on the intended path the guard is
+   *  simply true. */
+  function retryView(): void {
+    const settled = health.snapshot();
+    if (!failureResolvedBySwitch(settled)) return; // narrows to the failed variant
+    const target = settled.failure.layoutId ?? activeLayoutId;
+    if (target === null) return;
+    // Clear the panel NOW, so the retry is visibly in progress rather than looking
+    // ignored. It is NOT needed to get the switch past its own gate — the comment here
+    // used to claim that and it was false (review): a layout-scoped failure is `usable`
+    // by `rendererControlState`, which is the whole point of leaving the switcher live,
+    // so `layoutTapIntent` would answer "apply" either way. If the retry fails, the catch
+    // in `handleSwitch` republishes and the panel comes back.
+    //
+    // RE-CHECKED after R1-13 made `handleSwitch` read live health, which the review
+    // expected to make this call load-bearing: it does not. Live or mirrored, the health
+    // it reads here is `failed{layout-assets-failed}`, and that is `usable` — the gate
+    // opens without this line. It stays for the feedback, not for the gate.
+    health.markReady();
+    // Seam R2 P2: this is the recovery the shell's two latched sites are waiting for —
+    // a boot that died takes the minimap poll down with it, and nothing else in this
+    // path would ever restart it. `restreamView` and `handleSwitch` release the LOADER's
+    // latch themselves.
+    resumeScheduled();
+    const stack = stackRef.current;
+    if (stack !== null && stack.pyramid.activeLayoutId() === target) {
+      stack.pyramid.restreamView();
+      return;
+    }
+    handleSwitch(target);
+  }
+
+  /** "Retry renderer" — rebuild the whole stack in place. The mount effect's cleanup
+   *  disposes the dead one (world.dispose releases the loader's subscriptions), then it
+   *  re-runs from the top, exactly as a fresh mount would. */
+  function retryRenderer(): void {
+    health.markStarting();
+    setRendererEpoch((n) => n + 1);
   }
 
   // D-B auto-fit driver (T2-67): read the in-view count for the current camera against
@@ -1054,7 +1652,7 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
   function maybeAutoFit(layoutId: string, attempt = 0): void {
     const stack = stackRef.current;
     if (stack === null) return;
-    refreshOverview(stack.pyramid);
+    refreshOverviewRef.current?.(); // guarded (review A2): this runs inside a .then() tail
     const inView = stack.controller.countCellsInView(viewRectOf(stack.world));
     if (inView === null && attempt < 3) {
       // Table not resident yet — retry shortly (bounded) so a slow static-edge fetch
@@ -1066,20 +1664,30 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
   }
 
   function handleTagChange(selection: TagSelection): void {
+    // BEFORE the renderer guard, deliberately: this is the selection the boot chain
+    // re-applies on a rebuild, so refusing to record it would make a later "Retry
+    // renderer" come back with the STALE selection while the rail shows the new one.
     setTagSelection(selection);
     // T2-120 (Fix C): applyTags returns the honest match count + renderer-side status;
     // capture it for the status bar + the retry affordance (async outcomes of a failed
-    // reload arrive later via setTagStateListener).
-    const result = stackRef.current?.controller.applyTags(selection);
-    if (result !== undefined) setTagState(result);
+    // reload arrive later via setTagStateListener). Seam R2 P1 guards THIS call, which
+    // walks the renderer's visibility buffers.
+    whenStackUsable(health.snapshot(), () => {
+      const result = stackRef.current?.controller.applyTags(selection);
+      if (result !== undefined) setTagState(result);
+    });
   }
 
   // T2-120 (Fix B): the tag rail's "retry" — re-apply the current selection, which
   // re-attempts the renderer-side sidecar load (un-latched). The eventual outcome
   // arrives via setTagStateListener; the synchronous state is captured immediately.
   function handleRetryTags(): void {
-    const result = stackRef.current?.controller.applyTags(tagSelection);
-    if (result !== undefined) setTagState(result);
+    // Seam R2 P1: same renderer-side reload as above, so the same refusal — a retry that
+    // silently re-fails on a dead stack is worse than one that does not run.
+    whenStackUsable(health.snapshot(), () => {
+      const result = stackRef.current?.controller.applyTags(tagSelection);
+      if (result !== undefined) setTagState(result);
+    });
   }
 
   // --- search (T2-57) ------------------------------------------------------
@@ -1206,7 +1814,14 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
           resetSummary();
           void resolvePreview(row.id);
         },
-        center: (id) => stack.controller.centerOnCell(id),
+        // Seam R2 P1, guarding the CALL rather than the handler — twice, because this
+        // handler mixes three kinds of work. The dismiss above and the select here are
+        // chrome and an API-served inspection, and must still happen on a dead renderer
+        // (the same reason `handleCanvasClick` is deliberately unguarded). Only the
+        // CAMERA needs the stack. A refused centre returns false, and `runLocate` then
+        // skips the pulse — exactly how it already degrades for a layout with no
+        // position table.
+        center: (id) => whenStackUsable(health.snapshot(), () => stack.controller.centerOnCell(id)),
         highlight: (id) => {
           setMinimapView(viewRectOf(stack.world));
           stack.controller.pulseHighlight(id);
@@ -1214,28 +1829,31 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
       });
       return;
     }
-    // Category snap (T2-72 Seam 2): when the ACTIVE layout is this column's categorical
-    // layout and its manifest entry carries band annotations, fly to the matched band's
-    // TRUE extent. The band's own top-gutter strip holds its label, so fitting the extent
-    // frames the whole category PLUS its label (the operator's stated ideal) — and fixes
-    // the #172 capped-snap, where the ≤50 members cluster in the band's top strip and the
-    // union bbox lands too zoomed. Absent / non-matching (pre-2.5 bake, a different
-    // column's layout active, no exact-text band) ⇒ the D-3 positions-bbox fallback below,
-    // byte-for-byte unchanged.
-    const bandBBox = bandSnapBBox(row, activeLayoutEntry);
-    if (bandBBox !== null) {
-      stack.world.setCameraState(fitCamera(bandBBox, stack.world.getViewport()));
-      setMinimapView(viewRectOf(stack.world));
-      return;
-    }
-    const bbox = unionBBoxFromRects(row.memberIds, (id) => stack.controller.cellRect(id));
-    if (bbox !== null) {
-      stack.world.setCameraState(fitCamera(bbox, stack.world.getViewport()));
-      setMinimapView(viewRectOf(stack.world));
-    } else if (row.memberIds.length > 0) {
-      const first = row.memberIds[0];
-      if (stack.controller.centerOnCell(first)) stack.controller.pulseHighlight(first);
-    }
+    // A CATEGORY row is nothing BUT camera work, so the whole branch is the stack call.
+    whenStackUsable(health.snapshot(), () => {
+      // Category snap (T2-72 Seam 2): when the ACTIVE layout is this column's categorical
+      // layout and its manifest entry carries band annotations, fly to the matched band's
+      // TRUE extent. The band's own top-gutter strip holds its label, so fitting the extent
+      // frames the whole category PLUS its label (the operator's stated ideal) — and fixes
+      // the #172 capped-snap, where the ≤50 members cluster in the band's top strip and the
+      // union bbox lands too zoomed. Absent / non-matching (pre-2.5 bake, a different
+      // column's layout active, no exact-text band) ⇒ the D-3 positions-bbox fallback below,
+      // byte-for-byte unchanged.
+      const bandBBox = bandSnapBBox(row, activeLayoutEntry);
+      if (bandBBox !== null) {
+        stack.world.setCameraState(fitCamera(bandBBox, stack.world.getViewport()));
+        setMinimapView(viewRectOf(stack.world));
+        return;
+      }
+      const bbox = unionBBoxFromRects(row.memberIds, (id) => stack.controller.cellRect(id));
+      if (bbox !== null) {
+        stack.world.setCameraState(fitCamera(bbox, stack.world.getViewport()));
+        setMinimapView(viewRectOf(stack.world));
+      } else if (row.memberIds.length > 0) {
+        const first = row.memberIds[0];
+        if (stack.controller.centerOnCell(first)) stack.controller.pulseHighlight(first);
+      }
+    });
   }
 
   // UI-S1 — the two conditions the combobox contract hangs off (§3):
@@ -1285,6 +1903,7 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
     selectedCell,
     cursor: rs != null && rs.cursorCell !== null ? `cell ${rs.cursorCell}` : null,
     fps: rs?.fps ?? null,
+    tilesFailing,
   };
 
   // --- Seam M2: the pieces both modes share, built ONCE ----------------------
@@ -1393,6 +2012,9 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
               onActivate: jumpToRow,
               onHover: (index: number) => searchDispatch({ type: "move", index }),
               activeLayout: activeLayoutEntry,
+              // Seam R2 P1: a CATEGORY row is nothing but a camera snap, so it is dead
+              // on a renderer that cannot serve it. Cell rows stay live — they select.
+              blockedReason: rendererControls.reason,
             }),
           ),
         )
@@ -1459,9 +2081,12 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
             dataset: datasetId,
             selectedCellId: selectedCell,
             client,
-            // Schema v2.8: the columns whose values render as links. The
-            // manifest is already held here, so no extra fetch.
-            urlColumns: manifest?.column_roles?.url,
+            // D-xvii/D-xviii: what each column is called, whether it is shown, and
+            // whether its value is a link — plus the column that titles the cell. These
+            // used to be `manifest.column_roles.url` alone; they are presentation, not a
+            // bake input, so they come from the record the shell fetched at boot.
+            columns: declaredColumns,
+            titleColumn: declaredTitleColumn,
           }),
         );
   // View ⤢ button overlaying the preview's bottom-right: enabled when
@@ -1495,6 +2120,16 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
       "div",
       { ref: holderRef, className: "canvas-holder" },
       h("canvas", {
+        // Review R1-10: KEYED ON THE EPOCH, so "Retry renderer" gets a genuinely new
+        // canvas ELEMENT and therefore a new WebGL context. A canvas hands out one
+        // context per type for its whole life — `getContext('webgl2')` returns the SAME
+        // object on every later call (HTML spec: "if the canvas already has a context of
+        // the given type, return it") — so rebuilding the THREE stack against the same
+        // element inherited the broken context and threw again identically. React
+        // remounts an element whose key changes, which drops the old context with the old
+        // node; `canvasRef` is repointed during the DOM commit, before the effect that
+        // reads it runs. NOT verifiable in jsdom, which has no WebGL context at all.
+        key: `atlas-canvas-${rendererEpoch}`,
         ref: canvasRef,
         className: "atlas-canvas",
         onPointerMove: handleCanvasMove,
@@ -1524,7 +2159,14 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
           ? h(
               "div",
               { className: "panel-float topbar-layouts" },
-              h(LayoutSwitcher, { layouts, activeLayoutId, onSwitch: handleSwitch, bakedSummary }),
+              h(LayoutSwitcher, {
+                layouts,
+                activeLayoutId,
+                onSwitch: handleSwitch,
+                bakedSummary,
+                // Seam R1 P5 — the SAME string the ☰ gets below.
+                blockedReason: rendererControls.reason,
+              }),
             )
           : null,
         // Search (T2-57): re-enabled (it was hidden in PR #167 until it worked). A live
@@ -1555,12 +2197,24 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
               // nothing when it is absent, which is why the gap was invisible.
               bakedSummary,
               search: searchPill,
+              // Seam R1 P5 — below ~855px this menu is the ONLY switcher, so it carries
+              // the same reason the desktop tab row does.
+              blockedReason: rendererControls.reason,
             })
           : null,
       ),
       error !== null
         ? h("p", { className: "panel-float error-banner-float error-text", role: "alert" }, error)
         : null,
+      // Seam R1 P3: the renderer's own failure surface. It renders nothing at all while
+      // the renderer is healthy, and otherwise offers the ONE action that matches the
+      // failure — which for a layout-scoped one is not a page reload.
+      h(RendererRecoveryPanel, {
+        health: rendererHealth,
+        onRetryView: retryView,
+        onRetryRenderer: retryRenderer,
+        onReloadPage: () => window.location.reload(),
+      }),
       // The two auxiliary surfaces. On a WIDE holder they are the shipped floating
       // rails, collapsible to a 36px chevron. On a NARROW one (SCOPE D1) they are not
       // collapsed — they are NOT RENDERED, and two differently-shaped surfaces replace
@@ -1582,6 +2236,8 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
                 // affordance even when the UI-side chips (tagsTable) rendered fine.
                 rendererTagsFailed: tagState?.status === "unavailable",
                 onRetryTags: handleRetryTags,
+                // Seam R2 P1: every control in the rail drives a refused handler.
+                blockedReason: rendererControls.reason,
                 onClose: () => setTagsCollapsed(true),
               })
           : tagsCollapsed
@@ -1624,6 +2280,7 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
                     onChange: handleTagChange,
                     rendererTagsFailed: tagState?.status === "unavailable",
                     onRetryTags: handleRetryTags,
+                    blockedReason: rendererControls.reason,
                   }),
                 ),
               ),
@@ -1669,13 +2326,18 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
             ),
       // Fit-view control (T2-67): a floating button above the minimap that fits the
       // camera to the active layout's bbox. Ships regardless of the D-B auto-fit.
+      // Seam R2 P1: the same blocked treatment the two switching surfaces already get,
+      // from the same helper — `aria-disabled` (never the native attribute, which would
+      // suppress the title and drop the button from keyboard reach), the reason appended
+      // to its own tooltip, and a class app.css actually styles. `rendererControls` is
+      // the render mirror and that is CORRECT here: this is how the control LOOKS. The
+      // refusal reads live health, inside fitToLayout.
       h(
         "button",
         {
           type: "button",
-          className: "panel-float fit-view-btn",
+          ...fitBlocked,
           "aria-label": "Fit view to layout",
-          title: "Fit view",
           onClick: handleFitView,
         },
         "⤢ Fit",
@@ -1691,6 +2353,8 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
         layoutId: activeLayoutId,
         view: minimapView,
         onJump: handleMinimapJump,
+        // Seam R2 P1: the minimap jump drives the camera, so it says why when it cannot.
+        blockedReason: rendererControls.reason,
       }),
       // Lightbox (T2-25): a full-viewport overlay OVER the canvas. Rendered inline
       // so the renderer stack stays mounted (camera + selection survive close).
@@ -1705,6 +2369,10 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
             manifest,
             previewCache: previewCacheRef.current,
             tagsTable,
+            // The same record the rail inspector draws from — the lightbox reuses
+            // MetadataPanelView, so a column hidden in one is hidden in both.
+            columns: declaredColumns,
+            titleColumn: declaredTitleColumn,
             cellIds: selectedIds,
             index: Math.min(lightbox.index, selectedIds.length - 1),
             onNavigate: (i: number) => setLightbox({ index: i }),
@@ -1724,7 +2392,16 @@ export function ViewerScreen(props: ViewerScreenProps): ReactElement {
                   resetSummary();
                   void resolvePreview(cellId);
                 },
-                center: (id) => stack !== null && stack.controller.centerOnCell(id),
+                // Seam R2 P1: the CENTRE is the stack call — the close and the select
+                // above are chrome and an API-served inspection, and closing the overlay
+                // must still work when the canvas behind it is dead. A refused centre
+                // returns false, so the pulse is skipped, which is the graceful
+                // degradation this sequence already had.
+                center: (id) =>
+                  whenStackUsable(
+                    health.snapshot(),
+                    () => stack !== null && stack.controller.centerOnCell(id),
+                  ),
                 highlight: (id) => {
                   if (stack === null) return;
                   setMinimapView(viewRectOf(stack.world));

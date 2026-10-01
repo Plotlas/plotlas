@@ -21,7 +21,7 @@ import { authenticate, openViewerV2, waitForDrawn, wheelZoom } from "./helpers.t
 //
 // WHERE THIS RUNS: the `render-gate.yml` workflow, as a named step on the stack the
 // render / context-loss / mobile-containment / mobile-pinch gates already boot. NOT
-// e2e-nightly.yml — that workflow hard-fails without a `vars.E2E_BASE_URL` repo variable
+// e2e-nightly.yml — that workflow hard-failed without a `vars.E2E_BASE_URL` repo variable
 // which is not set, so a spec parked there has never executed anywhere but a developer's
 // machine, and a gate that never runs is worse than none because it reads as coverage.
 //
@@ -99,21 +99,16 @@ test("the desktop cockpit is unchanged at 1265x900", async ({ page, request, bas
   expect(inspector, "no .inspector rendered at desktop width").not.toBeNull();
   expect([inspector!.left, inspector!.right]).toEqual([979, 1251]);
 
-  // One tab per layout, from the manifest rather than from a number written here — the
-  // count is dataset-dependent and that is the whole point of the derived threshold.
-  const layoutCount = await page.evaluate(async () => {
-    const el = document.querySelectorAll(".layout-switcher .layout-tab");
-    return el.length;
-  });
-  const manifestLayouts = await page.evaluate(() => {
-    // The switcher renders one button per manifest layout; the menu must not exist here.
-    return {
-      tabs: document.querySelectorAll(".layout-switcher .layout-tab").length,
-      menus: document.querySelectorAll(".viewer-menu-wrap").length,
-    };
-  });
-  expect(layoutCount, "the desktop tab row rendered no tabs").toBeGreaterThan(0);
-  expect(manifestLayouts.menus, "the narrow ☰ menu leaked into the desktop cockpit").toBe(0);
+  // The desktop cockpit switches layouts with a TAB ROW and not the narrow ☰. The tab
+  // count is dataset-dependent (that is the whole point of the derived threshold), so it
+  // is asserted as "some", not as a literal; the narrow test below is the one that pins
+  // the count, and it takes the expected number from the API rather than from here.
+  const switcher = await page.evaluate(() => ({
+    tabs: document.querySelectorAll(".layout-switcher .layout-tab").length,
+    menus: document.querySelectorAll(".viewer-menu-wrap").length,
+  }));
+  expect(switcher.tabs, "the desktop tab row rendered no tabs").toBeGreaterThan(0);
+  expect(switcher.menus, "the narrow ☰ menu leaked into the desktop cockpit").toBe(0);
 
   // The search pill is still a child of the top bar (D2 moves it into the menu on
   // narrow ONLY).
@@ -261,7 +256,11 @@ test("at 390x844 the atlas is the screen, and the sheet at peek clears the minim
 
 test.describe("touch", () => {
   // Real touch points for this block only — a second `projects[]` entry would multiply
-  // every other spec by two (the pattern mobile-pinch.spec.ts established).
+  // every other spec by two (the pattern mobile-pinch.spec.ts established). This is also
+  // the ONE place this block's viewport is set: a `page.setViewportSize(PHONE)` in the
+  // body would be a second copy of the same number that can drift out of step with it,
+  // and would silently win over whatever this line says (mobile-pinch.spec.ts documents
+  // the same rule for the same reason).
   test.use({ hasTouch: true, viewport: PHONE });
 
   test("touch is suppressed on the viewer only, and its scrollable panels still scroll", async ({
@@ -270,7 +269,6 @@ test.describe("touch", () => {
     baseURL,
   }) => {
     test.setTimeout(120_000);
-    await page.setViewportSize(PHONE);
     const auth = await authenticate(request, baseURL ?? "");
     await openViewerV2(page, auth, DATASET);
 

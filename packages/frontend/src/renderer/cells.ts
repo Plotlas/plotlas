@@ -50,9 +50,6 @@ export interface Cells {
  */
 export interface CellsHandle extends Cells {
   residentCount(): number;
-  /** Median world-space cell width of resident cells (0 when none resident);
-   *  feeds the LOD trigger cellPx = cell_w_world / zoom. */
-  medianCellWidth(): number;
   /** Number of cells currently bound to the `(lod, page)` bucket (0 when that
    *  bucket has been emptied/reclaimed). Renderer-internal introspection for
    *  the O1-8 retain-until-bound release: an OLD-LOD page is freed only
@@ -341,46 +338,48 @@ export interface CellCandidate {
   h: number; // height
 }
 
-/** Collect up to `maxN` cells from a `PositionTable` whose rect OVERLAPS the world
- *  `view` rect, materializing each as a `{id, x, y, w, h}` record (id == the dense
- *  row index) — the detail-overlay candidate set (T2-26). Same AABB overlap test as
- *  `countPositionsInView`, but returns the per-cell rects (not just a count) so the
- *  overlay can fetch + place each visible cell's detail image. `maxN` CAPS the
- *  returned array so a pathological view (many cells overlapping) can never allocate
- *  unboundedly — the overlay only engages at high zoom (few cells) and hard-skips
- *  above its own in-view cap, so the bound is defensive. Scan order is dense-id
- *  order; the caller focal-orders.
- *
- *  `dedupeCellWorld` (optional, T2-72 pile coexistence): a world-unit grid size under
- *  which coincident cells collapse DURING the scan to their first-seen (== lowest-id)
- *  member — the same representative the pyramid keeps. The dedupe runs BEFORE the
- *  `maxN` cap consumes a slot, so a 300-cell pile costs ONE candidate instead of
- *  starving the budget for every later-id cell in view (the PR-179 review finding: a
- *  post-hoc dedupe left the pile eating 300 of the 400 slots and the surrounding
- *  cells never sharpened). Pure + exported for unit tests. */
-export function collectPositionsInView(
+/** ONE pass over a `PositionTable` for the detail overlay, which needs, on every engaged
+ *  frame, whether the view is over its in-view cap and, if it is not, the view's cells. It
+ *  returns:
+ *    - `inView`: the raw in-view overlap count (`countPositionsInView`'s number), EXACT UP TO
+ *      `maxN + 1`. Over the cap the scan STOPS at the first cell past it and returns
+ *      `maxN + 1`, because "over the cap or not" is all its caller reads. A zoomed-out view is
+ *      always over the cap, so it stops after a few hundred in-view rows, not the whole table.
+ *    - `candidates`: within the cap, the in-view cells in dense-id order as `{id, x, y, w, h}`
+ *      records (id == the dense row index), the caller focal-orders them. With
+ *      `dedupeCellWorld` (T2-72 pile coexistence: a world-unit grid size) coincident cells
+ *      collapse DURING the scan to their first-seen (== lowest-id) member, the same
+ *      representative the pyramid keeps. Over the cap, NONE: the caller hard-skips there,
+ *      and an empty list cannot be mistaken for the view's cells.
+ *  Same AABB overlap test as `countPositionsInView`, which stays for its other caller (the
+ *  status bar's in-view figure needs the exact count). Before this function the overlay
+ *  scanned the whole table twice per engaged refresh (PR #409 review: a median 22-23 ms on
+ *  1,010,469 rows). Pure + exported for unit tests. */
+export function scanPositionsInView(
   table: PositionTable,
   view: { xMin: number; yMin: number; xMax: number; yMax: number },
   maxN: number,
   dedupeCellWorld?: number,
-): CellCandidate[] {
+): { inView: number; candidates: CellCandidate[] } {
   const { x, y, w, h, count } = table;
   const dedupe = dedupeCellWorld !== undefined && dedupeCellWorld > 0 ? new Set<string>() : null;
   const cell = dedupeCellWorld ?? 0;
-  const out: CellCandidate[] = [];
-  for (let i = 0; i < count && out.length < maxN; i++) {
+  const candidates: CellCandidate[] = [];
+  let inView = 0;
+  for (let i = 0; i < count; i++) {
     const hw = w[i] / 2;
     const hh = h[i] / 2;
     if (x[i] + hw > view.xMin && x[i] - hw < view.xMax && y[i] + hh > view.yMin && y[i] - hh < view.yMax) {
+      if (++inView > maxN) break; // over the cap: the caller needs only that (see above)
       if (dedupe !== null) {
         const key = `${Math.round(x[i] / cell)},${Math.round(y[i] / cell)}`;
         if (dedupe.has(key)) continue; // coincident with a kept lower-id representative
         dedupe.add(key);
       }
-      out.push({ id: i, x: x[i], y: y[i], w: w[i], h: h[i] });
+      candidates.push({ id: i, x: x[i], y: y[i], w: w[i], h: h[i] });
     }
   }
-  return out;
+  return { inView, candidates: inView > maxN ? [] : candidates };
 }
 
 /** Screen (CSS px) -> world coords for the given camera state/viewport.
@@ -617,10 +616,6 @@ export function createCells(world: World): CellsHandle {
     // path is dropTile(), which removes the cells AND clears the `textures`/
     // `texturedPages` entry when a tile is dropped for good.
   }
-
-  // scratch for medianCellWidth (reused; capped sample size)
-  const MEDIAN_SAMPLES = 1024;
-  const medianScratch = new Float32Array(MEDIAN_SAMPLES);
 
   // The camera's visible world rect, derived from cells.ts's OWN live camera
   // subscription (camState/camViewport) — reusing screenToWorld so it can never
@@ -929,25 +924,6 @@ export function createCells(world: World): CellsHandle {
       // rect (delegates to the shared placeholderInView — the same AABB the live
       // publishCellDebug uses). O(grey cells), DEV-only.
       return placeholderInView(bbox);
-    },
-
-    medianCellWidth(): number {
-      let total = 0;
-      for (const bucket of buckets.values()) total += bucket.count;
-      if (total === 0) return 0;
-      const stride = Math.max(1, Math.floor(total / MEDIAN_SAMPLES));
-      let n = 0;
-      let index = 0;
-      for (const bucket of buckets.values()) {
-        const sz = bucket.size.array as Float32Array;
-        for (let slot = 0; slot < bucket.count; slot++, index++) {
-          if (index % stride !== 0 || n >= MEDIAN_SAMPLES) continue;
-          medianScratch[n++] = sz[2 * slot];
-        }
-      }
-      const view = medianScratch.subarray(0, n);
-      view.sort();
-      return view[Math.floor(n / 2)];
     },
 
     handleContextRestored(): void {

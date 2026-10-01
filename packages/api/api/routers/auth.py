@@ -176,7 +176,7 @@ class AuthRateLimiter:
 
     In-process is a REQUIREMENT here, not a shortcut. docker-compose.public.yml
     declares no `redis` service (measured: 0 occurrences), and the API's Redis
-    client is deliberately lazy — main._DEFAULT_REDIS_URL records that
+    client is deliberately lazy — queue._DEFAULT_REDIS_URL records that
     `Redis.from_url` and `rq.Queue` never contact the broker until a write route
     enqueues. A Redis-backed limiter would therefore pass the whole suite in
     development and then fail on the public host at the FIRST login.

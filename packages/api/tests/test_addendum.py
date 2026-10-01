@@ -24,8 +24,10 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from api import appstate
+from api.routers import uploads
 
 _SIGNUP = {"username": "alice", "email": "alice@example.com", "password": "s3cretpw"}
 _LOGIN = {"username": "alice", "password": "s3cretpw"}
@@ -150,6 +152,25 @@ def _mock_job_states(monkeypatch, states: dict[str, str]) -> dict[str, int]:
 
     monkeypatch.setattr(datasets_router.Job, "fetch_many", fake_fetch_many)
     return counter
+
+
+def _create_job_finished(monkeypatch) -> None:
+    """The create's ingest has FINISHED before the re-ingest under test is sent.
+
+    `start_ingest` refuses with 409 while the dataset's last recorded job is
+    queued|started (`jobs._guard_no_job_in_flight`, added in review round 3 of PR #358),
+    and every re-ingest test here creates the dataset first — which records that job. A
+    re-ingest a user can actually send is one after that bake ended, so this is the
+    realistic precondition, not a bypass: the guard still runs, and reads `finished`.
+    Mirrors test_write_ingest's `_job_finished` (the fake queue's `connection` has no
+    `hgetall`, so the fetch is patched rather than reached)."""
+    from api.routers import jobs as jobs_router
+
+    monkeypatch.setattr(
+        jobs_router.Job,
+        "fetch",
+        lambda job_id, connection=None: SimpleNamespace(get_status=lambda: "finished"),
+    )
 
 
 # --- fixtures ----------------------------------------------------------------
@@ -771,10 +792,70 @@ def test_create_rollback_spares_preexisting_owner_row(client, auth, fake_queue, 
     assert record.last_job_id == job_before  # and keeps its prior job
 
 
+def _all_records(db_path: Path) -> list[tuple[str, str]]:
+    """Every app-state dataset row as `(dataset_id, owner)`. A minted create that fails
+    never tells the client its id, so "no row under that id" is asserted as "no row at
+    all" — in a fresh per-test DB the create is the only thing that could have made one."""
+
+    async def _run() -> list[tuple[str, str]]:
+        engine, sessionmaker = await appstate.setup_appstate(db_path)
+        try:
+            async with sessionmaker() as session:
+                return [
+                    (r.dataset_id, r.owner)
+                    for r in await appstate.list_dataset_records(session)
+                ]
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(_run())
+
+
+def test_a_minted_create_whose_enqueue_fails_leaves_no_row(client, auth, app_db) -> None:
+    """Seam L6 (D-xxviii) meets PR19-3. A create with NO `dataset_id` mints one, records
+    alice's row under it, then the broker is down. The rollback must delete the row under
+    the MINTED id: the 503 never tells the client that id, so a surviving row would squat
+    an id nobody holds, listed forever as a collection in `error`. Nothing is on disk
+    either — the create wrote no presentation."""
+    upload_id = _finalized_images_bundle(client, auth)
+    client.app.state.queue = _FailingQueue()
+
+    r = client.post("/api/datasets", headers=auth, json={"upload_id": upload_id})
+
+    assert r.status_code == 503
+    assert _all_records(app_db) == []
+    assert not (Path(os.environ["DATA_ROOT"]) / "datasets").exists()
+
+
+def test_a_minted_create_with_a_bad_presentation_leaves_no_row(
+    client, auth, fake_queue, app_db
+) -> None:
+    """The other create-side rollback, the D-xvii presentation refusal: a display name
+    over `DISPLAY_NAME_MAX` (120) passes the request model and is refused by
+    `presentation.update` AFTER the owner row is recorded. On a minted create that row
+    is under the minted id and must go, and nothing is enqueued. The string `detail`
+    proves the 422 is that refusal and not the request model's (whose `detail` is a
+    list), i.e. that the create really reached the rollback."""
+    upload_id = _finalized_images_bundle(client, auth)
+
+    r = client.post(
+        "/api/datasets",
+        headers=auth,
+        json={"upload_id": upload_id, "presentation": {"display_name": "x" * 121}},
+    )
+
+    assert r.status_code == 422, r.text
+    assert isinstance(r.json()["detail"], str), r.json()
+    assert _all_records(app_db) == []
+    assert fake_queue.calls == []
+
+
 # --- D-28: both ingest paths record the job ----------------------------------
 
 
-def test_start_ingest_records_the_new_job_id(client, auth, fake_queue, app_db) -> None:
+def test_start_ingest_records_the_new_job_id(
+    client, auth, fake_queue, app_db, monkeypatch
+) -> None:
     first = _finalized_images_bundle(client, auth)
     r1 = client.post(
         "/api/datasets",
@@ -785,6 +866,7 @@ def test_start_ingest_records_the_new_job_id(client, auth, fake_queue, app_db) -
     job1 = r1.json()["job_id"]
     record = _read_record(app_db, "ds_ri")
     assert record is not None and record.last_job_id == job1
+    _create_job_finished(monkeypatch)
 
     second = _finalized_images_bundle(client, auth)
     r2 = client.post(
@@ -856,8 +938,16 @@ def test_setup_appstate_migrates_datasets_table_for_presentation(tmp_path) -> No
     """A dev DB whose datasets table predates display_name/attribution (a DB from the
     visibility era) starts cleanly: the PRAGMA-guarded ALTER adds both columns in place,
     old rows read back None (every surface reads that as "fall back to the id" / "no
-    credit"), the columns are writable after the ALTER, and a second startup does not
-    re-ALTER."""
+    credit"), a value already in those columns is READ BACK through the record, and a
+    second startup does not re-ALTER.
+
+    The writability half used to be asserted through `appstate.set_dataset_presentation`.
+    That writer is gone: presentation now lives in the dataset's own `presentation.json`
+    (D-i/D-xv) and these columns are the pre-migration FALLBACK, which arrives from an
+    older deployment rather than from a live writer. So the value is seeded the way it
+    really gets there — a direct row UPDATE, as the previous release's writer left it —
+    and what is pinned is that `get_dataset_record` surfaces it, because that is the
+    input `presentation.effective` falls back to."""
     db_path = tmp_path / "legacy_presentation.db"
     con = sqlite3.connect(db_path)
     con.executescript(
@@ -893,23 +983,18 @@ def test_setup_appstate_migrates_datasets_table_for_presentation(tmp_path) -> No
                 assert records[0].display_name is None  # pre-migration row
                 assert records[0].attribution is None
                 assert records[0].attribution_url is None  # Part D §2b column
-                # ...and the freshly-ALTERed columns are writable.
-                updated = await appstate.set_dataset_presentation(
-                    session, "ds_old", {"display_name": "Named"}
+                # ...and a value left in the freshly-ALTERed columns by an older release
+                # is READ BACK — this is exactly the fallback path
+                # `presentation.effective` uses for a dataset nobody has migrated yet.
+                await session.execute(
+                    text(
+                        "UPDATE datasets SET display_name = 'Named' "
+                        "WHERE dataset_id = 'ds_old'"
+                    )
                 )
-                assert updated is True
+                await session.commit()
                 rec = await appstate.get_dataset_record(session, "ds_old")
                 assert rec is not None and rec.display_name == "Named"
-                # Review fix (Finding 6): an unknown key raises PresentationValueError
-                # (mapped to 422 at the router), never a bare ValueError that would 500.
-                raised = False
-                try:
-                    await appstate.set_dataset_presentation(
-                        session, "ds_old", {"bogus": "x"}
-                    )
-                except appstate.PresentationValueError:
-                    raised = True
-                assert raised, "unknown presentation key must raise PresentationValueError"
         finally:
             await engine.dispose()
 
@@ -918,6 +1003,177 @@ def test_setup_appstate_migrates_datasets_table_for_presentation(tmp_path) -> No
     async def _run_again() -> None:  # idempotent second startup
         engine, _ = await appstate.setup_appstate(db_path)
         await engine.dispose()
+
+    asyncio.run(_run_again())
+
+
+def test_setup_appstate_migrates_datasets_table_for_source_upload(tmp_path) -> None:
+    """A dev DB whose datasets table predates `source_upload_id` (a DB from the
+    presentation era) starts cleanly: the PRAGMA-guarded ALTER adds the column in
+    place, and every row that predates it reads back None.
+
+    None is "this dataset records no source bundle" — the answer the columns route
+    falls through on. What this pins is that a migrated row gives that answer rather
+    than either failure beside it: a CRASH (the column is missing, so the normal read
+    path cannot build a DatasetRecord at all) or a WRONG bundle (a neighbour's id
+    leaking onto a row that never had one — the defect findings 1+2 of the PR #358
+    review found, when app-state could only answer "which bundle did this OWNER
+    finalize last"). Two legacy rows exist so the second is asserted untouched while
+    the first is written.
+
+    The write half goes through `appstate.record_dataset_source_upload`, the real
+    writer the create/re-ingest routes call: an ALTERed column that reads is only
+    half-migrated if a later bake cannot record onto it."""
+    db_path = tmp_path / "legacy_source_upload.db"
+    con = sqlite3.connect(db_path)
+    con.executescript(
+        """
+        CREATE TABLE users (
+            id INTEGER NOT NULL PRIMARY KEY,
+            username VARCHAR NOT NULL UNIQUE,
+            email VARCHAR NOT NULL UNIQUE,
+            password_hash VARCHAR NOT NULL,
+            created_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL
+        );
+        CREATE TABLE datasets (
+            dataset_id VARCHAR NOT NULL PRIMARY KEY,
+            owner VARCHAR NOT NULL REFERENCES users (username),
+            created_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL,
+            last_job_id VARCHAR,
+            visibility VARCHAR NOT NULL DEFAULT 'private',
+            display_name VARCHAR,
+            attribution VARCHAR,
+            attribution_url VARCHAR
+        );
+        INSERT INTO users (username, email, password_hash)
+            VALUES ('carol', 'carol@example.com', 'x');
+        INSERT INTO datasets (dataset_id, owner) VALUES ('ds_old', 'carol');
+        INSERT INTO datasets (dataset_id, owner) VALUES ('ds_other', 'carol');
+        """
+    )
+    con.commit()
+    con.close()
+
+    async def _run() -> None:
+        engine, sessionmaker = await appstate.setup_appstate(db_path)
+        try:
+            async with sessionmaker() as session:
+                info = await session.execute(text("PRAGMA table_info(datasets)"))
+                assert "source_upload_id" in {row[1] for row in info}  # ALTERed in
+
+                # ...and the normal read path builds records over the migrated rows
+                # instead of erroring on a column the mapper expects and SQLite lacks.
+                records = await appstate.list_dataset_records(session)
+                assert [r.dataset_id for r in records] == ["ds_old", "ds_other"]
+                assert all(r.source_upload_id is None for r in records)  # pre-column
+                assert records[0].owner == "carol"  # the row itself survived the ALTER
+
+                # A later bundle-backed bake records onto the migrated row...
+                await appstate.record_dataset_source_upload(session, "ds_old", "up_new")
+                rec = await appstate.get_dataset_record(session, "ds_old")
+                assert rec is not None and rec.source_upload_id == "up_new"
+                # ...and onto that row only: no neighbour inherits the bundle.
+                other = await appstate.get_dataset_record(session, "ds_other")
+                assert other is not None and other.source_upload_id is None
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
+
+    async def _run_again() -> None:  # idempotent second startup
+        engine, sessionmaker = await appstate.setup_appstate(db_path)
+        try:
+            async with sessionmaker() as session:
+                rec = await appstate.get_dataset_record(session, "ds_old")
+                assert rec is not None and rec.source_upload_id == "up_new"  # survives
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run_again())
+
+
+def test_setup_appstate_migrates_datasets_table_for_minted_from_upload(tmp_path) -> None:
+    """A DB whose datasets table predates `minted_from_upload_id` (PR #373) — it already
+    has `source_upload_id` — starts cleanly: the guarded ALTER adds the column in place,
+    exactly as seam L1 added `source_upload_id`, and it is NOT backfilled.
+
+    That is the documented gap: a row minted before the column existed records its bundle
+    in `source_upload_id` only, so the minted-create lookup does not find it, and a repeat
+    of that create builds a second collection, as it always had. Backfilling from
+    `source_upload_id` would re-import the ambiguity the column exists to remove (it is
+    also written by re-ingest and authored creates). A NEW minted row, written through the
+    real writer, is found."""
+    db_path = tmp_path / "legacy_minted_from.db"
+    con = sqlite3.connect(db_path)
+    con.executescript(
+        """
+        CREATE TABLE users (
+            id INTEGER NOT NULL PRIMARY KEY,
+            username VARCHAR NOT NULL UNIQUE,
+            email VARCHAR NOT NULL UNIQUE,
+            password_hash VARCHAR NOT NULL,
+            created_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL
+        );
+        CREATE TABLE datasets (
+            dataset_id VARCHAR NOT NULL PRIMARY KEY,
+            owner VARCHAR NOT NULL REFERENCES users (username),
+            created_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL,
+            last_job_id VARCHAR,
+            visibility VARCHAR NOT NULL DEFAULT 'private',
+            display_name VARCHAR,
+            attribution VARCHAR,
+            attribution_url VARCHAR,
+            source_upload_id VARCHAR
+        );
+        INSERT INTO users (username, email, password_hash)
+            VALUES ('carol', 'carol@example.com', 'x');
+        INSERT INTO datasets (dataset_id, owner, source_upload_id)
+            VALUES ('a1b2c3d4e5f6', 'carol', 'up_old');
+        """
+    )
+    con.commit()
+    con.close()
+
+    async def _run() -> None:
+        engine, sessionmaker = await appstate.setup_appstate(db_path)
+        try:
+            async with sessionmaker() as session:
+                info = await session.execute(text("PRAGMA table_info(datasets)"))
+                assert "minted_from_upload_id" in {row[1] for row in info}  # ALTERed in
+
+                # Not backfilled: the pre-column row is outside the key.
+                assert (
+                    await appstate.get_dataset_record_minted_from_upload(
+                        session, "carol", "up_old"
+                    )
+                    is None
+                )
+                old = await appstate.get_dataset_record(session, "a1b2c3d4e5f6")
+                assert old is not None and old.source_upload_id == "up_old"  # untouched
+
+                # A new minted row lands on the migrated table and is found.
+                await appstate.record_dataset_owner(
+                    session, "0f1e2d3c4b5a", "carol", minted_from_upload_id="up_new"
+                )
+                found = await appstate.get_dataset_record_minted_from_upload(
+                    session, "carol", "up_new"
+                )
+                assert found is not None and found.dataset_id == "0f1e2d3c4b5a"
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
+
+    async def _run_again() -> None:  # idempotent second startup
+        engine, sessionmaker = await appstate.setup_appstate(db_path)
+        try:
+            async with sessionmaker() as session:
+                found = await appstate.get_dataset_record_minted_from_upload(
+                    session, "carol", "up_new"
+                )
+                assert found is not None and found.dataset_id == "0f1e2d3c4b5a"
+        finally:
+            await engine.dispose()
 
     asyncio.run(_run_again())
 
@@ -1045,13 +1301,16 @@ def test_delete_takes_per_dataset_lock(client, auth, app_db) -> None:
     assert client.app.state.redis.locked_keys == [_lock_key("ds_dl")]
 
 
-def test_reingest_takes_per_dataset_lock(client, auth, fake_queue, app_db) -> None:
+def test_reingest_takes_per_dataset_lock(
+    client, auth, fake_queue, app_db, monkeypatch
+) -> None:
     """start_ingest (re-ingest) acquires the per-`dataset_id` mutation lock around
     its enqueue+record critical section (PR24-8)."""
     first = _finalized_images_bundle(client, auth)
     assert client.post(
         "/api/datasets", headers=auth, json={"dataset_id": "ds_rl", "upload_id": first}
     ).status_code == 200
+    _create_job_finished(monkeypatch)
     second = _finalized_images_bundle(client, auth)
     r = client.post(
         "/api/datasets/ds_rl/ingest", headers=auth, json={"upload_id": second}
@@ -1252,7 +1511,9 @@ def test_zip_dotdot_entry_ignored_no_traversal(client, auth) -> None:
     assert {p.name for p in (session_dir / "images").iterdir()} == {"real.png"}
 
 
-def test_reingest_enqueue_failure_is_503(client, auth, fake_queue, app_db) -> None:
+def test_reingest_enqueue_failure_is_503(
+    client, auth, fake_queue, app_db, monkeypatch
+) -> None:
     """PR24-5: a broker outage on re-ingest answers a clean 503 (mirroring create),
     not an opaque 500; last_job_id is left untouched."""
     first = _finalized_images_bundle(client, auth)
@@ -1263,6 +1524,7 @@ def test_reingest_enqueue_failure_is_503(client, auth, fake_queue, app_db) -> No
     )
     assert ok.status_code == 200, ok.text
     job_before = ok.json()["job_id"]
+    _create_job_finished(monkeypatch)
 
     client.app.state.queue = _FailingQueue()  # broker goes down
     second = _finalized_images_bundle(client, auth)
@@ -1311,6 +1573,9 @@ def test_get_job_blocking_body_runs_off_the_event_loop(
     resp = client.get("/api/jobs/whatever", headers=auth)
     assert resp.status_code == 200, resp.text
     assert jobs._build_job_status in dispatched
+    # The owner's gated hop (PR #405) reads ingest.log and, for a failed or finished job,
+    # Redis — blocking I/O too. alice owns ds_tp, so the hop runs; it must be dispatched.
+    assert jobs._read_owner_fields in dispatched
 
 
 def test_zip_extraction_dispatched_off_the_event_loop(client, auth, monkeypatch) -> None:
@@ -1603,20 +1868,22 @@ def _open_with_part(client, auth, name: str, data: bytes) -> str:
 
 
 def _backdate_session(session_dir: Path, seconds_ago: float) -> None:
-    """Age EVERY structural mtime the sweep reads, so max(mtimes) lands in the past
-    (any one left fresh would keep the session)."""
-    from api.routers import uploads
+    """Age EVERY mtime in the session tree, so max(mtimes) lands in the past (any one
+    left fresh would keep the session).
 
+    Walks the tree rather than naming the five paths the sweep used to read. Those five
+    were a copy of `_session_mtimes`' own tuple, so this helper had to be edited in step
+    with it or these specs would silently stop reaping — and when `_session_mtimes` grew
+    to see the staged prefixes of in-flight parts (review of PR #304, finding 2), that is
+    exactly what happened: three sweep specs went red because the `.tally.lock` /
+    `.files.lock` files this never touched were still fresh. Aging everything cannot
+    drift: it is strictly a superset of whatever the sweep reads, and it is the state a
+    genuinely idle session is in. Children first so a directory's own mtime is not
+    refreshed by a later `utime` on something inside it."""
     past = time.time() - seconds_ago
-    for p in (
-        session_dir,
-        session_dir / "images",
-        session_dir / uploads._TALLY_FILE,
-        session_dir / uploads._FILES_FILE,
-        session_dir / uploads._FINALIZED_MARKER,
-    ):
-        if p.exists():
-            os.utime(p, (past, past))
+    for p in sorted(session_dir.rglob("*"), key=lambda q: len(q.parts), reverse=True):
+        os.utime(p, (past, past))
+    os.utime(session_dir, (past, past))
 
 
 def _files_by_name(client, auth, upload_id: str, **params) -> dict:
@@ -2060,3 +2327,73 @@ def test_check_malformed_body_is_422(client, auth) -> None:
         content=b'{"files": "not-a-list"}',
     )
     assert r.status_code == 422
+
+
+# --- Seam A2: GET /api/uploads/caps — the caps the client can read ------------
+
+
+def test_upload_caps_are_the_documented_defaults(client, auth, monkeypatch) -> None:
+    """With no env override the route advertises the interface-catalogue defaults.
+    Pins the VALUES: Seam A2 exposes the caps, it does not move them.
+
+    UPDATED BY SEAM L1, and the change is the point rather than an accident. Two of
+    these are still constants; `max_bundle_bytes` is not one any more — its 2 GiB
+    default was the value that refused a real corpus at 3,014 images against a PRD
+    target of 1,000,000, and it is now DERIVED from the device the upload jail is on
+    (`docs/design/LIMITS_REGISTER.md` C-1). So it is pinned to the derivation rather
+    than to a number this test would otherwise have to invent. The entry cap's 250,000
+    moved to the PRD's own 1,000,000 for the same reason — see
+    `test_derived_upload_bound.py`."""
+    for name in ("MAX_UPLOAD_PART_BYTES", "MAX_UPLOAD_BUNDLE_BYTES", "MAX_UPLOAD_ENTRIES"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(uploads, "_disk_total", lambda path: 777_000_000_000)
+    r = client.get("/api/uploads/caps", headers=auth)
+    assert r.status_code == 200
+    assert r.json() == {
+        "max_part_bytes": 104_857_600,  # 100 MiB
+        "max_bundle_bytes": 777_000_000_000,  # the device, not a constant
+        "max_entries": 1_000_000,  # the PRD's target
+    }
+
+
+def test_upload_caps_follow_the_env_overrides(client, auth, monkeypatch) -> None:
+    """THE bug this seam fixes: the advertised caps are the ENV-derived values, not
+    the compiled-in `_DEFAULT_*` constants — so RAISING MAX_UPLOAD_PART_BYTES on a
+    deployment is finally visible to a client. Every value here is non-default, and
+    the part cap is raised (the case that was silently ineffective)."""
+    monkeypatch.setenv("MAX_UPLOAD_PART_BYTES", "314159265")
+    monkeypatch.setenv("MAX_UPLOAD_BUNDLE_BYTES", "271828182845")
+    monkeypatch.setenv("MAX_UPLOAD_ENTRIES", "1618")
+    body = client.get("/api/uploads/caps", headers=auth).json()
+    assert body == {
+        "max_part_bytes": 314_159_265,
+        "max_bundle_bytes": 271_828_182_845,
+        "max_entries": 1618,
+    }
+
+
+def test_advertised_part_cap_is_the_enforced_part_cap(client, auth, monkeypatch) -> None:
+    """The advertised number and the enforced number cannot diverge — proved against
+    the STORE path rather than by re-reading the same helper: a part of exactly the
+    advertised size is stored (200) and one byte more is refused (413)."""
+    monkeypatch.setenv("MAX_UPLOAD_PART_BYTES", "64")
+    limit = client.get("/api/uploads/caps", headers=auth).json()["max_part_bytes"]
+    upload_id = client.post("/api/uploads", headers=auth).json()["upload_id"]
+    at_cap = client.post(
+        f"/api/uploads/{upload_id}/parts",
+        headers=auth,
+        files={"part": ("a.png", b"x" * limit)},
+    )
+    assert at_cap.status_code == 200
+    over = client.post(
+        f"/api/uploads/{upload_id}/parts",
+        headers=auth,
+        files={"part": ("b.png", b"x" * (limit + 1))},
+    )
+    assert over.status_code == 413
+
+
+def test_upload_caps_requires_auth(client) -> None:
+    """Authenticated like every other route in this router — the caps describe the
+    deployment and this seam does not widen who may read them."""
+    assert client.get("/api/uploads/caps").status_code == 401

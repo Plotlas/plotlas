@@ -3,7 +3,7 @@
 # (packages/api/pyproject.toml); it must NEVER gain a pipeline dep. The API
 # enqueues the ingest job by dotted string (decision D-15) and never imports
 # `pipeline`, so libvips / pyvips / quadfeather / rectpack have no place here.
-FROM python:3.12-slim-bookworm
+FROM python:3.14-slim-bookworm
 
 WORKDIR /app
 

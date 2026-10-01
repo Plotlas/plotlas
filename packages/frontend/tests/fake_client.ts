@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { tableFromIPC } from "apache-arrow";
 import type { Table } from "apache-arrow";
 import type { ApiClient } from "../src/api-client/client.ts";
+import type { Presentation } from "../src/generated/presentation.ts";
 import type { CellBuffers, Cells, CellsHandle } from "../src/renderer/cells.ts";
 import type { LayoutManifest, TagsDecl } from "../src/renderer/layout.ts";
 import type { BBox, TilePyramid } from "../src/renderer/tilePyramid.ts";
@@ -48,6 +49,12 @@ export function createFakeClient(
     listLayouts: notUsed("listLayouts"),
     async getManifest(): Promise<LayoutManifest> {
       return manifest;
+    },
+    // The golden fixture carries no presentation.json (nothing committed before
+    // 2026-09-07 does), and `{}` is what the real client returns for one that has none —
+    // NOT a "not used in tests" throw, because the viewer's boot chain reads it (D-iv).
+    async getPresentation(): Promise<Presentation> {
+      return {};
     },
     pyramidUrl(_dsId: string, layoutId: string): string {
       const entry = manifest.layouts.find((l) => l.layout_id === layoutId);
@@ -224,17 +231,15 @@ export interface StubCells extends CellsHandle {
   drops: { lod: number; page: number }[];
   /** Count of handleContextRestored() calls (context-loss recovery test). */
   contextRestores: number;
-  medianWidth: number;
 }
 
-export function createStubCells(medianWidth = 0): StubCells {
+export function createStubCells(): StubCells {
   const stub: StubCells = {
     buffersReceived: [],
     visibilityReceived: [],
     calls: [],
     drops: [],
     contextRestores: 0,
-    medianWidth,
     setBuffers(buffers: CellBuffers): void {
       stub.buffersReceived.push(buffers);
       // Record the synthetic (lod, page) every cell of this tile shares (the
@@ -263,9 +268,6 @@ export function createStubCells(medianWidth = 0): StubCells {
     },
     residentOnPage(): number {
       return 0;
-    },
-    medianCellWidth(): number {
-      return stub.medianWidth;
     },
     handleContextRestored(): void {
       stub.contextRestores++;

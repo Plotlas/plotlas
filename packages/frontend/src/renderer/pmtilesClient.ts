@@ -222,21 +222,65 @@ export interface PyramidArchive {
  * (T2-09 residual) is an optional single-flight static-edge cookie refresh: on a
  * 401 the range read re-issues the `viz_ds` cookie and retries once — see
  * FetchRangeSource. Omitted ⇒ a 401 fails straight through (the prior behavior).
+ *
+ * THE READER IS DISCARDED WHEN A READ FAILS, and this is not defensive tidying — without
+ * it an archive opened during an outage is dead for the life of the page. Measured in
+ * node_modules/pmtiles/dist/index.js (v3.2.1, 2026-08-21): `SharedPromiseCache.getHeader`
+ * stores its in-flight promise under `source.getKey()` (our URL) and stores it on the
+ * `.catch(e => reject(e))` path too, with no delete-on-rejection; `prune()` only evicts
+ * once the cache reaches maxCacheEntries (we pass 1024, which one dataset never reaches).
+ * Every `getZxyAttempt` opens with `await this.cache.getHeader(this.source)`, so after one
+ * failed header read every later read re-throws that same rejection WITHOUT ISSUING A
+ * REQUEST — which is exactly what the operator saw in a browser: the recovery panel
+ * appeared, the API came back, "Retry this view" re-streamed correctly, and the Network
+ * panel stayed empty. `getDirectory` latches rejections the same way, and
+ * `cache.invalidate` is not the escape hatch it looks like (it clears only the header key,
+ * and latches its OWN failure in `this.invalidations` forever).
+ *
+ * We cannot fix the library, so we stop using a reader that has failed. The api-client
+ * already made the same call for its own memoised promises ("a rejection is evicted so a
+ * retry re-fetches; failures are not cached" — client.ts, positionFetches).
+ *
+ * Three properties make this cheap rather than delicate:
+ *  - a read captures its reader FIRST, so a discard never disturbs a read in flight and no
+ *    cancellation is involved — the signal is per-read and untouched;
+ *  - `refreshCredential` is a function reference whose single-flight + cooldown state lives
+ *    in the api-client, so rebuilding re-wraps the SAME capability and cannot reset or
+ *    double-fire the T2-09 credential refresh;
+ *  - the returned handle's identity never changes, so `tilePyramid`'s per-URL archive cache
+ *    and every in-flight `loadTile` keep working with no change at all.
+ *
+ * The cost is a cold header + root directory (one 16 KiB read) after a failure, paid only
+ * on the failure path. An ABORT is excluded: the library fetches the header and the
+ * directories with NO signal (`getBytes(0, 16384)` / `getBytes(offset, length, void 0,
+ * etag)`) and passes one only to the tile body, so a supersede can never poison a cache
+ * entry — and discarding on every cancelled pan would throw away the 1024-entry directory
+ * cache that PMTILES_DIR_CACHE_ENTRIES exists to hold.
  */
 export function openPyramidArchive(
   url: string,
   getAuthHeaders: () => Record<string, string>,
   refreshCredential?: RefreshCredential,
 ): PyramidArchive {
-  const pmtiles = new PMTiles(
-    new FetchRangeSource(url, getAuthHeaders, refreshCredential),
-    new SharedPromiseCache(PMTILES_DIR_CACHE_ENTRIES),
-  );
+  const newReader = (): PMTiles =>
+    new PMTiles(
+      new FetchRangeSource(url, getAuthHeaders, refreshCredential),
+      new SharedPromiseCache(PMTILES_DIR_CACHE_ENTRIES),
+    );
+  let reader = newReader();
   return {
     async getTile(z: number, x: number, y: number, signal?: AbortSignal): Promise<TileBytes> {
-      const range: RangeResponse | undefined = await pmtiles.getZxy(z, x, y, signal);
-      if (range === undefined) return null; // no tile at this address → draw the parent
-      return new Uint8Array(range.data);
+      const used = reader; // the read owns its reader — see the docblock
+      try {
+        const range: RangeResponse | undefined = await used.getZxy(z, x, y, signal);
+        if (range === undefined) return null; // no tile at this address → draw the parent
+        return new Uint8Array(range.data);
+      } catch (err) {
+        // `reader === used` ⇒ a whole viewport of concurrent failures rebuilds ONCE.
+        const aborted = typeof err === "object" && err !== null && (err as { name?: unknown }).name === "AbortError";
+        if (!aborted && reader === used) reader = newReader();
+        throw err;
+      }
     },
   };
 }

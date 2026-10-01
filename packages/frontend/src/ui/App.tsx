@@ -17,11 +17,12 @@
 import { createElement as h, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import { createApiClient } from "../api-client/client";
-import { pushUrlForView, routeForUnavailable, viewFromSearch } from "./urlState";
+import { isDesignerTabSwitch, pushUrlForView, routeForUnavailable, viewFromSearch } from "./urlState";
 import type { View } from "./urlState";
 import { AuthPanel } from "./admin/AuthPanel";
 import { AdminScreen } from "./admin/AdminScreen";
 import { ViewerScreen } from "./ViewerScreen";
+import { DesignerScreen } from "./designer/DesignerScreen";
 import { ActivityProvider } from "./activity/activityContext";
 import { ACTIVITY_STORAGE_KEY } from "./activity/activityStore";
 import { PlotlasMark, PLOTLAS_VERSION } from "./PlotlasMark";
@@ -107,7 +108,10 @@ export function App(): ReactElement {
   function setView(next: View): void {
     if (typeof window !== "undefined") {
       const url = pushUrlForView(viewRef.current, next, window.location);
-      if (url !== null) window.history.pushState(null, "", url);
+      // A designer TAB switch replaces the entry rather than pushing one, so Back leaves
+      // the designer instead of stepping back through its tabs (urlState).
+      if (url !== null && isDesignerTabSwitch(viewRef.current, next)) window.history.replaceState(null, "", url);
+      else if (url !== null) window.history.pushState(null, "", url);
     }
     viewRef.current = next;
     setViewState(next);
@@ -245,6 +249,35 @@ export function App(): ReactElement {
   // the anonymous screens too, but stays inert for them — a visitor tracks/adopts no
   // jobs (AdminScreen skips adoption when read-only) and the pill is hidden when nothing
   // is tracked, so no activity surface leaks. The `auth` branch above returns first.
+  // Seam L3: the layout designer, a ROUTE (?edit=<id>) rather than library state, so a
+  // reload keeps both the collection and the tab. Keyed on the id for the same reason the
+  // viewer is: a different collection is a fresh designer, never a re-used one.
+  const designer =
+    view.kind === "designer"
+      ? h(
+          "div",
+          { className: "app-shell" },
+          h(DesignerScreen, {
+            key: view.datasetId,
+            client,
+            datasetId: view.datasetId,
+            tab: view.tab,
+            username,
+            onNavigate: (tab) => setView({ kind: "designer", datasetId: view.datasetId, tab }),
+            onBack: () => setView({ kind: "admin" }),
+            onOpenAtlas: () => setView({ kind: "viewer", datasetId: view.datasetId }),
+            // Owner-only (brief §1.6): a link opened by anyone else lands where any
+            // unopenable link does, with the same non-disclosing notice.
+            onUnavailable: handleDatasetUnavailable,
+            onDeleted: (name: string) => {
+              setLibraryNotice(`Deleted “${name}”.`);
+              setView({ kind: "admin" });
+            },
+            onAuthExpired: handleSessionExpired,
+          }),
+        )
+      : null;
+
   const screen =
     view.kind === "viewer"
       ? h(
@@ -277,6 +310,11 @@ export function App(): ReactElement {
               setLibraryNotice(null);
               setView({ kind: "viewer", datasetId });
             },
+            // D-xix: every entrance to the designer lands on Overview.
+            onEditDataset: (datasetId: string) => {
+              setLibraryNotice(null);
+              setView({ kind: "designer", datasetId, tab: "overview" });
+            },
             onAuthExpired: handleSessionExpired,
             onLogout: handleLogout,
             // Deep links (scope Part A): why we are here and not on the linked collection.
@@ -286,5 +324,5 @@ export function App(): ReactElement {
           }),
         );
 
-  return h(ActivityProvider, { client }, screen);
+  return h(ActivityProvider, { client }, designer ?? screen);
 }

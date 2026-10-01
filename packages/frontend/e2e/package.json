@@ -3,7 +3,12 @@
   "private": true,
   "type": "module",
   "description": "Real-browser renderer diagnostics + regression gate (Playwright). Drives the live stack and asserts on window.__vizDebug — the streaming dynamics the GL-free unit tests cannot see (O1 round-3).",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
   "devDependencies": {
-    "@playwright/test": "1.49.1"
+    "@playwright/test": "1.62.1",
+    "@types/node": "^22.0.0",
+    "typescript": "^7.0.2"
   }
 }

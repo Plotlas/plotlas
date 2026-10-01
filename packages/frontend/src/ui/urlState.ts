@@ -13,16 +13,40 @@
 // WHAT IS DELIBERATELY NOT HERE (scope §2 non-goals): zoom, pan, layout, filter,
 // search and selection state. Only WHICH collection is addressable. That boundary is
 // the point — it is where a seam like this sprawls.
+//
+// The layout designer (seam L3) adds ONE more address: `?edit=<id>`, plus the designer's
+// tab (`&view=data|layouts`) so a reload returns to the tab it left. The designer is a
+// route rather than state in the library because library state does not survive a
+// reload, and a pending draft of thirty edits must.
+
+/** The layout designer's three views (LAYOUT_DESIGNER D-xix). Overview is the default. */
+export type DesignerTab = "overview" | "data" | "layouts";
 
 /** The app's navigation state. Owned here so App.tsx and the tests share one type. */
 export type View =
   | { kind: "admin" }
   | { kind: "viewer"; datasetId: string }
+  | { kind: "designer"; datasetId: string; tab: DesignerTab }
   | { kind: "auth" };
 
 /** The query parameter carrying the dataset id. Short because it is meant to be
  *  pasted into chat windows and slide decks. */
 export const DATASET_PARAM = "d";
+
+/** The query parameter that opens a collection in the layout DESIGNER (seam L3). A
+ *  separate parameter rather than a mode on `d`, so a shared viewer link can never be
+ *  turned into an editing link by accident, and so the viewer's `?d=` is untouched. */
+export const EDIT_PARAM = "edit";
+
+/** The designer's tab. Only `data` and `layouts` are written: Overview is the default
+ *  and writes nothing, so the link every entrance produces is the short one. */
+export const TAB_PARAM = "view";
+
+/** The designer tab a `view=` value names; anything else — absent, `overview`, a typo —
+ *  is Overview, where every entrance lands (D-xix). */
+function designerTabFrom(raw: string | null): DesignerTab {
+  return raw === "data" || raw === "layouts" ? raw : "overview";
+}
 
 /** The view a URL asks for. Unknown/empty ⇒ the library.
  *
@@ -30,6 +54,9 @@ export const DATASET_PARAM = "d";
  *  the app-state primary key and the on-disk directory name, and the API is the only
  *  thing entitled to decide whether it resolves. Trimming whitespace is the one
  *  exception: it comes from copy-paste, not from the user meaning it.
+ *
+ *  `?edit=<id>` (the designer) wins over `?d=<id>` when a URL somehow carries both: it
+ *  is the narrower address, and the designer sends a non-owner to the library anyway.
  *
  *  `auth` is never produced here. It is a transient screen you are routed TO, not a
  *  place a link points at — see `searchFromView`. */
@@ -39,6 +66,10 @@ export function viewFromSearch(search: string): View {
   // unlike `decodeURIComponent`. A malformed query string yields a params object, not a
   // crash; an absent or blank `d` already falls through to the library below.
   const params = new URLSearchParams(search);
+  const editing = (params.get(EDIT_PARAM) ?? "").trim();
+  if (editing !== "") {
+    return { kind: "designer", datasetId: editing, tab: designerTabFrom(params.get(TAB_PARAM)) };
+  }
   const raw = params.get(DATASET_PARAM);
   if (raw === null) return { kind: "admin" };
   const datasetId = raw.trim();
@@ -58,10 +89,35 @@ export function searchFromView(view: View, currentSearch = ""): string | null {
   if (view.kind === "auth") return null;
   // `new URLSearchParams(string)` never throws (see viewFromSearch).
   const params = new URLSearchParams(currentSearch);
+  // The three parameters this module owns are cleared first and then set for the view,
+  // so moving between viewer and designer never leaves the other's address behind.
+  params.delete(DATASET_PARAM);
+  params.delete(EDIT_PARAM);
+  params.delete(TAB_PARAM);
   if (view.kind === "viewer") params.set(DATASET_PARAM, view.datasetId);
-  else params.delete(DATASET_PARAM);
+  if (view.kind === "designer") {
+    params.set(EDIT_PARAM, view.datasetId);
+    if (view.tab !== "overview") params.set(TAB_PARAM, view.tab);
+  }
   const q = params.toString();
   return q === "" ? "" : `?${q}`;
+}
+
+/** Who may open the DESIGNER for a collection: its owner, and nobody else (brief §1.6).
+ *  A display gate, not an authorization one — the API refuses every write a non-owner
+ *  attempts regardless. It exists so nobody is shown a door that cannot open: the
+ *  library offers `Edit` only where this holds, and a `?edit=` link that fails it is
+ *  sent on through `routeForUnavailable`, with the same non-disclosing wording a viewer
+ *  link gets. */
+export function mayOpenDesigner(owner: string | null | undefined, username: string | null): boolean {
+  return username !== null && username !== "" && owner === username;
+}
+
+/** True when `a` → `b` only switches the designer's TAB. App REPLACES the history entry
+ *  for this instead of pushing one, so the browser's Back leaves the designer (to the
+ *  library, where every entrance to it starts) instead of stepping back through tabs. */
+export function isDesignerTabSwitch(a: View, b: View): boolean {
+  return a.kind === "designer" && b.kind === "designer" && a.datasetId === b.datasetId && a.tab !== b.tab;
 }
 
 /** Where a visitor lands when a deep link cannot be opened, and what they are told. */
@@ -106,6 +162,9 @@ export function routeForUnavailable(datasetId: string, username: string | null):
 export function sameView(a: View, b: View): boolean {
   if (a.kind !== b.kind) return false;
   if (a.kind === "viewer" && b.kind === "viewer") return a.datasetId === b.datasetId;
+  if (a.kind === "designer" && b.kind === "designer") {
+    return a.datasetId === b.datasetId && a.tab === b.tab;
+  }
   return true;
 }
 

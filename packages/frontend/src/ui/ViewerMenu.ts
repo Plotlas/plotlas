@@ -43,9 +43,10 @@
 //
 // .ts + createElement (no JSX): the node test runner strips types but cannot transform
 // JSX — the same constraint LayoutSwitcher.ts documents.
-import { createElement as h, Fragment, useEffect, useLayoutEffect, useRef } from "react";
+import { createElement as h, Fragment, useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import type { ReactElement, ReactNode } from "react";
 import type { LayoutInfo } from "../api-client/types";
+import { blockedControl } from "./blockedControl";
 
 export interface ViewerMenuProps {
   layouts: LayoutInfo[];
@@ -53,6 +54,12 @@ export interface ViewerMenuProps {
   onSwitch: (layoutId: string) => void;
   open: boolean;
   setOpen: (open: boolean) => void;
+  /** Seam R1 P5 — the exact mirror of `LayoutSwitcherProps.blockedReason`, from the same
+   *  helper and the same string. This surface is where it matters most: below ~855px the
+   *  ☰ is the ONLY switcher, so blocking the desktop tab row alone leaves a dead control
+   *  live on every phone — and a `role="menu"` whose every item is silently inert, with
+   *  no explanation, is worse than one that says why. */
+  blockedReason?: string | null;
   /** Open the full-screen Tags panel (§3.3). Optional so the menu is usable without a
    *  tags surface at all; ViewerScreen always supplies it, because the desktop rail is
    *  likewise always offered and `TagControls` renders its own disabled state for an
@@ -132,28 +139,44 @@ export function ViewerMenu(props: ViewerMenuProps): ReactElement {
   // at any width. `aria-label` below ALWAYS names the active layout, so hiding the text
   // costs nothing to assistive tech — D2's affordance survives where it is load-bearing.
   //
-  // Settled ONCE per (label, width) rather than in a feedback loop: hiding the label frees
-  // width, which would make it "fit" again and oscillate. The effect un-hides, forces one
+  // Settled in ONE STEP rather than in a feedback loop: hiding the label frees width,
+  // which would make it "fit" again and oscillate. The effect un-hides, forces one
   // reflow, measures the honest overflow, then commits — a single settle step, so the
-  // decision can never chase its own consequence.
+  // decision can never chase its own consequence. That is a property of the STEP, not of
+  // how often it runs, which is what makes it safe to re-run on every render below.
   const labelRef = useRef<HTMLSpanElement | null>(null);
-  useLayoutEffect(() => {
+  const settle = useCallback((): void => {
     const el = labelRef.current;
     if (el === null) return;
-    const settle = (): void => {
-      el.classList.remove("viewer-menu-label-hidden");
-      // Read AFTER the class is gone so the measurement is of the label at its allotted
-      // width, not of the collapsed box the previous decision produced.
-      const truncated = el.scrollWidth > el.clientWidth + 1;
-      if (truncated) el.classList.add("viewer-menu-label-hidden");
-    };
-    settle();
-    // The holder resizing changes the allotment without changing the label, so re-settle.
-    // `window.resize` only — ViewerScreen owns the holder's ResizeObserver (SCOPE §3.1,
-    // "one observer, not a second one") and this must not add a competing one.
+    el.classList.remove("viewer-menu-label-hidden");
+    // Read AFTER the class is gone so the measurement is of the label at its allotted
+    // width, not of the collapsed box the previous decision produced.
+    const truncated = el.scrollWidth > el.clientWidth + 1;
+    if (truncated) el.classList.add("viewer-menu-label-hidden");
+  }, []);
+
+  // EVERY render, not just when the label text changes (review of #267). The allotment is
+  // set by the whole flex row, so it moves when a SIBLING appears: `ActivityPill` mounts
+  // into `.cockpit-topbar` for the life of a job, takes its share, and shrinks this
+  // trigger — with no resize and no change to `triggerLabel`, so a `[triggerLabel]` gate
+  // never re-settled and the label sat truncated at exactly the one-letter stub this code
+  // exists to prevent ("all I see is 'G...'", operator on a real phone) until the job
+  // ended AND something else happened to fire a resize.
+  //
+  // Safe to run unconditionally because `settle` is IDEMPOTENT by construction: it
+  // un-hides, measures the honest overflow, then commits, so the decision is a pure
+  // function of (label, allotted width) and can never chase its own consequence. Running
+  // it before paint means the un-hidden frame is never shown.
+  useLayoutEffect(settle);
+
+  // ...and on a window resize, which changes the allotment WITHOUT re-rendering this
+  // component at all (ViewerScreen only re-renders on a mode CHANGE, not on every resize
+  // tick). `window.resize` only — ViewerScreen owns the holder's ResizeObserver (SCOPE
+  // §3.1, "one observer, not a second one") and this must not add a competing one.
+  useEffect(() => {
     window.addEventListener("resize", settle);
     return () => window.removeEventListener("resize", settle);
-  }, [triggerLabel]);
+  }, [settle]);
 
   return h(
     "div",
@@ -198,12 +221,17 @@ export function ViewerMenu(props: ViewerMenuProps): ReactElement {
             props.layouts.map((layout) => {
               const isActive = layout.layout_id === props.activeLayoutId;
               const summary = props.bakedSummary?.[layout.layout_id] ?? null;
+              // Seam R1 P5 — the same helper the desktop tab row uses, so both surfaces
+              // carry the same reason and the same aria/class treatment.
+              const { blocked, ...blockedProps } = blockedControl(props.blockedReason, {
+                className: isActive ? "menu-item viewer-menu-layout on" : "menu-item viewer-menu-layout",
+              });
               return h(
                 "button",
                 {
                   key: layout.layout_id,
                   type: "button",
-                  className: isActive ? "menu-item viewer-menu-layout on" : "menu-item viewer-menu-layout",
+                  ...blockedProps,
                   role: "menuitemradio",
                   "aria-checked": isActive,
                   onClick: () => {
@@ -214,7 +242,13 @@ export function ViewerMenu(props: ViewerMenuProps): ReactElement {
                     btnRef.current?.focus();
                     // A re-choose of the ACTIVE layout is a no-op switch, exactly as
                     // LayoutSwitcher's tab is — it closes the menu and nothing else.
-                    if (!isActive) props.onSwitch(layout.layout_id);
+                    // Seam R1 P5: a BLOCKED row behaves exactly like that active row.
+                    // `aria-disabled` is advisory — a real click still arrives — so the
+                    // switch is refused here, but the close and the focus return are
+                    // NOT: dropping them would leave a keyboard user on an unmounting
+                    // row with focus falling to <body> (review #271 F7, pinned by
+                    // narrow_layout.dom.test.ts).
+                    if (!isActive && !blocked) props.onSwitch(layout.layout_id);
                   },
                 },
                 h("span", { className: "viewer-menu-row-label" }, layout.label),
@@ -259,6 +293,15 @@ export function ViewerMenu(props: ViewerMenuProps): ReactElement {
                       role: "menuitem",
                       onClick: () => {
                         setOpen(false);
+                        // The same return the layout rows and the Escape path already
+                        // make (review #271 F7), and here it reaches further than
+                        // keyboard hygiene: choosing UNMOUNTS this row, and `TagsPanel`
+                        // captures `document.activeElement` as the control to restore
+                        // when it closes. Without this the panel opens over a focus that
+                        // has already fallen to `<body>`, so "Done" lands the user back
+                        // at the top of the document instead of on the ☰ they came
+                        // through (review of #267).
+                        btnRef.current?.focus();
                         props.onOpenTags?.();
                       },
                     },

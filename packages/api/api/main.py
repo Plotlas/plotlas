@@ -15,10 +15,9 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from redis import Redis
 from rq import Queue
 
-from api import appstate, db
+from api import appstate, db, queue
 from api.routers import (
     auth,
     authz,
@@ -30,13 +29,6 @@ from api.routers import (
     tiles,
     uploads,
 )
-
-# Default RQ broker URL when REDIS_URL is unset (e.g. the in-process test/boot
-# path). Redis.from_url + rq.Queue are both lazy — neither contacts the broker at
-# construction — so the lifespan runs (and the boot/health tests pass) with no live
-# Redis; a connection is made only when a write route actually enqueues/fetches.
-_DEFAULT_REDIS_URL = "redis://localhost:6379/0"
-
 
 def _resolve_cors_origins() -> list[str]:
     """Resolve the CORS allow-list from the comma-separated ALLOWED_ORIGINS env
@@ -81,7 +73,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # RQ dispatch (seam 10c): one Redis client + Queue per worker, reached by the
     # write routers via request.app.state.queue (no module-level global — rule #8).
     # Additive: leaves the DuckDB (10b) and app-state (10a) wiring above untouched.
-    app.state.redis = Redis.from_url(os.environ.get("REDIS_URL", _DEFAULT_REDIS_URL))
+    # The URL resolution lives in queue.py, the module that owns the lock, so the
+    # operator CLI reaches the SAME broker this process locks against.
+    app.state.redis = queue.redis_client()
     app.state.queue = Queue(connection=app.state.redis)
     try:
         yield
@@ -114,6 +108,16 @@ def create_app() -> FastAPI:
     # exactly like app.state.db / app.state.queue. Deliberately NOT Redis-backed:
     # the public compose declares no broker (see AuthRateLimiter).
     app.state.auth_rate_limiter = auth.build_rate_limiter()
+    # NO app-wide OSError handler is registered here, and that is deliberate. One was —
+    # ENOSPC/EDQUOT to a capacity 413 — and it gave every router in the process the
+    # upload router's vocabulary: measured, `GET /api/datasets` answered 413 "This
+    # dataset is too large to accommodate" for an internal OSError(ENOSPC), naming a
+    # remedy (UPLOAD_DISK_RESERVE_BYTES) with no effect on that route. Registering ANY
+    # handler for OSError also moves every OSError subclass past Starlette's
+    # `handler is None` early-out into `RuntimeError("Caught handled exception, but
+    # response already started")` for the four FileResponse routes in tiles.py (round-3
+    # review of PR #304, finding 9). The conversion now lives where the knowledge is,
+    # scoped to the three streaming write loops: uploads._streaming_capacity_refusal.
 
     @app.get("/api/health")
     async def health() -> dict[str, str]:

@@ -1,18 +1,24 @@
 # Caddy — the public edge for local multi-service dev.
 #   * serves static dataset assets directly from DATA_ROOT with immutable caching.
-#     All served asset paths embed the dataset_version, so immutable is safe (v2
-#     spatial-tile-pyramid contract, decision D-33):
-#       tiles/   → tiles/{layout_id}/{layout_id}_v{ver}.pmtiles  (whole per-layout
-#                  PMTiles pyramid; the renderer HTTP-Range-reads {z}/{x}/{y} tiles
-#                  from it — Caddy's file_server answers Range with 206)
-#       tags/    → tags/tags_v{ver}.arrow                         (tag sidecar, D-14)
+#     It serves FOUR prefixes under /datasets/{ds_id}/, the ones the viewer fetches;
+#     every path a current bake writes under them embeds a version, so immutable is
+#     safe (v2 spatial-tile-pyramid contract, decision D-33):
+#       tiles/     → tiles/{layout_id}/{layout_id}_v{ver}.pmtiles  (whole per-layout
+#                    PMTiles pyramid; the renderer HTTP-Range-reads {z}/{x}/{y} tiles
+#                    from it — Caddy's file_server answers Range with 206)
+#       positions/ → positions/{layout_id}_v{ver}.arrow            (per-cell positions)
+#       tags/      → tags/tags_v{ver}.arrow                         (tag sidecar, D-14)
+#       detail/    → detail/v{ver}/{cell_id}.{ext}                  (detail tier, T2-80)
+#     The detail tier is served BOTH here and by the API: the renderer's detail
+#     overlay fetches it off this edge (client.staticDetailUrl), and the cell preview
+#     through the API's own detail routes (client.detailUrl, api/routers/tiles.py).
+#     Every OTHER path under a dataset — ingest.log, progress.json, the manifest file —
+#     answers 404 BEFORE the forward_auth sub-request. The rule and its reasons are the
+#     comment on `datasets_edge` in Caddyfile.edge-snippets; it is not restated here.
 #     The layout manifest is NOT served statically — it goes through the FastAPI
 #     proxy (/api/...) and is always fresh. That stable manifest URL is the share
 #     entry point: loading it always returns the latest version, which carries the
 #     current asset paths (pyramid.path etc.). (gap-analysis §7, decided 2026-06-01)
-#     The DETAIL tier (detail/{cell_id}.{ext}) is also served live by the API, not
-#     here: its URL is unversioned (a re-ingest replaces the bytes), so it cannot be
-#     immutable-cached (see api/routers/tiles.py).
 #   * reverse-proxies the API surface to the FastAPI service;
 #   * proxies everything else to the vite dev server (the app shell).
 #

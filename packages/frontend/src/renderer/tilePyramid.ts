@@ -33,6 +33,7 @@
 // unit-tested directly; the fetch/decode/GPU path lives in the factory and is
 // exercised via the DI seam (deps) in the node unit tests and in the browser.
 import * as THREE from "three";
+import { errText } from "../api-client/errText.ts";
 import type { ApiClient } from "../api-client/client.ts";
 import type { CellBuffers, Cells, CellsHandle } from "./cells.ts";
 import type { LayoutManifest, LayoutEntry, PyramidDescriptor } from "./layout.ts";
@@ -44,6 +45,8 @@ import {
 import type { DecodedFineBundle, FineBundleDecoder } from "./fineBundleDecoder.ts";
 import { openPyramidArchive } from "./pmtilesClient.ts";
 import type { PyramidArchive } from "./pmtilesClient.ts";
+import { guardScheduledWork } from "./health.ts";
+import type { RendererFailureSink } from "./health.ts";
 import { rendererDebug, publishRendererDebug, vizDebugAvailable } from "./debug.ts";
 
 // ---------------------------------------------------------------------------
@@ -80,7 +83,15 @@ export interface TilePyramid {
   /** The manifest this loader currently streams from. */
   readonly manifest: LayoutManifest;
   activeLayoutId(): string | null;
-  /** Recompute the visible tile set from the camera and stream them. */
+  /** Recompute the visible tile set from the camera and stream them.
+   *
+   *  NO PRODUCTION CALLER (verified 2026-08-22): the loader subscribes to
+   *  `world.onCameraChange` itself, and `viewerStatus` / `ViewerScreen` use the WORLD's
+   *  method of the same name. It survives only because `tests/frontend_skeleton.test.ts`
+   *  asserts the interface shape, which this seam may not edit — so deleting it is
+   *  [[T2-236]]. Until then it goes through the SAME guard the camera path does, because
+   *  a public member that reaches `streamView` unguarded is the hazard whether or not
+   *  anything calls it today. */
   onCameraChange(state: CameraState, viewport: Viewport): void;
   /** Point streaming at a layout: drop the old layout's FINE cells, keep its
    *  COARSE overview meshes drawn as a condemned backdrop (released when the new
@@ -94,6 +105,28 @@ export interface TilePyramid {
   /** Bump the stale-drop generation at the START of a layout switch (drops
    *  in-flight old-layout tiles immediately, before activateLayout runs). */
   beginLayoutSwitch(): void;
+  /** Register the callback driven when the CURRENT view cannot be rendered at all —
+   *  EVERY tile it wants has terminally failed to load (Seam R1 P1, R1-05). It reports
+   *  an observation (which layout, and the underlying error text); the shell decides
+   *  what health state that is, exactly as `onUnrecoverable` already does for the
+   *  context-restore watchdog. One listener; a second registration replaces it. */
+  setViewFailureListener(cb: (layoutId: string, detail: string) => void): void;
+  /** Register the callback driven when "images aren't loading right now" starts or stops
+   *  being true (Seam R2 P3). Pushed only on a CHANGE, so the shell is woken twice per
+   *  outage rather than once per failed read. One listener; a second replaces it. */
+  setTilesFailingListener(cb: (failing: boolean) => void): void;
+  /** Whether the last closed window of tile reads was dominated by failures — the pull
+   *  form of the signal above, and the loader's own answer to "is anything landing?".
+   *  Distinct from R1-05's view-level verdict, which asks whether THIS VIEW is a total
+   *  loss and cannot fire at all for tiles already drawn or cached. Always `false` until
+   *  a listener is registered: the ledger is not kept for a loader nobody is watching. */
+  tilesFailing(): boolean;
+  /** Re-stream the LIVE view: re-issue the loads for every tile it wants, including the
+   *  ones that gave up at their retry cap (streamView resets the per-tile budgets). This
+   *  is what "Retry this view" drives when the failed layout is the one already active —
+   *  `switchTo` no-ops against its own target (layout.ts), so a switch there would clear
+   *  the panel and re-fetch nothing. A no-op before any camera has emitted. */
+  restreamView(): void;
   /** Number of tile textures currently DRAWN (the active working set; perf/test
    *  introspection). Excludes the LRU cache of evicted-but-retained tiles. */
   residentTileCount(): number;
@@ -386,6 +419,16 @@ export const CONTEXT_RESTORE_TIMEOUT_MS = 10_000;
  *  flaky tile self-heals on a still view without a gesture. */
 export const RETRY_ATTEMPT_BACKOFF_MS = [1_000, 2_000, 4_000];
 
+/**
+ * How long a window of tile reads is judged over (Seam R2 P3) — DERIVED, not picked: one
+ * whole retry ladder. A read that failed is only finished trying once its backoff budget
+ * is spent, so a ladder is the shortest span over which "these reads are failing" is a
+ * fact about the connection rather than a blip the ladder exists to absorb. It is also
+ * why the signal takes ~7 s to appear — MEASURED 2026-08-22 at ONE window, from a cold
+ * view and from a healthy one alike — and ~7 s of quiet to go away.
+ */
+export const TILE_FAILURE_WINDOW_MS = RETRY_ATTEMPT_BACKOFF_MS.reduce((a, b) => a + b, 0);
+
 /** Injectable side-effecting dependencies (the GPU/network seam). Production wires
  *  the real PMTiles opener + the createImageBitmap decode; the node unit tests
  *  inject a fake archive + a stub decode so the factory's orchestration (load
@@ -467,6 +510,10 @@ export function createTilePyramid(
   manifest: LayoutManifest,
   onUnrecoverable?: () => void,
   deps: TilePyramidDeps = {},
+  // Seam R2 P2: where a guarded SCHEDULED site publishes. Report-only and optional, the
+  // same shape and for the same reason as `createWorld`'s `health` — the loader can say
+  // what broke, and can neither claim readiness nor read what it is writing over.
+  health?: RendererFailureSink,
 ): TilePyramid {
   // The injectable GPU/network seam (DI for the node unit tests): the real
   // PMTiles opener + the createImageBitmap decode unless a test overrides them.
@@ -523,6 +570,11 @@ export function createTilePyramid(
   //     or superseded load). A key is in AT MOST one of retryTimers / inflight.
   const retryAttempts = new Map<string, number>();
   const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  //   * `failedKeys`    — the keys that reached that cap for the CURRENT stream pass,
+  //     i.e. terminally failed (R1-05). Reset alongside retryAttempts in streamView,
+  //     because a fresh pass re-arms every budget: the two ledgers describe the SAME
+  //     window and would lie about each other if they aged differently.
+  const failedKeys = new Set<string>();
 
   function bucketKeyOf(ref: { layoutId: string; z: number; x: number; y: number }): string {
     return `${ref.layoutId}/${ref.z}:${tilePageId(ref.z, ref.x, ref.y)}`;
@@ -1006,14 +1058,165 @@ export function createTilePyramid(
     void loadTile(ref, key, gen);
   }
 
+  /** Whoever wants to be told this view cannot be drawn (R1-05); null until the shell
+   *  registers. Renderer-owned and UI-free: it hands out an observation, never a
+   *  health state (module-map rule 4). */
+  let viewFailureListener: ((layoutId: string, detail: string) => void) | null = null;
+
+  /** Declare the CURRENT view unrenderable when every tile it wants has terminally
+   *  failed — the moment a user would call "nothing loaded", as opposed to "a tile is
+   *  missing", which the coarse floor and the retain sweep already cover.
+   *
+   *  The predicate is DERIVED, not a picked threshold: `wanted` is the set streamView
+   *  already computes as "what this view needs drawn", and a key leaves `failedKeys`
+   *  only by a fresh stream pass clearing it. So one capped tile at the edge of the
+   *  viewport cannot fire this, and a view of exactly one tile that fails legitimately
+   *  can — it IS the whole view. A tile that came back null (never baked, the sparse
+   *  case) never enters `failedKeys`, so a legitimately empty region stays quiet.
+   *
+   *  Latency is likewise derived: the last tile settles one whole retry ladder
+   *  (RETRY_ATTEMPT_BACKOFF_MS, ~7s) after the outage starts, because publishing sooner
+   *  would raise a panel over a blip the ladder is there to absorb. */
+  function reportViewFailureIfUnrenderable(detail: string): void {
+    if (viewFailureListener === null || layoutId === null || wanted.size === 0) return;
+    for (const key of wanted) if (!failedKeys.has(key)) return;
+    viewFailureListener(layoutId, detail);
+  }
+
+  // --- "images aren't loading right now" (Seam R2 P3) ------------------------------
+  //
+  // R1-05's view-level verdict cannot cover the case an operator found in a browser:
+  // with the API stopped and a view already on screen you can pan while every tile 502s
+  // and never be told anything, because `ensureActive` returns early for tiles already
+  // drawn or cached — they are never re-requested, never fail, and "every wanted tile
+  // failed" never becomes true. It clears only by switching layouts.
+  //
+  // So this ledgers TILE KEYS at the `loadTile` choke point. Not `failedKeys`, which
+  // every stream pass wipes (`retryAttempts.clear()` / `failedKeys.clear()` below run
+  // once per animation frame while the camera moves, and a key only enters it after the
+  // whole retry ladder, which a panning user never reaches — measured against the outage
+  // fixture: 208 reads, all 502, 0 terminal failures recorded). And not a reads-issued
+  // counter, because there was none.
+  //
+  // KEYS, not ATTEMPTS, and that is load-bearing twice over. Counting attempts made a
+  // failing key worth 4x a landed one — its whole retry ladder — so `failed >= landed`
+  // armed at k >= N/5 (measured on the 4x4 fixture: 3 of 16 silent, 4 of 16 firing),
+  // which put this publisher in direct contradiction with `reportViewFailureIfUnrenderable`
+  // above, pinned to stay SILENT for a view that still draws. And it made the ladder's own
+  // successes invisible: a blip where every tile 502s once and serves on retry counted 16
+  // failures against 16 landings and raised an outage over a COMPLETE atlas. Per key, the
+  // latest outcome wins, so that blip reads as sixteen landed keys and says nothing.
+  //
+  // The verdict has TWO INDEPENDENT HALVES, and keeping them apart is the whole design:
+  //
+  //  * the RATIO is over PERSISTENT sets — every key the view wants is in exactly one of
+  //    `failingKeys` / `landedKeys`, by the outcome of its LAST read, pruned to `wanted`
+  //    at each window close so both stay viewport-bounded. ON needs the failing side to
+  //    STRICTLY outnumber the landed one; an even split is not "images aren't loading".
+  //    Per-WINDOW sets could not carry this. Judged that way, and compared against the
+  //    PREVIOUS window's landed count to stop a lone retry straggler reading as an outage,
+  //    the operator's own case cost an extra window: the outage's first window was measured
+  //    against a full window of healthy landings and lost. MEASURED 2026-08-22 against the
+  //    4x4 fixture (load a view, close a window, switch layouts with the archive down):
+  //    2 windows to the verdict, versus 1 with persistent sets. Persistent sets also fix
+  //    the straggler for free — that key is one entry against a viewport of landed ones —
+  //    because a key that fails MOVES rather than being outvoted by its own history.
+  //  * the RECENCY is per window: something must have FAILED during it. That half, and
+  //    only that half, is what clears the signal over an idle camera. It cannot be keyed
+  //    on a success — the natural response to a broken picture is to stop moving, and a
+  //    still camera issues no reads at all (the ladder caps; only a camera move issues a
+  //    fresh one), so a success-only clear would be permanent by construction over a
+  //    backend that came back. And it cannot be keyed on the latest outcome:
+  //    `Cache-Control: immutable` on /datasets/* means cached ranges succeed OFFLINE while
+  //    uncached neighbours 502, so the two interleave for a whole pan.
+  //
+  // The window re-arms while reads are still happening and then stops, so a viewer nobody
+  // is using runs no timer — and the last window to close is the one that clears the
+  // signal, because a window with no reads cannot meet the recency half.
+  let failingListener: ((failing: boolean) => void) | null = null;
+  let tilesFailingNow = false;
+  // The two sets are PERSISTENT, not per-window: a key sits in exactly one of them, by the
+  // outcome of its last read, until the view stops wanting it. What the window supplies is
+  // only the "right now" half — whether anything failed during it.
+  const failingKeys = new Set<string>();
+  const landedKeys = new Set<string>();
+  let windowSawFailedRead = false;
+  let windowSawAnyRead = false;
+  let failureWindow: ReturnType<typeof setTimeout> | null = null;
+
+  /** Close the current window: judge it, tell the shell if the answer changed, and start
+   *  another only while there is something left to watch. */
+  function closeFailureWindow(): void {
+    failureWindow = null;
+    // Only the tiles the CURRENT view wants count, which is also what bounds these sets —
+    // otherwise they would grow with every distinct key panned over in a session.
+    for (const k of failingKeys) if (!wanted.has(k)) failingKeys.delete(k);
+    for (const k of landedKeys) if (!wanted.has(k)) landedKeys.delete(k);
+    // "images aren't loading RIGHT NOW" = something failed during this window, AND more of
+    // the view is failing than is landing. The two halves are separate on purpose: the
+    // ratio is a fact about the view and must not be chopped at a window boundary, while
+    // the recency is a fact about time and is the only thing that can clear the signal
+    // over an idle camera.
+    const next = windowSawFailedRead && failingKeys.size > landedKeys.size;
+    const sawReads = windowSawAnyRead;
+    windowSawFailedRead = false;
+    windowSawAnyRead = false;
+    publishTilesFailing(next);
+    // `sawReads` alone, not `next || sawReads` (review C2): `next` requires
+    // `windowSawFailedRead`, which requires a read, so `next ⟹ sawReads` and the first
+    // disjunct could never fire on its own. Keep watching while reads are happening, and
+    // stop when they are not — a viewer nobody is using runs no timer, and the signal is
+    // cleared by the last window that closes.
+    if (sawReads) armFailureWindow();
+  }
+
+  function publishTilesFailing(next: boolean): void {
+    if (next === tilesFailingNow) return;
+    tilesFailingNow = next;
+    failingListener?.(next);
+  }
+
+  function armFailureWindow(): void {
+    if (failureWindow !== null || disposed) return;
+    failureWindow = setTimeout(closeFailureWindow, TILE_FAILURE_WINDOW_MS);
+  }
+
+  /** One tile READ reached a terminal outcome for `key`. `landed` covers a decoded tile
+   *  AND a null body (the address is simply not baked): both mean the range request was
+   *  answered, which is what this signal is about. A superseded / aborted load records
+   *  nothing — it never asked the network a question it waited for the answer to.
+   *
+   *  The LATEST outcome per key wins within the window, so a key's retries never inflate
+   *  it and a key the ladder healed counts as landed.
+   *
+   *  Nothing is recorded and no window is armed until the shell registers a listener, the
+   *  same gate `reportViewFailureIfUnrenderable` already applies: a periodic verdict
+   *  nobody reads is a timer running for nothing. In production the shell registers
+   *  immediately after construction, before the first activation, so no read is missed. */
+  function recordTileRead(key: string, landed: boolean): void {
+    if (failingListener === null) return;
+    windowSawAnyRead = true;
+    if (landed) {
+      landedKeys.add(key);
+      failingKeys.delete(key);
+    } else {
+      failingKeys.add(key);
+      landedKeys.delete(key);
+      windowSawFailedRead = true;
+    }
+    armFailureWindow();
+  }
+
   /** Re-arm a bounded, backed-off retry for a tile whose load failed for a NON-abort
    *  reason (T2-44). Consumes one attempt from the tile's budget; if the budget is
    *  spent the tile is left to the coarse parent-fallback (never tight-loops). The
    *  scheduled load re-checks the SAME generation / disposed / wanted guards before
    *  re-issuing (a supersede or teardown between the failure and the timer cancels
    *  the retry — see clearRetryTimers), and re-enters via loadTile so a successful
-   *  retry binds through the normal path (parent-fallback + retain sweep intact). */
-  function scheduleRetry(ref: TileRef, key: string, gen: number): void {
+   *  retry binds through the normal path (parent-fallback + retain sweep intact).
+   *  `detail` is the failing load's error text, carried so the view-level verdict at
+   *  the cap can say WHY rather than just that it happened. */
+  function scheduleRetry(ref: TileRef, key: string, gen: number, detail: string): void {
     const spent = retryAttempts.get(key) ?? 0;
     if (spent >= RETRY_ATTEMPT_BACKOFF_MS.length) {
       // Cap reached — stop (never offline-loop). A TERMINAL fetch failure: if this is a
@@ -1021,6 +1224,10 @@ export function createTilePyramid(
       // never load cannot hang the backdrop past the release condition (the TTL remains
       // the backstop for a tile that HANGS rather than fails).
       settleCoarseFloor(key);
+      // ...and record it against the VIEW (R1-05). Settling above is about the switch
+      // backdrop; this is about whether the user is looking at anything at all.
+      failedKeys.add(key);
+      reportViewFailureIfUnrenderable(detail);
       return;
     }
     retryAttempts.set(key, spent + 1);
@@ -1055,6 +1262,7 @@ export function createTilePyramid(
         // waiting for a bind that can never happen (the T2-119 residual). A no-op for a
         // fine-tile miss or outside a switch (settleCoarseFloor guards both).
         settleCoarseFloor(key);
+        recordTileRead(key, true); // the archive ANSWERED — a sparse gap is not an outage (P3)
         return;
       }
 
@@ -1086,6 +1294,7 @@ export function createTilePyramid(
           active.set(key, { ref, texture, overviewMesh: null, buffers: bundle.cells, lastUsed: ++clock });
         }
         retryAttempts.delete(key); // a successful load clears the failure budget
+        recordTileRead(key, true); // ...and counts toward "images ARE loading" (P3)
       } else {
         // Coarse (overview) tile: keep the decoded ImageBitmap drawable so the minimap
         // (coarseOverview → paintOverview) can draw it — a small bounded set.
@@ -1095,6 +1304,7 @@ export function createTilePyramid(
           return;
         }
         retryAttempts.delete(key); // a successful decode clears the failure budget
+        recordTileRead(key, true); // ...and counts toward "images ARE loading" (P3)
         if (condemned.length > 0) {
           // T2-119 (atomic layout swap): while the condemned backdrop is drawn, do NOT
           // scene.add this new coarse mosaic — its (transparent-padded) quad would
@@ -1132,7 +1342,11 @@ export function createTilePyramid(
       // budget (~7s), so the refresh fires at most once per expiry, never per retry.
       if (!isAbortError(err) && !signal.aborted) {
         console.error(`[tilePyramid] tile ${key} failed to load`, err);
-        if (!disposed && gen === generation && wanted.has(key)) scheduleRetry(ref, key, gen);
+        // Every failed read counts, including the ones a retry will re-issue (P3): the
+        // signal is about whether images are landing, not about whether a KEY has
+        // exhausted its ladder — the case it exists for never reaches the cap at all.
+        recordTileRead(key, false);
+        if (!disposed && gen === generation && wanted.has(key)) scheduleRetry(ref, key, gen, errText(err));
       }
     } finally {
       // Only clear our own entry: a generation bump may have cleared inflight and a
@@ -1211,6 +1425,11 @@ export function createTilePyramid(
     // backoff timers keep running — a retry mid-flight for a still-wanted tile is
     // not cancelled here (that is abortInflight's job on a supersede).
     retryAttempts.clear();
+    // Same window, same reset (R1-05): every key is retryable again, so none of them is
+    // terminally failed any more. Keeping the old verdicts would let the FIRST tile to
+    // cap on this pass find a `wanted` set still marked failed from the last one and
+    // declare the view dead while its siblings were mid-flight.
+    failedKeys.clear();
     const lb = layoutBBoxOf(layoutEntry);
     const py = pyramidOf(layoutEntry);
     const z = selectLevel(py, lb, zoom, dpr);
@@ -1345,17 +1564,46 @@ export function createTilePyramid(
   const hasRaf = typeof globalThis.requestAnimationFrame === "function";
   let rafHandle: number | null = null;
   let refreshScheduled = false;
+  // Seam R2 P2, site 1. `streamView` throwing synchronously — a NaN focal from a
+  // degenerate bbox, a malformed pyramid entry, a cells bucket that has gone — is the
+  // loader's likeliest silent death: `rafHandle`/`refreshScheduled` are cleared BEFORE
+  // the call, so the next camera event re-arms it and it throws once per frame of
+  // movement, forever, while `renderer.render` keeps succeeding and health stays `ready`.
+  //
+  // The GUARDED callable is what gets scheduled, so the latch reaches every re-arm — and
+  // the guard does not re-throw, because `world.onCameraChange`'s emit is a bare
+  // `for (const cb of callbacks) cb(...)`: a throw there aborts every LATER camera
+  // subscriber (the status observable, the minimap viewport box), which is the same
+  // silence one level up. `tile-stream-failed`, not `render-loop-failed`: whatever is
+  // already bound still draws, so this is the view's failure, not the stack's.
+  //
+  // The latch is RELEASED by the three things that repair this site — a restored context,
+  // a (re-)activated layout, an explicit re-stream. Without that, panning while the
+  // context was lost (which `onContextLost` does NOT stop: it never unsubscribes the
+  // camera) threw against the buckets the loss had just stripped, latched, and had its
+  // report DROPPED by precedence — leaving the loader deaf to the camera for the life of
+  // the page even after the restore repaired everything.
+  const streamGuard = guardScheduledWork({
+    work: () => {
+      if (lastState !== null && lastViewport !== null) refresh(lastState, lastViewport);
+    },
+    code: "tile-stream-failed",
+    fail: (failure) => health?.fail(failure),
+  });
+  // The scheduler's own bookkeeping is cleared OUTSIDE the guard: a latched site must
+  // still release `refreshScheduled`, or `scheduleRefresh` wedges on its own flag and no
+  // amount of resetting the guard could bring the site back.
+  function runRefresh(): void {
+    rafHandle = null;
+    refreshScheduled = false;
+    streamGuard();
+  }
   function scheduleRefresh(): void {
     if (refreshScheduled) return;
     refreshScheduled = true;
-    const run = (): void => {
-      rafHandle = null;
-      refreshScheduled = false;
-      if (lastState !== null && lastViewport !== null) refresh(lastState, lastViewport);
-    };
     // no rAF (node unit tests) -> run synchronously, one refresh per emit.
-    if (hasRaf) rafHandle = globalThis.requestAnimationFrame(run);
-    else run();
+    if (hasRaf) rafHandle = globalThis.requestAnimationFrame(runRefresh);
+    else runRefresh();
   }
   // Cancel a frame scheduled but not yet run — called on dispose so no stray refresh
   // fires after teardown and the frame callback is released promptly. refresh() also
@@ -1395,6 +1643,10 @@ export function createTilePyramid(
     // preventDefault() is REQUIRED for the browser to subsequently fire
     // `webglcontextrestored`; without it the context is gone for good.
     event.preventDefault();
+    // Seam R2 P2: a FRESH loss is a fresh episode, so the restore handler gets to try
+    // again. Without this one bad restore makes every later one a silent no-op for the
+    // life of the loader.
+    guardedRestore.reset();
     worldH.haltRenderLoop?.();
     // Drop the dead GPU handles: every resident/cached tile's texture upload is
     // gone. bumpGeneration() aborts in-flight loads + invalidates stale responses.
@@ -1425,6 +1677,9 @@ export function createTilePyramid(
   function onContextRestored(): void {
     clearWatchdog();
     if (disposed) return;
+    // Seam R2 P2: the bindings this repairs are exactly what a pan during the loss threw
+    // against, so this is where the stream guard's latch is released.
+    streamGuard.reset();
     // Three r0.169 re-creates the GL context itself; we own only texture
     // residency. Reset cells' texture bindings (uAtlas=null/uHasTex=0, buckets +
     // positions kept), resume the loop, then refresh the SAME view so the visible
@@ -1434,9 +1689,21 @@ export function createTilePyramid(
     if (lastState !== null && lastViewport !== null) refresh(lastState, lastViewport);
   }
 
+  // Seam R2 P2, site 2. The restore handler resets the cells' texture bindings, resumes
+  // the render loop and re-streams the held view; a throw in any of those leaves a live
+  // context nothing is drawing into, and an exception in a DOM listener goes nowhere.
+  // `context-restore-failed`, not the view's code: the context came back and the loader
+  // could not rebind to it, which only a rebuilt stack can re-attempt. An event listener
+  // re-arms nothing, so the latch alone stops a repeat of the SAME restore — and
+  // `onContextLost` releases it, because a fresh loss is a fresh episode.
+  const guardedRestore = guardScheduledWork({
+    work: onContextRestored,
+    code: "context-restore-failed",
+    fail: (failure) => health?.fail(failure),
+  });
   if (canvasEl !== null) {
     canvasEl.addEventListener("webglcontextlost", onContextLost, false);
-    canvasEl.addEventListener("webglcontextrestored", onContextRestored, false);
+    canvasEl.addEventListener("webglcontextrestored", guardedRestore, false);
   }
 
   worldH.onDispose?.(() => {
@@ -1444,9 +1711,23 @@ export function createTilePyramid(
     abortInflight(); // cancel streaming tile loads
     clearWatchdog();
     cancelScheduledRefresh(); // drop a coalesced refresh scheduled but not yet run
+    // P3: no verdict after teardown — and RETRACT the one standing, because
+    // `armFailureWindow` refuses to re-arm once disposed, so a `true` left here could
+    // never be moved again by anything.
+    if (failureWindow !== null) {
+      clearTimeout(failureWindow);
+      failureWindow = null;
+    }
+    failingKeys.clear();
+    landedKeys.clear();
+    windowSawFailedRead = false;
+    windowSawAnyRead = false;
+    publishTilesFailing(false);
     if (canvasEl !== null) {
       canvasEl.removeEventListener("webglcontextlost", onContextLost, false);
-      canvasEl.removeEventListener("webglcontextrestored", onContextRestored, false);
+      // The GUARDED wrapper is what was registered — removing `onContextRestored` here
+      // would leave the real listener attached to a torn-down loader.
+      canvasEl.removeEventListener("webglcontextrestored", guardedRestore, false);
     }
     // cells.dispose() (called by ViewerScreen before world.dispose()) owns the
     // bucket teardown, so we only dispose the textures + remove overview meshes.
@@ -1493,12 +1774,45 @@ export function createTilePyramid(
     },
 
     onCameraChange(state: CameraState, viewport: Viewport): void {
-      refresh(state, viewport);
+      // Through the guard, not straight to `refresh` — see the interface docblock.
+      lastState = state;
+      lastViewport = viewport;
+      streamGuard();
+    },
+
+    setViewFailureListener(cb: (layoutId: string, detail: string) => void): void {
+      viewFailureListener = cb;
+    },
+
+    setTilesFailingListener(cb: (failing: boolean) => void): void {
+      failingListener = cb;
+    },
+
+    tilesFailing(): boolean {
+      return tilesFailingNow;
+    },
+
+    restreamView(): void {
+      // The same re-issue the context-restore path makes (onContextRestored): the view
+      // is unchanged, only the tiles need fetching again. `refresh` re-derives the level
+      // and the wanted set from the held camera and streamView clears the retry budgets,
+      // so the tiles that gave up at their cap are requested afresh.
+      //
+      // Seam R2 P2: this IS "Retry this view", the action `tile-stream-failed` offers, so
+      // it releases the latch first — and then goes THROUGH the guard. Calling `refresh`
+      // directly bypassed the latch, so the view re-streamed once and was dead again on
+      // the next pan, and a second throw escaped into the click that asked for the retry.
+      streamGuard.reset();
+      streamGuard();
     },
 
     async activateLayout(next: LayoutManifest, id: string, frame: BBox | null): Promise<void> {
       const entry = next.layouts.find((l) => l.layout_id === id);
       if (entry === undefined) throw new Error(`tilePyramid: layout '${id}' is not in the manifest`);
+      // Seam R2 P2: a new view is a new subject for the stream guard. `tile-stream-failed`
+      // is cleared by `failureResolvedBySwitch` on a successful switch, so without this
+      // the switch would erase the alert over a loader that stayed deaf.
+      streamGuard.reset();
       bumpGeneration();
       // A layout switch invalidates the previous layout's tiles: its tile
       // addresses index a different PMTiles container. The old FINE cells are

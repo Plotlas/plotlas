@@ -10,15 +10,53 @@
 // residency, the coarse floor, or any existing texture cache; a missing / failed /
 // aborted detail fetch leaves the 64px pyramid cell rendering exactly as before.
 //
-// Bounded by construction, three ways:
-//   * a GATE — engage only when a resident cell is big enough on screen to be blurry
-//     (medianCellWidth/zoom × dpr ≥ engageCellPx) AND few enough cells are in view;
-//   * DECODE-TO-NEED — each detail image reaches the GPU no larger than the cell is
-//     on screen (a decode-rung ladder), so VRAM is bounded by the viewport, not the
-//     2048px file;
+// Bounded by construction, four ways:
+//   * a GATE — engage only when the cells IN VIEW are big enough on screen to be blurry
+//     (the upper median of their widths in the active layout's position table / zoom ×
+//     dpr ≥ engageCellPx) AND few enough cells are in view. An O(1) short cut runs before
+//     that scan: the table's largest width, found once when the table binds, bounds any
+//     in-view median, so while even it is under the threshold no position row is read.
+//     The short cut is only as good as that bound: it assumes the largest width is close
+//     to the median (measured 2026-09-29 over 30 layouts: largest ÷ median ≤ 1.7). One
+//     outsized cell would keep it from firing, and every zoomed-out refresh would then scan
+//     the table with nothing to say so. Since the scan stops at the in-view cap + 1 (#409),
+//     that costs little when the in-view cells come early in id order (a whole-table view:
+//     0.21 ms on 1,010,469 rows, measured on #409) and up to a full pass when they come late. A view with NO candidates (a gap wider than the view)
+//     holds the gate's state rather than releasing it: an empty view is not evidence that
+//     cells are small. The gate reads the table, not the cells the pyramid has bound, because
+//     binding happens with no camera event to re-run the gate, and a layout switch keeps
+//     the old layout's tiles bound until the new ones cover them;
+//   * a FETCH QUEUE — at most maxInFlight detail fetches at once, first fetches and rung
+//     upgrades together. Each engaged refresh keeps its in-view candidates, nearest the
+//     focal point first, as the REFILL list; when a fetch settles or a backoff timer fires,
+//     the refill starts the next cells on that list at once, so the view keeps loading on
+//     a still camera. If the camera or the context changed since the list was built, the
+//     refill waits: the refresh already scheduled rebuilds the list and fills the free
+//     slots. Liveness, PROVIDED every fetch settles (there is no fetch timeout, so a
+//     request that stalls holds its slot until the camera moves it out of view): on a
+//     still camera every candidate at or above the per-cell floor ends drawn (at its target
+//     rung, or its natural ceiling), 404-skipped, or out of retries — none is left idle.
+//     After that: a 404 cell is never fetched again; a drawn cell is fetched again only for
+//     a sharper rung; an OUT-OF-RETRIES cell is not fetched again until the next camera or
+//     context change, and then it gets exactly one fetch (the retry budget is not reset by
+//     a camera move, only by a release);
+//   * DECODE-TO-NEED — each detail image reaches the GPU at the rung its cell needs on
+//     screen now (a decode-rung ladder), not the 2048px file. A cell that gets bigger is
+//     re-decoded UP a rung; one that gets smaller is re-decoded DOWN to its target rung once
+//     its texture is above even `rungFor(px × engageCellPx / releaseCellPx)` (the gate's own
+//     hysteresis ratio: a 2048 texture is kept down to 768 device px). A step-down re-reads
+//     the same immutable-cached file, keeps the larger texture drawn until the smaller one
+//     is decoded, and starts only when no blurry cell (a first fetch or an upgrade) wants the
+//     slot. One the camera has since zoomed back in past is aborted, or discarded if it
+//     lands first, so a cell is never left below its target. So the drawn set follows the
+//     current zoom: see textureBudgetBytes for the measured figures. Its cost: each
+//     step-down is a full-size decode of the original (up to 16 MiB of RGBA for a 2048 px
+//     image, transiently) and, on a browser-cache miss, a second download of it; per-rung
+//     baked files would remove both (T2-100, T2-a-still-deep-zoom-view-downloads-every-in-view);
 //   * an own byte-budgeted LRU of decoded textures, keyed by (dataset, version,
 //     cellId) so it SURVIVES layout switches (cell ids are layout-invariant — this
-//     is a feature) and never evicts a drawn quad.
+//     is a feature). It never evicts a drawn quad, and its budget counts only the
+//     recently-left textures (see textureBudgetBytes).
 //
 // Fetches ride the DB-free static Caddy edge (`client.staticDetailUrl`, the `viz_ds`
 // cookie, immutable cache) with the same single-flight 401→refresh→retry-once dance
@@ -34,10 +72,10 @@
 import * as THREE from "three";
 import type { ApiClient } from "../api-client/client.ts";
 import type { CellCandidate, PositionTable } from "./cells.ts";
-import { collectPositionsInView, countPositionsInView } from "./cells.ts";
+import { scanPositionsInView } from "./cells.ts";
 import type { DetailDescriptor, LayoutManifest } from "./layout.ts";
 import type { CameraState, Viewport, World, WorldHandle } from "./world.ts";
-import { bboxFromCamera, isAbortError, MAX_DPR_FOR_LEVEL, RETRY_ATTEMPT_BACKOFF_MS } from "./tilePyramid.ts";
+import { bboxFromCamera, MAX_DPR_FOR_LEVEL, RETRY_ATTEMPT_BACKOFF_MS } from "./tilePyramid.ts";
 import { rendererDebug, publishRendererDebug, vizDebugAvailable } from "./debug.ts";
 
 // ---------------------------------------------------------------------------
@@ -48,25 +86,46 @@ import { rendererDebug, publishRendererDebug, vizDebugAvailable } from "./debug.
  *  future settings panel (T2-101) can adjust them live. Decided 2026-07-10: the
  *  adjustability ships as scaffolding now; the exposed default is these constants. */
 export interface DetailOverlayConfig {
-  /** Engage when a resident cell's on-screen size (median world width / zoom × dpr)
-   *  reaches this many CSS px (decided 2026-07-10: 128 ≈ 2× magnification of the
-   *  64px thumb — acceptable, before it softens). */
+  /** Engage when the in-view cells' on-screen size (the upper median of their world
+   *  widths / zoom × dpr) reaches this many CSS px (decided 2026-07-10: 128 ≈ 2×
+   *  magnification of the 64px thumb — acceptable, before it softens). */
   engageCellPx: number;
   /** Disengage below this (hysteresis, so a jittering zoom does not flap). */
   releaseCellPx: number;
   /** Hard skip: never engage while more than this many cells are in view (dense
    *  scatter piles at high magnification stay on the pyramid; bounds the burst). */
   maxOverlayCells: number;
-  /** Byte ceiling for the decoded-texture LRU CACHE. NB this bounds the CACHE, not total
-   *  GPU residency: a currently-DRAWN quad is never evicted (that would blank an
-   *  on-screen cell), so live VRAM = drawn quads + this cache. Drawn residency is bounded
-   *  separately — by the engage gate, the in-view cap, and decode-to-need (the spike's
-   *  ~136 MB worst case) — which is the real ceiling; this budget only caps the
-   *  recently-LEFT textures kept for an instant pan-back / re-engage. */
+  /** Byte ceiling for the recently-LEFT textures: decoded textures whose quad is no longer
+   *  drawn, kept for an instant pan-back / re-engage. Only those count against it. A
+   *  currently-DRAWN quad is never evicted (that would blank an on-screen cell) and does
+   *  not count, so live overlay VRAM = the drawn quads + up to this many bytes of
+   *  recently-left textures. Counting the drawn quads against this budget as well (the code
+   *  until the PR #409 review) let a full view evict its own pan-back cache: measured on #409
+   *  with this default and two 350-cell views, 34 of 350 left textures survived and the pan
+   *  back re-fetched 316.
+   *
+   *  The DRAWN set is bounded by the in-view cap (maxOverlayCells) in count, and by
+   *  decode-to-need in size: each drawn texture is at the rung its cell needs at the current
+   *  zoom, because a texture above even the hysteresis band steps down (see needsStepDown).
+   *  Measured through this overlay, 1920×1080 CSS px at dpr 2, square 2048 px originals:
+   *      cell 80 CSS px: 375 drawn, 94 MiB · 129 px: 135, 135 MiB · 258 px: 45, 180 MiB ·
+   *      515 px: 15, 240 MiB (one emit on a fresh overlay; the PR #409 re-review).
+   *  A zoom in to 515 px and back out gives the same 240 → 180 → 135 → 94 MiB (measured on the
+   *  step-down PR with the re-review's instrument); before the step-down, textures never went
+   *  back down a rung and the same path grew to 240 → 360 → 450 → 510 MiB. Inside the
+   *  hysteresis band a drawn texture can stay one rung above its target (2048 held down to
+   *  768 device px) for as long as the zoom stays there: up to 4× the bytes a fresh load
+   *  would give that cell. This cache adds up to its budget on top. A 3:2 image scales the figures by about ×0.67. (The
+   *  spike's §4.4 put the overlay at ~33 MB at the gate on 1080p; its ~136 MB is the TILE
+   *  PYRAMID's per-view demand, S2/S3.) */
   textureBudgetBytes: number;
-  /** Entry-count ceiling for the LRU (alongside the byte budget). */
+  /** Entry-count ceiling for the recently-left textures (alongside the byte budget). Drawn
+   *  quads do not count against it either. */
   maxEntries: number;
-  /** Concurrent detail fetches (the burst regulator, like the loader's inflight cap). */
+  /** Concurrent detail fetches, first fetches and rung upgrades together (like the
+   *  loader's inflight cap). It bounds the BURST — a deep zoom or a fast pan never queues
+   *  every cell it crosses — not how much of the view loads: on a still camera the refill
+   *  tops it up as each fetch settles, until every in-view cell is done. */
   maxInFlight: number;
   /** Fade-in duration for a newly-appearing overlay quad (ms; avoids a hard pop). */
   fadeMs: number;
@@ -151,8 +210,8 @@ export function coverCropUvs(imgAspect: number): { uMin: number; uMax: number; v
  *  overlay's de-dup — small enough that only cells at essentially the same screen point merge,
  *  so a normal scatter cloud that resolves apart on zoom is never collapsed. The world-unit
  *  merge grid is `COINCIDENCE_MERGE_PX · zoom` (world units per CSS px == zoom, I-09), fed to
- *  `collectPositionsInView`'s scan-time dedupe — the pile collapses BEFORE the candidate cap
- *  is consumed, so a 300-cell pile costs one slot, not 300 (see coincidenceMergeWorld). */
+ *  `scanPositionsInView`'s scan-time dedupe, so a 300-cell pile is ONE candidate, not 300
+ *  (see coincidenceMergeWorld). The in-view cap still counts every member. */
 export const COINCIDENCE_MERGE_PX = 4;
 
 /** The world-unit coincidence grid for the current camera: cells whose centres land in the
@@ -163,6 +222,25 @@ export const COINCIDENCE_MERGE_PX = 4;
 export function coincidenceMergeWorld(state: CameraState, mergePx: number): number {
   if (mergePx <= 0) return 0;
   return mergePx * (state.zoom > 0 ? state.zoom : 1);
+}
+
+/** The largest cell width in a position table: one O(N) pass, run once when a table binds,
+ *  never per frame. No set of in-view cells has a median above it, so it is the gate's O(1)
+ *  short cut. Pure + exported for tests and for measuring the bind cost. */
+export function largestCellWidth(table: PositionTable): number {
+  const { w, count } = table;
+  let max = 0;
+  for (let i = 0; i < count; i++) if (w[i] > max) max = w[i];
+  return max;
+}
+
+/** The gate's cell size: the UPPER median (`sorted[floor(n / 2)]`) of the candidates' world
+ *  widths, 0 when there are none. Upper, so a view of one large and one small cell reads
+ *  the large one. */
+function upperMedianWidth(cands: CellCandidate[]): number {
+  if (cands.length === 0) return 0;
+  const widths = Float64Array.from(cands, (c) => c.w).sort();
+  return widths[Math.floor(widths.length / 2)];
 }
 
 // ---------------------------------------------------------------------------
@@ -257,7 +335,6 @@ interface OverlayTexture {
 
 export function createDetailOverlay(
   world: World,
-  cells: { medianCellWidth?(): number },
   client: ApiClient,
   config: DetailOverlayConfig = { ...DEFAULT_DETAIL_OVERLAY_CONFIG },
   deps: DetailOverlayDeps = {},
@@ -276,11 +353,33 @@ export function createDetailOverlay(
   // (mirrors the loader). A 404 is a PERMANENT skip (skip-tier datasets, #67 subsampled
   // cells) — never retried, never re-fetched.
   const inflight = new Map<string, AbortController>();
+  // The rung each in-flight fetch asked for, so the refresh can tell a STALE step-down (one
+  // the camera has since zoomed back in past) and abort it.
+  const requestedRung = new WeakMap<AbortController, number>();
   const retryAttempts = new Map<string, number>();
   const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const permanentSkip = new Set<string>();
+  // Out of retries: the fetch and every backoff retry failed. TERMINAL like a 404 skip, but
+  // only until the next camera or context change (each engaged refresh clears it), so the
+  // refill never turns a freed slot into one more fetch of a cell the server keeps failing.
+  const outOfRetries = new Set<string>();
   const fading = new Set<DrawnQuad>();
   let wanted = new Set<string>();
+  // The REFILL list: the last engaged refresh's in-view candidates, nearest the focal point
+  // first, with the zoom + dpr they were built for, and their `wanted` keys in the same order
+  // (built once per refresh, not per settle). `refillCursor` (first fetches and upgrades)
+  // and `stepDownCursor` (step-downs) are the first entries each pass is not done with; see
+  // refill.
+  let refillList: CellCandidate[] = [];
+  let refillKeys: string[] = [];
+  let refillCursor = 0;
+  let stepDownCursor = 0;
+  let refillZoom = 0;
+  let refillDpr = 1;
+  // The bound position table and its largest cell width (the gate's short cut), computed
+  // once per table identity in setContext.
+  let boundTable: PositionTable | null = null;
+  let tableMaxWidth = 0;
 
   let ctx: DetailContext | null = null;
   let engaged = false;
@@ -448,19 +547,28 @@ export function createDetailOverlay(
     tex.dispose();
   }
 
-  /** Trim the LRU to its byte + entry budget, evicting oldest-used first but NEVER a
-   *  texture whose quad is currently DRAWN (that would blank an on-screen cell). */
+  /** Trim the recently-left textures to the byte + entry budget, evicting oldest-used
+   *  first. A texture whose quad is currently DRAWN is never evicted (that would blank an
+   *  on-screen cell) and does not count against the budget. */
   function trimTextures(): void {
-    let totalBytes = 0;
-    for (const e of textures.values()) totalBytes += e.bytes;
-    if (totalBytes <= config.textureBudgetBytes && textures.size <= config.maxEntries) return;
+    // Only the NON-drawn (recently-left) textures count against both limits; see
+    // textureBudgetBytes (operator decision on the PR #409 review, 2026-09-29).
+    let leftBytes = 0;
+    let leftCount = 0;
+    for (const e of textures.values()) {
+      if (drawn.has(e.key)) continue;
+      leftBytes += e.bytes;
+      leftCount++;
+    }
+    if (leftBytes <= config.textureBudgetBytes && leftCount <= config.maxEntries) return;
     const evictable = [...textures.values()]
       .filter((e) => !drawn.has(e.key))
       .sort((a, b) => a.lastUsed - b.lastUsed);
     for (const e of evictable) {
-      if (totalBytes <= config.textureBudgetBytes && textures.size <= config.maxEntries) break;
+      if (leftBytes <= config.textureBudgetBytes && leftCount <= config.maxEntries) break;
       textures.delete(e.key);
-      totalBytes -= e.bytes;
+      leftBytes -= e.bytes;
+      leftCount--;
       disposeTexture(e.texture);
     }
   }
@@ -474,6 +582,7 @@ export function createDetailOverlay(
   function startFetch(cand: CellCandidate, key: string, rung: number): void {
     const ac = new AbortController();
     inflight.set(key, ac);
+    requestedRung.set(ac, rung);
     const gen = generation;
     const dsId = ctx!.manifest.dataset_id;
     void (async () => {
@@ -489,14 +598,29 @@ export function createDetailOverlay(
         }
         if (superseded(gen, ac, key)) return;
         if (res.status === 404) { permanentSkip.add(key); return; } // permanent: skip-tier / #67 subsampled
-        if (!res.ok) { scheduleRetry(cand, key, rung, gen); return; } // transient → bounded backoff
+        if (!res.ok) { scheduleRetry(key, gen); return; } // transient → bounded backoff
         const blob = await res.blob();
         if (superseded(gen, ac, key)) return;
         const decoded = await decode(blob, rung);
         if (superseded(gen, ac, key)) { disposeTexture(decoded.texture); return; }
         const prior = textures.get(key);
-        if (prior !== undefined) disposeTexture(prior.texture); // a sharper rung replaces the coarser
         const decodedEdge = Math.max(decoded.width, decoded.height);
+        // BACKSTOP for a stale step-down: a result smaller than the texture the cell holds AND
+        // smaller than the rung the cell needs at the LATEST camera is discarded, and the cell
+        // keeps the larger texture. The refresh aborts such a fetch when it rebuilds the list
+        // (see refresh), but a camera event's refresh can still be waiting for its animation
+        // frame when the fetch lands, so the target comes from lastState, not the list's zoom.
+        // Not a failure (no retry, no outOfRetries), and not a loop: the refill asks for nothing
+        // until the pending refresh rebuilds the list at the latest camera, and from that list
+        // any fetch for this cell asks for its current target, which this check never discards.
+        const latestTarget = latestTargetRung(cand.id);
+        if (prior !== undefined && decodedEdge < prior.decodedEdge && latestTarget !== null && decodedEdge < latestTarget) {
+          // The fetch itself succeeded (a 200), so its spent retries go: a stale result must
+          // not shrink the next step-down's retry budget.
+          retryAttempts.delete(key);
+          disposeTexture(decoded.texture);
+          return;
+        }
         const entry: OverlayTexture = {
           key, cellId: cand.id, texture: decoded.texture,
           width: decoded.width, height: decoded.height,
@@ -506,17 +630,34 @@ export function createDetailOverlay(
         };
         textures.set(key, entry);
         retryAttempts.delete(key);
+        // Point a drawn quad at the new texture BEFORE the prior one is disposed, whether or
+        // not the cell has a rect right now: during a layout switch the position table is
+        // briefly null, and the quad keeps sampling its texture until the release refresh
+        // runs. The prior's ImageBitmap was closed after upload, so three could not re-upload it.
+        const quad = drawn.get(key);
+        if (quad !== undefined && quad.material.map !== entry.texture) {
+          quad.material.map = entry.texture;
+          quad.material.needsUpdate = true;
+        }
+        if (prior !== undefined) disposeTexture(prior.texture); // the new rung replaces the old
         const current = currentCandidate(cand.id);
         if (current !== null) drawQuad(current, entry, !drawn.has(key));
         trimTextures();
-      } catch (err) {
-        // An abort (supersede / leave-view / dataset change) is NOT a failure. A real
-        // transient failure this generation still wants gets a bounded backoff retry.
-        if (!isAbortError(err) && !ac.signal.aborted && !disposed && gen === generation && wanted.has(key)) {
-          scheduleRetry(cand, key, rung, gen);
+      } catch {
+        // OUR abort (supersede / leave-view / dataset change) is NOT a failure. Anything else
+        // this generation still wants is a transient failure and gets a bounded backoff retry
+        // — decided on our own signal, NOT on the error's name: a rejection named AbortError
+        // that our signal did not cause (Firefox rejects in-flight fetches that way on
+        // navigation) would otherwise leave the cell with no timer and no terminal state, and
+        // the refill below would restart it at once, in a loop.
+        if (!ac.signal.aborted && !disposed && gen === generation && wanted.has(key)) {
+          scheduleRetry(key, gen);
         }
       } finally {
         if (inflight.get(key) === ac) inflight.delete(key);
+        // Every settle — success, 404, failure, a scheduled retry, an abort — frees a slot
+        // or ends a cell. On a still camera nothing else hands that slot on.
+        refill();
         publish();
       }
     })();
@@ -528,18 +669,22 @@ export function createDetailOverlay(
     return disposed || gen !== generation || ac.signal.aborted || !wanted.has(key);
   }
 
-  function scheduleRetry(cand: CellCandidate, key: string, rung: number, gen: number): void {
+  function scheduleRetry(key: string, gen: number): void {
     const spent = retryAttempts.get(key) ?? 0;
-    if (spent >= RETRY_ATTEMPT_BACKOFF_MS.length) return; // cap: leave the cell on the pyramid
+    if (spent >= RETRY_ATTEMPT_BACKOFF_MS.length) {
+      outOfRetries.add(key); // cap: terminal — leave the cell on the pyramid
+      return;
+    }
     retryAttempts.set(key, spent + 1);
     const delay = RETRY_ATTEMPT_BACKOFF_MS[spent];
     const timer = setTimeout(() => {
       retryTimers.delete(key);
-      if (disposed || gen !== generation || ctx === null || !wanted.has(key)) return;
-      if (textures.has(key) || inflight.has(key)) return;
-      if (inflight.size >= config.maxInFlight) return;
-      const c = currentCandidate(cand.id);
-      if (c !== null) startFetch(c, key, rung);
+      if (disposed || gen !== generation) return;
+      // The retry goes through the refill, so fetchRungFor decides it like any other start
+      // (a failed rung UPGRADE included — its cell already has a texture). With every slot
+      // in use the refill starts nothing, and the cell (no timer, retries left) is started
+      // by the refill of the next fetch to settle; one is in flight, since every slot is.
+      refill();
     }, delay);
     retryTimers.set(key, timer);
   }
@@ -551,33 +696,168 @@ export function createDetailOverlay(
 
   // ---- the per-frame pass ----
 
-  /** Ensure a wanted cell is drawn or fetching. A cached texture is drawn immediately
-   *  (re-shown with a fade, or updated in place); a sharper rung is fetched when the
-   *  on-screen size crossed up and the image is not already at its natural ceiling. */
-  function ensureDetail(cand: CellCandidate, state: CameraState, dpr: number): void {
-    const key = keyOf(cand.id);
-    const cellScreenPx = state.zoom > 0 ? (cand.w / state.zoom) * dpr : 0;
+  /** A cell's size on screen in device px: its world width / zoom × dpr. */
+  function cellDevicePx(width: number, zoom: number, dpr: number): number {
+    return zoom > 0 ? (width / zoom) * dpr : 0;
+  }
+
+  /** The dpr the overlay sizes by: capped at 2 (like the loader's MAX_DPR_FOR_LEVEL) so a 3×+
+   *  display does not over-engage. */
+  function dprOf(viewport: Viewport): number {
+    return Math.min(MAX_DPR_FOR_LEVEL, Math.max(1, viewport.devicePixelRatio || 1));
+  }
+
+  /** The rung a cell needs at the LATEST camera — which can be newer than the refill list's,
+   *  when a camera event's refresh is still waiting for its animation frame — or null with no
+   *  camera yet or no rect for the cell. */
+  function latestTargetRung(id: number): number | null {
+    if (lastState === null || lastViewport === null) return null;
+    const c = currentCandidate(id);
+    if (c === null) return null;
+    return rungFor(cellDevicePx(c.w, lastState.zoom, dprOf(lastViewport)));
+  }
+
+  /** The STEP-DOWN test, the one copy (fetchRungFor decides with it, and the refill's
+   *  priority classifies with it): a drawn cell's texture is above the rung the cell would
+   *  need even at `engageCellPx / releaseCellPx` times its size. That band is the gate's own
+   *  hysteresis ratio (128 / 96 by default), so there is no new constant: a 2048 texture is
+   *  kept down to 768 device px and replaced below that, and a zoom that hovers at a rung
+   *  boundary does not re-decode on every wheel tick. It also requires the TARGET rung itself
+   *  to be below the held texture, so a step-down always lowers the rung, whatever the
+   *  config: with a ratio below 1 (`engageCellPx < releaseCellPx`, which a live settings
+   *  panel, T2-101, could allow) the band test alone is true when the target EQUALS the held
+   *  rung, and the same fetch restarted on every settle (PR #409 final review, E2: 61
+   *  requests at 96/128 on a still camera, against 1 at the default 128/96). After a
+   *  step-down the texture is at `rungFor(px)` (or the image's smaller natural size), which
+   *  this test never accepts again for the same px, and which is not below the target, so
+   *  the cell is settled. */
+  function needsStepDown(entry: OverlayTexture | undefined, cellScreenPx: number): boolean {
+    if (entry === undefined) return false;
+    return (
+      rungFor(cellScreenPx) < entry.decodedEdge &&
+      rungFor(cellScreenPx * (config.engageCellPx / config.releaseCellPx)) < entry.decodedEdge
+    );
+  }
+
+  /** THE fetch decision for one cell, now: the rung to fetch it at, or null when it needs
+   *  no fetch. Every fetch start goes through the refill, which asks it, so there is one
+   *  decision. It does not look at the slot cap; the refill checks that first. Its three
+   *  answers: a first fetch, an upgrade (the target rung is above the held texture), or a
+   *  step-down (the held texture is above the target by more than the hysteresis band).
+   *  Null when the cell is already fetching or waiting on a backoff timer; when it is
+   *  terminal (a 404 skip, or out of retries); when its cached texture fits the target; or,
+   *  with nothing cached, when it is under the per-cell floor. It reads only the cell's key
+   *  and world width, so the refill can ask it before reading the cell's rect. */
+  function fetchRungFor(key: string, width: number, zoom: number, dpr: number): number | null {
+    if (inflight.has(key) || retryTimers.has(key)) return null;
+    if (permanentSkip.has(key) || outOfRetries.has(key)) return null;
+    const cellScreenPx = cellDevicePx(width, zoom, dpr);
     const targetRung = rungFor(cellScreenPx);
     const entry = textures.get(key);
     if (entry !== undefined) {
-      entry.lastUsed = ++clock;
-      drawQuad(cand, entry, !drawn.has(key)); // re-show (fade) or update in place
-      if (targetRung > entry.decodedEdge && !entry.atCeiling && !inflight.has(key) && !retryTimers.has(key)) {
-        if (inflight.size < config.maxInFlight) startFetch(cand, key, targetRung);
-      }
-      return;
+      // Rung upgrade: a sharper rung when the on-screen size crossed up, unless the image is
+      // already at its natural ceiling.
+      if (targetRung > entry.decodedEdge && !entry.atCeiling) return targetRung;
+      // Step DOWN to the rung the cell needs now, when the held texture is above even the
+      // hysteresis band (see needsStepDown).
+      if (needsStepDown(entry, cellScreenPx)) return targetRung;
+      return null;
     }
-    // Per-cell FETCH floor: the gate engages on the resident MEDIAN cell size, but a
-    // variable-size layout (scatter/geo) can have small cells sharing the view that are
-    // not themselves blurry. Don't spend a fetch + decode on a cell below the release px
-    // — it is indistinguishable at that size and stays on the pyramid — so the burst is
-    // bounded to the cells that actually benefit, not every in-view cell up to the cap.
-    // Only the INITIAL fetch is floored: an already-cached quad above still redraws for
-    // free (its texture is already decoded), so nothing already-sharp pops out.
-    if (cellScreenPx < config.releaseCellPx) return;
-    if (permanentSkip.has(key) || inflight.has(key) || retryTimers.has(key)) return;
-    if (inflight.size >= config.maxInFlight) return; // capped this frame; a later frame retries
-    startFetch(cand, key, targetRung);
+    // Per-cell FETCH floor: the gate engages on the upper MEDIAN of the in-view cells' size,
+    // but a layout whose cells vary in width — categorical (and datetime on one dataset),
+    // per the 2026-09-29 measurement over 30 layouts — can have small cells sharing the
+    // view that are not themselves blurry. Don't spend a fetch + decode on a cell below the
+    // release px — it is indistinguishable at that size and stays on the pyramid — so the
+    // burst is bounded to the cells that actually benefit, not every in-view cell up to the
+    // cap. Only the INITIAL fetch is floored: an already-cached quad above still redraws
+    // for free (its texture is already decoded), so nothing already-sharp pops out.
+    if (cellScreenPx < config.releaseCellPx) return null;
+    return targetRung;
+  }
+
+  /** Draw a wanted cell's cached texture at once (re-shown with a fade, or updated in
+   *  place). Fetches are not started here: the refresh calls the refill once the view's
+   *  list is built, so every start — first fetch, upgrade, step-down — goes through the one
+   *  decision and the one priority. */
+  function drawCached(cand: CellCandidate, key: string): void {
+    const entry = textures.get(key);
+    if (entry === undefined) return;
+    entry.lastUsed = ++clock;
+    drawQuad(cand, entry, !drawn.has(key)); // re-show (fade) or update in place
+  }
+
+  /** The REFILL: start fetches from the refill list, in its order, until every slot is in
+   *  use. It is the only place a fetch starts: the refresh calls it once the view's list is
+   *  built, and it runs again when a fetch settles and when a backoff timer fires — the two
+   *  inputs that change on a still camera. It asks fetchRungFor with the list's own key and
+   *  width, and re-reads the live rect only for a cell it is about to start. It does nothing
+   *  when a refresh is scheduled: the camera or the context changed since the list was
+   *  built, and that refresh builds the new view's list and fills the free slots itself. It
+   *  never calls refresh() or scheduleRefresh(): a refresh scans the whole position table.
+   *
+   *  PRIORITY, in two passes. A cell that needs a first fetch or an upgrade looks blurry; a
+   *  cell that needs a step-down looks fine and only costs memory. So pass 1 starts first
+   *  fetches and upgrades and skips step-downs; pass 2 starts step-downs, and runs only when
+   *  pass 1 reached the end of the list with a slot still free — when no blurry cell is
+   *  left to take it. After a zoom-out the step-down cells sit at the focal point, the front
+   *  of the list, and would otherwise take the first slots ahead of the newly visible cells.
+   *
+   *  CURSORS. Each pass starts past the prefix it is done with for this list.
+   *    - `refillCursor` (pass 1) passes an entry that is SETTLED — fetchRungFor has nothing
+   *      to start and the cell is not waiting (in flight or on a backoff timer): drawn at its
+   *      target rung, terminal (404 or out of retries), or under the per-cell floor — and an
+   *      entry whose texture needs a step-down, waiting or not. Neither can become a first
+   *      fetch or an upgrade for this list: a drawn quad's texture is never evicted,
+   *      outOfRetries is cleared only where the list is replaced, and a step-down never
+   *      lands below the target. One started from this list asks for the target (or gets the
+   *      image's smaller natural size, which is atCeiling and so never upgraded). One started
+   *      from an earlier list that now asks for less than the target is aborted when this
+   *      list is built (the stale-step-down sweep in refresh), and if it lands before that
+   *      refresh runs it is discarded at completion (the backstop in startFetch). Without
+   *      those two, a stale step-down landed below the target and the cell's repair upgrade
+   *      waited behind every other upgrade (PR #415 review: 37 of them in a 7 × 7 view).
+   *    - `stepDownCursor` (pass 2) passes settled entries only.
+   *  A view load therefore walks each entry about once instead of once per settle
+   *  (measured on #409: 85,309 loop iterations over a 400-cell first load before the
+   *  cursor, 5,509 after). That argument assumes DetailOverlayConfig does not change
+   *  mid-view: a runtime change to `releaseCellPx` (the settings panel T2-101 plans) would
+   *  leave cells a cursor passed as "under the floor" unfetched until the next camera move,
+   *  so that change must reset the cursors or trigger a refresh. */
+  function refill(): void {
+    if (disposed || !engaged || ctx === null || refreshScheduled) return;
+    // Pass 1: first fetches and upgrades.
+    for (let i = refillCursor; i < refillList.length; i++) {
+      if (inflight.size >= config.maxInFlight) return; // every slot taken: the step-downs wait
+      const key = refillKeys[i];
+      const width = refillList[i].w;
+      const rung = fetchRungFor(key, width, refillZoom, refillDpr);
+      const stepDown = needsStepDown(textures.get(key), cellDevicePx(width, refillZoom, refillDpr));
+      if (rung === null || stepDown) {
+        if (i === refillCursor && (stepDown || (!inflight.has(key) && !retryTimers.has(key)))) refillCursor = i + 1;
+        continue;
+      }
+      startListed(i, key, rung);
+    }
+    // Pass 2: no blurry cell is left for a free slot, so the step-downs, in list order. Any
+    // answer fetchRungFor gives here is a step-down: pass 1 has started every first fetch
+    // and upgrade it could, and its cursor passed only entries that cannot become one (see
+    // CURSORS above, which holds because a stale step-down is aborted or discarded).
+    for (let i = stepDownCursor; i < refillList.length; i++) {
+      if (inflight.size >= config.maxInFlight) return;
+      const key = refillKeys[i];
+      const rung = fetchRungFor(key, refillList[i].w, refillZoom, refillDpr);
+      if (rung === null) {
+        if (i === stepDownCursor && !inflight.has(key) && !retryTimers.has(key)) stepDownCursor = i + 1;
+        continue;
+      }
+      startListed(i, key, rung);
+    }
+  }
+
+  /** Start the fetch for refill-list entry `i`, at the rect the live table holds now. */
+  function startListed(i: number, key: string, rung: number): void {
+    const cand = currentCandidate(refillList[i].id);
+    if (cand !== null) startFetch(cand, key, rung);
   }
 
   function refresh(state: CameraState, viewport: Viewport): void {
@@ -585,22 +865,19 @@ export function createDetailOverlay(
     const detail = activeDetail();
     const positions = ctx?.positions ?? null;
     const enabled = detail !== null && positions !== null;
-    // Cap DPR at 2 (like the loader's MAX_DPR_FOR_LEVEL) so a 3×+ display does not
-    // over-engage. cellPx = resident median world width / zoom × dpr.
-    const dpr = Math.min(MAX_DPR_FOR_LEVEL, Math.max(1, viewport.devicePixelRatio || 1));
-    const median = cells.medianCellWidth?.() ?? 0;
-    const cellPx = median > 0 && state.zoom > 0 ? (median / state.zoom) * dpr : 0;
-    // The gate is an AND (enabled AND px-threshold AND under the in-view cap). The px
-    // axis is O(1); the in-view count is an O(N) scan of the WHOLE position table. So
-    // decide the px axis FIRST — below the active threshold (or disabled) the gate is
-    // false regardless of the count, so skip BOTH countPositionsInView and
-    // collectPositionsInView entirely. This is what keeps a zoomed-out frame on a 1M
-    // dataset from re-scanning 1M rows every coalesced frame (duplicating viewerStatus's
-    // scan) when engagement is impossible anyway. Uses the SAME threshold
-    // detailGateEngaged does (prevEngaged → release, else engage), so the outcome is
-    // identical — this only avoids the scan when the answer is already known false.
+    const dpr = dprOf(viewport);
+    // The gate is an AND (enabled AND px-threshold AND under the in-view cap), and its px
+    // axis reads the cells in view — an O(N) scan of the WHOLE position table. So an O(1)
+    // short cut runs first: the table's largest width bounds any in-view median, so when
+    // even it is under the active threshold (or the overlay is disabled) the gate is false
+    // whatever is in view, and the table scan (scanPositionsInView) does not run.
+    // This is what keeps a zoomed-out frame on a 1M dataset from re-scanning 1M rows every
+    // coalesced frame (duplicating viewerStatus's scan) when engagement is impossible
+    // anyway. Uses the SAME threshold detailGateEngaged does (prevEngaged → release, else
+    // engage), so it only avoids the scan when the answer is already known false.
     const pxThreshold = engaged ? config.releaseCellPx : config.engageCellPx;
-    if (!enabled || cellPx < pxThreshold) {
+    const maxCellPx = state.zoom > 0 ? (tableMaxWidth / state.zoom) * dpr : 0;
+    if (!enabled || maxCellPx < pxThreshold) {
       if (engaged) {
         engaged = false;
         releaseDrawn(); // remove quads + abort in-flight; KEEP the LRU textures cached
@@ -608,38 +885,83 @@ export function createDetailOverlay(
       publish();
       return;
     }
-    // Above the px threshold: NOW consult the O(N) count for the hard-skip, then the
-    // candidates. detailGateEngaged re-checks px (cheap) so the pure gate stays the
-    // single decision function — from here it can only flip false via the in-view cap.
+    // Past the short cut: ONE scan of the table gives the in-view count, exact up to the cap
+    // + 1 — all the hard skip above the in-view cap needs, so over the cap it stops early —
+    // and, within the cap, the visible cells. Coincident piles collapse DURING the scan
+    // (T2-72): a stack of images at one point becomes its lowest-id representative, so a true
+    // pile presents calmly (representative + the aggregate chip's count). The skip asks the
+    // pure gate with an unbounded cell size, so the cap rule stays in detailGateEngaged alone.
     const view = bboxFromCamera(state, viewport);
-    const inView = countPositionsInView(positions!, view);
-    engaged = detailGateEngaged(engaged, cellPx, inView, enabled, config);
-    if (!engaged) {
-      releaseDrawn(); // over the in-view cap (dense pile) → release + stay on the pyramid
-      publish();
-      return;
-    }
-    // Engaged: enumerate the visible cells, ordered NEAREST the focal point first (the
-    // region the user is looking at sharpens before the periphery), bounded by the cap.
-    // Coincident piles collapse DURING the scan (T2-72): a stack of images at one point
-    // becomes its lowest-id representative BEFORE the candidate cap is consumed, so a true
-    // pile presents calmly (representative + the aggregate chip's count) AND the pile's
-    // surplus members never starve the budget for the surrounding cells.
-    const candidates = collectPositionsInView(
+    const { inView, candidates } = scanPositionsInView(
       positions!,
       view,
       config.maxOverlayCells,
       coincidenceMergeWorld(state, COINCIDENCE_MERGE_PX),
     );
+    if (!detailGateEngaged(engaged, Number.POSITIVE_INFINITY, inView, enabled, config)) {
+      engaged = false;
+      releaseDrawn(); // over the in-view cap (dense pile) → release + stay on the pyramid
+      publish();
+      return;
+    }
+    // The gate's px is the candidates' upper median width. With NO candidates (a gap wider
+    // than the view: between datetime columns, categorical groups, over an ocean) an engaged
+    // gate HOLDS: an empty view says nothing about cell size, and releasing there would make
+    // the next view need engageCellPx again instead of releaseCellPx. It still goes through
+    // detailGateEngaged, so the in-view cap applies.
+    const cellPx =
+      candidates.length === 0 && engaged
+        ? Number.POSITIVE_INFINITY
+        : state.zoom > 0
+          ? (upperMedianWidth(candidates) / state.zoom) * dpr
+          : 0;
+    engaged = detailGateEngaged(engaged, cellPx, inView, enabled, config);
+    if (!engaged) {
+      releaseDrawn();
+      publish();
+      return;
+    }
+    // Engaged: order the candidates NEAREST the focal point first (the region the user is
+    // looking at sharpens before the periphery).
     const focalX = state.focal?.[0] ?? (view.xMin + view.xMax) / 2;
     const focalY = state.focal?.[1] ?? (view.yMin + view.yMax) / 2;
     candidates.sort((a, b) => dist2(a, focalX, focalY) - dist2(b, focalX, focalY));
-    wanted = new Set(candidates.map((c) => keyOf(c.id)));
+    const keys = candidates.map((c) => keyOf(c.id));
+    wanted = new Set(keys);
     // Drop quads for cells that left the view (their textures stay cached), and abort
     // in-flight fetches for cells no longer wanted (a fast pan superseded them).
     for (const key of [...drawn.keys()]) if (!wanted.has(key)) removeDrawn(key);
     for (const [key, ac] of [...inflight]) if (!wanted.has(key)) { ac.abort(); inflight.delete(key); }
-    for (const cand of candidates) ensureDetail(cand, state, dpr);
+    // Abort a STALE step-down: a wanted cell's in-flight fetch that asked for a rung below the
+    // texture the cell holds (a step-down) AND below the cell's new target. A zoom back in
+    // overtook the zoom-out that started it, so its result would only make the cell blurry.
+    // The abort frees the slot, and the cell keeps its held texture; the refill then starts
+    // an upgrade, or at most a step-down, as for any cell (an upgrade when the held texture is
+    // below the new target). A step-down that still asks for at least the new target is
+    // kept: aborting it would only restart the same full-size decode. (A result that lands
+    // before this refresh runs is caught by the completion backstop in startFetch.)
+    for (let i = 0; i < candidates.length; i++) {
+      const ac = inflight.get(keys[i]);
+      if (ac === undefined) continue;
+      const asked = requestedRung.get(ac);
+      const held = textures.get(keys[i]);
+      const target = rungFor(cellDevicePx(candidates[i].w, state.zoom, dpr));
+      if (asked !== undefined && held !== undefined && asked < held.decodedEdge && asked < target) {
+        ac.abort();
+        inflight.delete(keys[i]);
+      }
+    }
+    // This view's list for the refill. A camera or context change is what makes a terminal
+    // out-of-retries cell fetchable again.
+    refillList = candidates;
+    refillKeys = keys;
+    refillCursor = 0;
+    stepDownCursor = 0;
+    refillZoom = state.zoom;
+    refillDpr = dpr;
+    outOfRetries.clear();
+    for (let i = 0; i < candidates.length; i++) drawCached(candidates[i], keys[i]);
+    refill(); // every start goes through the refill's one decision and its priority
     trimTextures();
     publish();
   }
@@ -663,7 +985,16 @@ export function createDetailOverlay(
     // when the user zooms back in — not a permanent session-long skip after the network
     // recovers. (permanentSkip — the 404 set — is untouched: a 404 stays a 404.)
     retryAttempts.clear();
+    outOfRetries.clear();
     wanted = new Set();
+    clearRefillList();
+  }
+
+  function clearRefillList(): void {
+    refillList = [];
+    refillKeys = [];
+    refillCursor = 0;
+    stepDownCursor = 0;
   }
 
   // ---- camera subscription (coalesced to one refresh per frame, like the loader) ----
@@ -694,14 +1025,25 @@ export function createDetailOverlay(
     publishRendererDebug();
   }
 
+  /** Find the largest width of a newly bound position table — one O(N) pass per table
+   *  identity, not per frame and not per push (the layout controller re-pushes the same
+   *  table object at the end of an activate and on a re-activate). */
+  function bindTable(table: PositionTable | null): void {
+    if (table === boundTable) return;
+    boundTable = table;
+    tableMaxWidth = table === null ? 0 : largestCellWidth(table);
+  }
+
   function setContext(next: DetailContext | null): void {
     if (next === null) {
       ctx = null;
+      bindTable(null);
       hardReset(); // no active layout/dataset: tear down the drawn layer + caches
       return;
     }
     const prev = ctx?.manifest ?? null;
     ctx = next;
+    bindTable(next.positions);
     // A DIFFERENT dataset (id/version) invalidates every cached texture (different cells
     // + originals) — drop them. A SAME-dataset layout switch KEEPS them (cell ids are
     // layout-invariant; only positions move — the feature). In production the whole
@@ -726,7 +1068,9 @@ export function createDetailOverlay(
     for (const e of textures.values()) disposeTexture(e.texture);
     textures.clear();
     engaged = false;
+    outOfRetries.clear();
     wanted = new Set();
+    clearRefillList();
     publish();
   }
 
@@ -765,6 +1109,10 @@ export function createDetailOverlay(
     for (const e of textures.values()) disposeTexture(e.texture);
     textures.clear();
     permanentSkip.clear();
+    outOfRetries.clear();
+    clearRefillList();
+    boundTable = null;
+    tableMaxWidth = 0;
     ctx = null;
     publish();
   }
@@ -804,7 +1152,7 @@ export function createDetailOverlay(
 /** Decode a detail WebP blob into a screen-sized THREE.Texture (browser-only; node
  *  tests inject `deps.decode`). Decodes to the natural size, then downscales via
  *  createImageBitmap(bitmap, resize) when the max edge exceeds `rung` — so the GPU
- *  texture is bounded by screen need, aspect preserved. Texture settings MATCH the
+ *  texture is bounded by the screen need at fetch time, aspect preserved. Texture settings MATCH the
  *  tile path (decodeImageTextureReal): straight alpha, sRGB, LinearFilter min+mag, no
  *  mipmaps, flipY=false, ImageBitmap closed after the first upload. */
 async function decodeDetailReal(blob: Blob, rung: number): Promise<DecodedDetail> {

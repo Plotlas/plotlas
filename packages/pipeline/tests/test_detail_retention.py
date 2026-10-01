@@ -210,12 +210,25 @@ def test_retain_reuses_the_committed_tier_and_it_survives_the_commit(tmp_path: P
     # Only the retained version dir exists under detail/.
     assert sorted(p.name for p in (dataset_dir / "detail").iterdir() if p.is_dir()) == ["v1"]
 
-    # The versioned-detail 404 WARNING (T2-178) — the operator's ONLY signal that a
-    # retained dataset's click-through lightbox 404s — is in the permanent ingest.log
-    # (the run logger does not propagate, so caplog cannot see it; read the file).
+    # The prefix/dataset_version MISMATCH NOTICE is in the permanent ingest.log (the
+    # run logger does not propagate, so caplog cannot see it; read the file).
+    #
+    # This pin used to require the word "404s", because the warning used to say the
+    # click-through lightbox 404s until the API compared the manifest prefix instead
+    # of dataset_version. PR #211 (T2-178) made the API do exactly that, so the
+    # lightbox works and the old text became false -- but the pin kept it true by
+    # assertion for a month. What is DURABLE is that the operator is told about the
+    # mismatch at all; whether it is a fault is a fact about the API, not about this
+    # log line.
     log_text = (dataset_dir / "ingest.log").read_text(encoding="utf-8")
-    assert "click-through lightbox" in log_text and "404s" in log_text, (
-        "the versioned-detail 404 warning did not reach ingest.log"
+    assert "manifest detail prefix" in log_text and "dataset_version" in log_text, (
+        "the prefix/dataset_version mismatch notice did not reach ingest.log"
+    )
+    # And it must NOT claim a 404 again: that is the regression this file would
+    # otherwise re-admit, since the claim reads plausibly and nothing else checks it.
+    assert "404" not in log_text, (
+        "the retain notice claims a 404; the versioned detail route resolves through "
+        "the manifest prefix since PR #211, so that claim is false"
     )
 
 

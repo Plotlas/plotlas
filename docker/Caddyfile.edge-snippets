@@ -34,7 +34,54 @@
 # /datasets/{ds_id}/... path and can extract the id unambiguously (verified: the
 # stripped form drops the /datasets segment). The browser's HttpOnly, path-scoped
 # `viz_ds` cookie rides the same-origin fetch and forward_auth copies it upstream.
+#
+# ONLY VIEWER ASSETS ARE SERVED (T2-publishing-a-dataset-publishes-its-build-log).
+# A dataset directory also holds files that nobody chose to publish: ingest.log (the
+# username the build ran as, source paths, bake statistics), progress.json, and any
+# *.bak an operator leaves at its root. Before this rule, publishing a dataset
+# published all of them. The rule is an ALLOW-list, so it fails closed for a build
+# artifact that does not exist yet. It works by prefix: a file left INSIDE tiles/,
+# positions/, tags/ or detail/ is still served, e.g. the unreferenced tags sidecar
+# that a roles edit leaves on disk (worker.py).
+#
+# The list is what the viewer fetches, not what the directory holds. Every static
+# fetch in the frontend goes through assetUrl() in api-client/client.ts, and its
+# callers compose only manifest paths under tiles/, positions/, tags/ and detail/.
+# The manifest, cover, presentation and metadata come through /api, which reads
+# them from disk, so they are not on the list. Public metadata stays readable
+# through GET /api/datasets/{ds}/metadata, by design.
+# tests/contract/test_edge_allowlist.py reads the list from THIS file and requires
+# every static path in every v2 fixture manifest to pass it. If the pipeline emits a
+# new kind of static asset, add its prefix here or the viewer gets a 404.
+#
+# The 404 is decided BEFORE the forward_auth gate. So an off-list path answers the
+# same for every caller, with or without a credential, for a dataset that exists or
+# not. It tells an outsider nothing and costs no sub-request. `invoke` is ordered
+# before `handle_path` by Caddy's fixed directive order, not by where it sits in this
+# file. The gate block below is unchanged: an allowed path behaves exactly as before.
+#
+# The path matchers clean the path before they match, as file_server does before it
+# serves. So `tiles/../ingest.log` (and its %2e%2e spelling) is judged as
+# `ingest.log` and answers 404. A `..` that resolves to an ALLOWED path still reaches
+# the gate, which refuses any `..` with a 403 (routers/authz.py). The step
+# `authz.traversal` in tests/e2e/run_acceptance.py depends on that 403.
+#
+# A CHANGE HERE NEEDS THE CADDY CONTAINER RECREATED. Every profile sets `admin off`
+# and runs without --watch, so Caddy reads this file only when it starts. It is a
+# single-file bind mount, and `git pull` replaces the file with a new inode, which a
+# running container does not see. `docker compose ... up -d` does not recreate caddy
+# either, because its compose configuration did not change. Run
+# `docker compose -f <profile> up -d --force-recreate caddy`.
+&(dataset_file_not_served) {
+	respond 404
+}
+
 (datasets_edge) {
+	@not_a_viewer_asset {
+		path /datasets/*
+		not path_regexp ^/datasets/[^/]+/(tiles|positions|tags|detail)/
+	}
+	invoke @not_a_viewer_asset dataset_file_not_served
 	handle_path /datasets/* {
 		forward_auth api:8000 {
 			uri /api/authz/datasets

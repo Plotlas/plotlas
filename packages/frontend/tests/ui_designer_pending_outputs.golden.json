@@ -1,0 +1,4030 @@
+{
+ "m210": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "iso8601"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "caption",
+     "label": "Caption"
+    }
+   ]
+  },
+  "changedColumns": [],
+  "outcomes": [],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 0,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "m29": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "iso8601"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "caption",
+     "label": "Caption"
+    }
+   ]
+  },
+  "changedColumns": [],
+  "outcomes": [],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": false,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": false,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": false,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": false,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": false,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 0,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "m28": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "iso8601"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "caption",
+     "label": "Caption"
+    }
+   ]
+  },
+  "changedColumns": [],
+  "outcomes": [],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": false,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": false,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": false,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": false,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": false,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": false,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 0,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "imagesOnly": {
+  "problem": null,
+  "roles": null,
+  "changedColumns": [],
+  "outcomes": [],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": false,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 0,
+  "bakeCount": 1,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   }
+  ]
+ },
+ "formatMoved": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "unix_seconds"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "caption",
+     "label": "Caption"
+    }
+   ]
+  },
+  "changedColumns": [],
+  "outcomes": [],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": [
+     "captured"
+    ]
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 0,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "wide": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "iso8601"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "caption",
+     "label": "Caption"
+    },
+    {
+     "column": "extra_01",
+     "label": "extra_01"
+    },
+    {
+     "column": "extra_02",
+     "label": "extra_02"
+    },
+    {
+     "column": "extra_03",
+     "label": "extra_03"
+    },
+    {
+     "column": "extra_04",
+     "label": "extra_04"
+    },
+    {
+     "column": "extra_05",
+     "label": "extra_05"
+    },
+    {
+     "column": "extra_06",
+     "label": "extra_06"
+    },
+    {
+     "column": "extra_07",
+     "label": "extra_07"
+    },
+    {
+     "column": "extra_08",
+     "label": "extra_08"
+    },
+    {
+     "column": "extra_09",
+     "label": "extra_09"
+    },
+    {
+     "column": "extra_10",
+     "label": "extra_10"
+    },
+    {
+     "column": "extra_11",
+     "label": "extra_11"
+    },
+    {
+     "column": "extra_12",
+     "label": "extra_12"
+    },
+    {
+     "column": "extra_13",
+     "label": "extra_13"
+    },
+    {
+     "column": "extra_14",
+     "label": "extra_14"
+    },
+    {
+     "column": "extra_15",
+     "label": "extra_15"
+    },
+    {
+     "column": "extra_16",
+     "label": "extra_16"
+    },
+    {
+     "column": "extra_17",
+     "label": "extra_17"
+    },
+    {
+     "column": "extra_18",
+     "label": "extra_18"
+    },
+    {
+     "column": "extra_19",
+     "label": "extra_19"
+    },
+    {
+     "column": "extra_20",
+     "label": "extra_20"
+    },
+    {
+     "column": "extra_21",
+     "label": "extra_21"
+    },
+    {
+     "column": "extra_22",
+     "label": "extra_22"
+    },
+    {
+     "column": "extra_23",
+     "label": "extra_23"
+    },
+    {
+     "column": "extra_24",
+     "label": "extra_24"
+    }
+   ]
+  },
+  "changedColumns": [],
+  "outcomes": [],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 0,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "untagged": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "iso8601"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "caption",
+     "label": "Caption"
+    },
+    {
+     "column": "tags",
+     "label": "Tags"
+    }
+   ]
+  },
+  "changedColumns": [],
+  "outcomes": [],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 0,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "twoTags": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "iso8601"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    },
+    {
+     "column": "keywords",
+     "label": "Keywords",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "caption",
+     "label": "Caption"
+    }
+   ]
+  },
+  "changedColumns": [],
+  "outcomes": [],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 0,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "modified": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "iso8601"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "caption",
+     "label": "Caption"
+    },
+    {
+     "column": "modified",
+     "label": "Modified"
+    }
+   ]
+  },
+  "changedColumns": [],
+  "outcomes": [],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 0,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "twoRoles": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "iso8601"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    },
+    {
+     "column": "group",
+     "label": "Group tags",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "caption",
+     "label": "Caption"
+    },
+    {
+     "column": "captured",
+     "label": "Captured"
+    }
+   ]
+  },
+  "changedColumns": [],
+  "outcomes": [],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 0,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": null,
+    "label": "By date",
+    "problem": "the new roles no longer produce it"
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": null,
+    "label": "Group",
+    "problem": "the new roles no longer produce it"
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": null,
+    "label": "Bucket",
+    "problem": "the new roles no longer produce it"
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "tagOnGroup": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "iso8601"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    },
+    {
+     "column": "group",
+     "label": "Group",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "caption",
+     "label": "Caption"
+    }
+   ]
+  },
+  "changedColumns": [],
+  "outcomes": [],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 0,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": null,
+    "label": "Group",
+    "problem": "the new roles no longer produce it"
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": null,
+    "label": "Bucket",
+    "problem": "the new roles no longer produce it"
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "freeformOnCaptured": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "iso8601"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "caption",
+     "label": "Caption"
+    },
+    {
+     "column": "captured",
+     "label": "Captured"
+    }
+   ]
+  },
+  "changedColumns": [],
+  "outcomes": [],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 0,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": null,
+    "label": "By date",
+    "problem": "the new roles no longer produce it"
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "shared": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "iso8601"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    },
+    {
+     "x_column": "sx",
+     "y_column": "lon",
+     "label": "Second"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "caption",
+     "label": "Caption"
+    }
+   ]
+  },
+  "changedColumns": [],
+  "outcomes": [],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 0,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": null,
+    "label": "Scatter",
+    "problem": "the new roles no longer produce it"
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "onAxis": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "iso8601"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    },
+    {
+     "x_column": "sx",
+     "y_column": "caption",
+     "label": "Second"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "caption",
+     "label": "Caption"
+    }
+   ]
+  },
+  "changedColumns": [],
+  "outcomes": [],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 0,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": null,
+    "label": "Scatter",
+    "problem": "the new roles no longer produce it"
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "freeformOnCapturedMoved": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "unix_seconds"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "caption",
+     "label": "Caption"
+    },
+    {
+     "column": "captured",
+     "label": "Captured"
+    }
+   ]
+  },
+  "changedColumns": [],
+  "outcomes": [],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": [
+     "captured"
+    ]
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 0,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": null,
+    "label": "By date",
+    "problem": "the new roles no longer produce it"
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "m210+newPair": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "iso8601"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "caption",
+     "label": "Caption"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    },
+    {
+     "x_column": "lon",
+     "y_column": "lat",
+     "label": "lon / lat"
+    }
+   ]
+  },
+  "changedColumns": [
+   "lat",
+   "lon"
+  ],
+  "outcomes": [
+   {
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "stale": false,
+    "renamedTo": "scatter_sx",
+    "orphaned": false,
+    "unknown": false
+   }
+  ],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 2,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": null,
+    "label": "Scatter",
+    "problem": "the new roles no longer produce it"
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "m210+format": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "unix_seconds"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "caption",
+     "label": "Caption"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ]
+  },
+  "changedColumns": [
+   "captured"
+  ],
+  "outcomes": [
+   {
+    "layout_id": "datetime",
+    "label": "By date",
+    "stale": true,
+    "renamedTo": null,
+    "orphaned": false,
+    "unknown": false
+   }
+  ],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 1,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "m210+bucketFreeform": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "iso8601"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    },
+    {
+     "column": "caption",
+     "label": "Caption"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ]
+  },
+  "changedColumns": [
+   "bucket"
+  ],
+  "outcomes": [
+   {
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "stale": false,
+    "renamedTo": "categorical",
+    "orphaned": false,
+    "unknown": false
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "stale": true,
+    "renamedTo": null,
+    "orphaned": true,
+    "unknown": false
+   }
+  ],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 1,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": null,
+    "label": "Group",
+    "problem": "the new roles no longer produce it"
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": null,
+    "label": "Bucket",
+    "problem": "the new roles no longer produce it"
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "m210+tagsFreeform": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "iso8601"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "tags",
+     "label": "Tags"
+    },
+    {
+     "column": "caption",
+     "label": "Caption"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ]
+  },
+  "changedColumns": [
+   "tags"
+  ],
+  "outcomes": [],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": true
+  },
+  "invalidating": 1,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "m210+delimiter": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "iso8601"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": ";"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "caption",
+     "label": "Caption"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ]
+  },
+  "changedColumns": [
+   "tags"
+  ],
+  "outcomes": [],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [
+    "tags"
+   ],
+   "removesLastTagRole": false
+  },
+  "invalidating": 1,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "m210+logAndSecondPair": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "iso8601"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "caption",
+     "label": "Caption"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter",
+     "x_scale": "log",
+     "y_scale": "log"
+    },
+    {
+     "x_column": "lon",
+     "y_column": "lat",
+     "label": "lon / lat"
+    }
+   ]
+  },
+  "changedColumns": [
+   "lat",
+   "lon",
+   "sx",
+   "sy"
+  ],
+  "outcomes": [
+   {
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "stale": true,
+    "renamedTo": "scatter_sx",
+    "orphaned": false,
+    "unknown": false
+   }
+  ],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 4,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": null,
+    "label": "Scatter",
+    "problem": "the new roles no longer produce it"
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "formatMoved+mercator": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "unix_seconds"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "caption",
+     "label": "Caption"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location",
+     "projection": "mercator"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ]
+  },
+  "changedColumns": [
+   "lat",
+   "lon"
+  ],
+  "outcomes": [
+   {
+    "layout_id": "geographic",
+    "label": "Location",
+    "stale": true,
+    "renamedTo": null,
+    "orphaned": false,
+    "unknown": false
+   }
+  ],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": [
+     "captured"
+    ]
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 2,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "formatMoved+iso": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "iso8601"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "caption",
+     "label": "Caption"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ]
+  },
+  "changedColumns": [
+   "captured"
+  ],
+  "outcomes": [],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": [
+     "captured"
+    ]
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 1,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "m28+captionIgnore": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "iso8601"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ]
+  },
+  "changedColumns": [
+   "caption"
+  ],
+  "outcomes": [
+   {
+    "layout_id": "datetime",
+    "label": "By date",
+    "stale": false,
+    "renamedTo": null,
+    "orphaned": false,
+    "unknown": true
+   },
+   {
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "stale": false,
+    "renamedTo": null,
+    "orphaned": false,
+    "unknown": true
+   },
+   {
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "stale": false,
+    "renamedTo": null,
+    "orphaned": false,
+    "unknown": true
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "stale": false,
+    "renamedTo": null,
+    "orphaned": false,
+    "unknown": true
+   },
+   {
+    "layout_id": "geographic",
+    "label": "Location",
+    "stale": false,
+    "renamedTo": null,
+    "orphaned": false,
+    "unknown": true
+   }
+  ],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": false,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": false,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": false,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": false,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": false,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": false,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 1,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "m28+groupFreeform": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "iso8601"
+   },
+   "categorical": [
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "caption",
+     "label": "Caption"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ]
+  },
+  "changedColumns": [
+   "group"
+  ],
+  "outcomes": [
+   {
+    "layout_id": "datetime",
+    "label": "By date",
+    "stale": false,
+    "renamedTo": null,
+    "orphaned": false,
+    "unknown": true
+   },
+   {
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "stale": false,
+    "renamedTo": null,
+    "orphaned": false,
+    "unknown": true
+   },
+   {
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "stale": false,
+    "renamedTo": null,
+    "orphaned": true,
+    "unknown": true
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "stale": false,
+    "renamedTo": null,
+    "orphaned": true,
+    "unknown": true
+   },
+   {
+    "layout_id": "geographic",
+    "label": "Location",
+    "stale": false,
+    "renamedTo": null,
+    "orphaned": false,
+    "unknown": true
+   }
+  ],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": false,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": false,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": false,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": false,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": false,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": false,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 1,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": null,
+    "label": "Group",
+    "problem": "the new roles no longer produce it"
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": null,
+    "label": "Bucket",
+    "problem": "the new roles no longer produce it"
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "untagged+tagsTag": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "iso8601"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": ","
+    }
+   ],
+   "freeform": [
+    {
+     "column": "caption",
+     "label": "Caption"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ]
+  },
+  "changedColumns": [
+   "tags"
+  ],
+  "outcomes": [],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [
+    "tags"
+   ],
+   "removesLastTagRole": false
+  },
+  "invalidating": 1,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "twoTags+tagsFreeform": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "datetime": {
+    "column": "captured",
+    "label": "Captured",
+    "format": "iso8601"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "tag": [
+    {
+     "column": "keywords",
+     "label": "Keywords",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "tags",
+     "label": "Tags"
+    },
+    {
+     "column": "caption",
+     "label": "Caption"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ]
+  },
+  "changedColumns": [
+   "tags"
+  ],
+  "outcomes": [],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 1,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": "datetime",
+    "label": "By date",
+    "problem": null
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "modified+capturedFreeform": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "categorical": [
+    {
+     "column": "group",
+     "label": "Group"
+    },
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "tag": [
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "captured",
+     "label": "Captured"
+    },
+    {
+     "column": "caption",
+     "label": "Caption"
+    },
+    {
+     "column": "modified",
+     "label": "Modified"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ]
+  },
+  "changedColumns": [
+   "captured"
+  ],
+  "outcomes": [
+   {
+    "layout_id": "datetime",
+    "label": "By date",
+    "stale": true,
+    "renamedTo": null,
+    "orphaned": true,
+    "unknown": false
+   }
+  ],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 1,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": null,
+    "label": "By date",
+    "problem": "the new roles no longer produce it"
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "problem": null
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ },
+ "twoRoles+format": {
+  "problem": null,
+  "roles": {
+   "filename": {
+    "column": "filename",
+    "label": "Filename"
+   },
+   "categorical": [
+    {
+     "column": "bucket",
+     "label": "Bucket"
+    }
+   ],
+   "tag": [
+    {
+     "column": "group",
+     "label": "Group tags",
+     "delimiter": "|"
+    },
+    {
+     "column": "tags",
+     "label": "Tags",
+     "delimiter": "|"
+    }
+   ],
+   "freeform": [
+    {
+     "column": "captured",
+     "label": "Captured"
+    },
+    {
+     "column": "caption",
+     "label": "Caption"
+    }
+   ],
+   "geographic": [
+    {
+     "lon_column": "lon",
+     "lat_column": "lat",
+     "label": "Location"
+    }
+   ],
+   "scatter": [
+    {
+     "x_column": "sx",
+     "y_column": "sy",
+     "label": "Scatter"
+    }
+   ]
+  },
+  "changedColumns": [
+   "captured",
+   "group"
+  ],
+  "outcomes": [
+   {
+    "layout_id": "datetime",
+    "label": "By date",
+    "stale": true,
+    "renamedTo": null,
+    "orphaned": true,
+    "unknown": false
+   },
+   {
+    "layout_id": "categorical_group",
+    "label": "Group",
+    "stale": true,
+    "renamedTo": null,
+    "orphaned": true,
+    "unknown": false
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "label": "Bucket",
+    "stale": false,
+    "renamedTo": "categorical",
+    "orphaned": false,
+    "unknown": false
+   }
+  ],
+  "baked": [
+   {
+    "layout_id": "grid",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "datetime",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "scatter",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_group",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "categorical_bucket",
+    "checkable": true,
+    "staleColumns": []
+   },
+   {
+    "layout_id": "geographic",
+    "checkable": true,
+    "staleColumns": []
+   }
+  ],
+  "tags": {
+   "unservedColumns": [],
+   "removesLastTagRole": false
+  },
+  "invalidating": 2,
+  "bakeCount": 6,
+  "isPending": true,
+  "bakes": [
+   {
+    "key": "rebake:grid",
+    "layout_id": "grid",
+    "label": "Grid",
+    "problem": null
+   },
+   {
+    "key": "rebake:datetime",
+    "layout_id": null,
+    "label": "By date",
+    "problem": "the new roles no longer produce it"
+   },
+   {
+    "key": "rebake:scatter",
+    "layout_id": "scatter",
+    "label": "Scatter",
+    "problem": null
+   },
+   {
+    "key": "rebake:categorical_group",
+    "layout_id": null,
+    "label": "Group",
+    "problem": "the new roles no longer produce it"
+   },
+   {
+    "key": "rebake:categorical_bucket",
+    "layout_id": null,
+    "label": "Bucket",
+    "problem": "the new roles no longer produce it"
+   },
+   {
+    "key": "rebake:geographic",
+    "layout_id": "geographic",
+    "label": "Location",
+    "problem": null
+   }
+  ]
+ }
+}

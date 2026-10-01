@@ -184,10 +184,7 @@ test("admin flow: signup → ZIP+CSV upload → roles → create → poll → pr
     h(DatasetList, {
       datasets: processingList,
       client, // T2-55: DatasetList requires the client for the cover fetch (effect-only)
-      busyId: null,
       onOpen: () => {},
-      onDelete: () => {},
-      onAddLayout: () => {},
       onNewDataset: () => {},
     }),
   );
@@ -214,10 +211,7 @@ test("admin flow: signup → ZIP+CSV upload → roles → create → poll → pr
     h(DatasetList, {
       datasets: readyList,
       client, // T2-55: cover fetch is effect-only; server render never fires it
-      busyId: null,
       onOpen: () => {},
-      onDelete: () => {},
-      onAddLayout: () => {},
       onNewDataset: () => {},
     }),
   );

@@ -1,0 +1,517 @@
+{
+  "manifest_version": "2.9",
+  "dataset_id": "golden_dataset_full_v2",
+  "dataset_version": 1,
+  "layouts": [
+    {
+      "layout_id": "grid",
+      "label": "Grid",
+      "type": "grid",
+      "bbox": [
+        0.003125,
+        0.003125,
+        0.996875,
+        0.996875
+      ],
+      "bbox_exact": [
+        0.0031249999999999993,
+        0.0031249999999999993,
+        0.996875,
+        0.996875
+      ],
+      "pyramid": {
+        "container": "pmtiles",
+        "path": "tiles/grid/grid_v1.pmtiles",
+        "tile_px": 512,
+        "thumb_px": 64,
+        "cap": 64,
+        "levels": [
+          {
+            "z": 0,
+            "tile_count": 1
+          },
+          {
+            "z": 1,
+            "tile_count": 4
+          }
+        ],
+        "z_cap": 1,
+        "dropped_total": 0
+      },
+      "positions_ref": "positions/grid_v1.arrow",
+      "missing_count": 0,
+      "source_columns": []
+    },
+    {
+      "layout_id": "datetime",
+      "label": "By date",
+      "type": "datetime",
+      "bbox": [
+        0.043205,
+        0.279406,
+        0.956795,
+        0.956795
+      ],
+      "bbox_exact": [
+        0.04320530900041476,
+        0.27940605557859804,
+        0.9567946909995854,
+        0.9567946909995851
+      ],
+      "pyramid": {
+        "container": "pmtiles",
+        "path": "tiles/datetime/datetime_v1.pmtiles",
+        "tile_px": 512,
+        "thumb_px": 64,
+        "cap": 64,
+        "levels": [
+          {
+            "z": 0,
+            "tile_count": 1
+          },
+          {
+            "z": 1,
+            "tile_count": 4
+          },
+          {
+            "z": 2,
+            "tile_count": 16
+          }
+        ],
+        "z_cap": 2,
+        "dropped_total": 0
+      },
+      "positions_ref": "positions/datetime_v1.arrow",
+      "annotations": {
+        "axes": [
+          {
+            "orientation": "x",
+            "scale": "time",
+            "domain": [
+              "2021-01-01T00:00:00+00:00",
+              "2021-09-01T00:00:00+00:00"
+            ],
+            "range": [
+              0.04,
+              0.874525093
+            ],
+            "interval": {
+              "kind": "month",
+              "step": 1
+            },
+            "label": "Captured"
+          }
+        ]
+      },
+      "missing_count": 0,
+      "source_columns": [
+        "captured"
+      ]
+    },
+    {
+      "layout_id": "scatter",
+      "label": "Scatter",
+      "type": "scatter",
+      "bbox": [
+        0.0,
+        0.0,
+        0.862086,
+        1.0
+      ],
+      "bbox_exact": [
+        0.0,
+        0.0,
+        0.8620857709274237,
+        1.0
+      ],
+      "pyramid": {
+        "container": "pmtiles",
+        "path": "tiles/scatter/scatter_v1.pmtiles",
+        "tile_px": 512,
+        "thumb_px": 64,
+        "cap": 64,
+        "levels": [
+          {
+            "z": 0,
+            "tile_count": 1
+          },
+          {
+            "z": 1,
+            "tile_count": 4
+          },
+          {
+            "z": 2,
+            "tile_count": 8
+          },
+          {
+            "z": 3,
+            "tile_count": 11
+          }
+        ],
+        "z_cap": 3,
+        "dropped_total": 177
+      },
+      "positions_ref": "positions/scatter_v1.arrow",
+      "missing_count": 9,
+      "source_columns": [
+        "sx",
+        "sy"
+      ]
+    },
+    {
+      "layout_id": "categorical_group",
+      "label": "Group",
+      "type": "categorical",
+      "bbox": [
+        0.027975,
+        0.036131,
+        0.97235,
+        0.980908
+      ],
+      "bbox_exact": [
+        0.027975146198830406,
+        0.036131036931818176,
+        0.9723501461988304,
+        0.980908203125
+      ],
+      "pyramid": {
+        "container": "pmtiles",
+        "path": "tiles/categorical_group/categorical_group_v1.pmtiles",
+        "tile_px": 512,
+        "thumb_px": 64,
+        "cap": 64,
+        "levels": [
+          {
+            "z": 0,
+            "tile_count": 1
+          },
+          {
+            "z": 1,
+            "tile_count": 4
+          },
+          {
+            "z": 2,
+            "tile_count": 16
+          }
+        ],
+        "z_cap": 2,
+        "dropped_total": 0
+      },
+      "positions_ref": "positions/categorical_group_v1.arrow",
+      "annotations": {
+        "labels": [
+          {
+            "text": "group-0",
+            "extent": [
+              0.0,
+              0.0,
+              0.502924,
+              0.667969
+            ],
+            "count": 86
+          },
+          {
+            "text": "group-1",
+            "extent": [
+              0.502924,
+              0.0,
+              1.0,
+              0.667969
+            ],
+            "count": 85
+          },
+          {
+            "text": "group-2",
+            "extent": [
+              0.0,
+              0.667969,
+              1.0,
+              1.0
+            ],
+            "count": 85
+          }
+        ]
+      },
+      "missing_count": 0,
+      "source_columns": [
+        "group"
+      ]
+    },
+    {
+      "layout_id": "categorical_bucket",
+      "label": "Bucket",
+      "type": "categorical",
+      "bbox": [
+        0.019667,
+        0.015211,
+        0.980437,
+        0.985632
+      ],
+      "bbox_exact": [
+        0.019666666666666662,
+        0.015210937499999994,
+        0.9804368421052632,
+        0.9856317138671875
+      ],
+      "pyramid": {
+        "container": "pmtiles",
+        "path": "tiles/categorical_bucket/categorical_bucket_v1.pmtiles",
+        "tile_px": 512,
+        "thumb_px": 64,
+        "cap": 64,
+        "levels": [
+          {
+            "z": 0,
+            "tile_count": 1
+          },
+          {
+            "z": 1,
+            "tile_count": 4
+          },
+          {
+            "z": 2,
+            "tile_count": 16
+          }
+        ],
+        "z_cap": 2,
+        "dropped_total": 0
+      },
+      "positions_ref": "positions/categorical_bucket_v1.arrow",
+      "annotations": {
+        "labels": [
+          {
+            "text": "bucket-00",
+            "extent": [
+              0.0,
+              0.0,
+              0.333333,
+              0.257812
+            ],
+            "count": 22
+          },
+          {
+            "text": "bucket-01",
+            "extent": [
+              0.333333,
+              0.0,
+              0.666667,
+              0.257812
+            ],
+            "count": 22
+          },
+          {
+            "text": "bucket-02",
+            "extent": [
+              0.666667,
+              0.0,
+              1.0,
+              0.257812
+            ],
+            "count": 22
+          },
+          {
+            "text": "bucket-03",
+            "extent": [
+              0.0,
+              0.257812,
+              0.336842,
+              0.512939
+            ],
+            "count": 22
+          },
+          {
+            "text": "bucket-04",
+            "extent": [
+              0.0,
+              0.512939,
+              0.336842,
+              0.75647
+            ],
+            "count": 21
+          },
+          {
+            "text": "bucket-05",
+            "extent": [
+              0.0,
+              0.75647,
+              0.336842,
+              1.0
+            ],
+            "count": 21
+          },
+          {
+            "text": "bucket-06",
+            "extent": [
+              0.336842,
+              0.257812,
+              0.668421,
+              0.505208
+            ],
+            "count": 21
+          },
+          {
+            "text": "bucket-07",
+            "extent": [
+              0.668421,
+              0.257812,
+              1.0,
+              0.505208
+            ],
+            "count": 21
+          },
+          {
+            "text": "bucket-08",
+            "extent": [
+              0.336842,
+              0.505208,
+              0.668421,
+              0.752604
+            ],
+            "count": 21
+          },
+          {
+            "text": "bucket-09",
+            "extent": [
+              0.336842,
+              0.752604,
+              0.668421,
+              1.0
+            ],
+            "count": 21
+          },
+          {
+            "text": "bucket-10",
+            "extent": [
+              0.668421,
+              0.505208,
+              1.0,
+              0.752604
+            ],
+            "count": 21
+          },
+          {
+            "text": "bucket-11",
+            "extent": [
+              0.668421,
+              0.752604,
+              1.0,
+              1.0
+            ],
+            "count": 21
+          }
+        ]
+      },
+      "missing_count": 0,
+      "source_columns": [
+        "bucket"
+      ]
+    },
+    {
+      "layout_id": "geographic",
+      "label": "Location",
+      "type": "geographic",
+      "bbox": [
+        0.001287,
+        0.287202,
+        1.0,
+        1.0
+      ],
+      "bbox_exact": [
+        0.0012867647058823518,
+        0.287202230521547,
+        1.0,
+        1.0
+      ],
+      "pyramid": {
+        "container": "pmtiles",
+        "path": "tiles/geographic/geographic_v1.pmtiles",
+        "tile_px": 512,
+        "thumb_px": 64,
+        "cap": 64,
+        "levels": [
+          {
+            "z": 0,
+            "tile_count": 1
+          },
+          {
+            "z": 1,
+            "tile_count": 4
+          },
+          {
+            "z": 2,
+            "tile_count": 11
+          }
+        ],
+        "z_cap": 2,
+        "dropped_total": 0
+      },
+      "positions_ref": "positions/geographic_v1.arrow",
+      "options": {
+        "projection": "equirectangular",
+        "overlap": "overdraw"
+      },
+      "missing_count": 9,
+      "source_columns": [
+        "lon",
+        "lat"
+      ]
+    }
+  ],
+  "dataset_metadata": {
+    "image_count": 256,
+    "ingest_timestamp": "2026-07-29T11:13:41Z",
+    "source": "metadata.csv"
+  },
+  "column_roles": {
+    "filename": {
+      "column": "filename",
+      "label": "Filename"
+    },
+    "datetime": {
+      "column": "captured",
+      "label": "Captured",
+      "format": "iso8601"
+    },
+    "categorical": [
+      {
+        "column": "group",
+        "label": "Group"
+      },
+      {
+        "column": "bucket",
+        "label": "Bucket"
+      }
+    ],
+    "scatter": [
+      {
+        "x_column": "sx",
+        "y_column": "sy",
+        "label": "Scatter"
+      }
+    ],
+    "geographic": [
+      {
+        "lon_column": "lon",
+        "lat_column": "lat",
+        "label": "Location"
+      }
+    ],
+    "tag": [
+      {
+        "column": "tags",
+        "label": "Tags",
+        "delimiter": "|"
+      }
+    ],
+    "freeform": [
+      {
+        "column": "caption",
+        "label": "Caption"
+      }
+    ]
+  },
+  "tags": {
+    "path": "tags/tags_v1.arrow",
+    "format": "arrow"
+  }
+}

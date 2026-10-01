@@ -26,6 +26,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { ViewerScreen, useRevealOnSelection } from "../../src/ui/ViewerScreen.ts";
 import { ViewerMenu } from "../../src/ui/ViewerMenu.ts";
 import { InspectorSheet } from "../../src/ui/InspectorSheet.ts";
+import { TagsPanel } from "../../src/ui/TagsPanel.ts";
 import {
   FALLBACK_COCKPIT_LENGTHS,
   cockpitFloor,
@@ -35,6 +36,7 @@ import {
   topbarFloorFrom,
 } from "../../src/ui/viewerLayoutMode.ts";
 import type { SheetDetail } from "../../src/ui/InspectorSheet.ts";
+import type { TagSelection } from "../../src/renderer/layout.ts";
 import type { ApiClient } from "../../src/api-client/client.ts";
 import type { LayoutInfo, SearchHit } from "../../src/api-client/types.ts";
 
@@ -357,7 +359,12 @@ test("no viewer media query was added — the mode reaches CSS as a class", () =
   const widthQueries = [...css.matchAll(/@media[^{]*\((?:min|max)-width[^{]*?\)/g)].map((m) =>
     m[0].replace(/\s+/g, " ").trim(),
   );
-  assert.deepEqual(widthQueries, ["@media (max-width: 1100px)", "@media (max-width: 700px)"]);
+  assert.deepEqual(widthQueries, [
+    "@media (max-width: 1100px)",
+    "@media (max-width: 700px)",
+    "@media (max-width: 700px)", // seam L3: the layout designer, not the viewer
+    "@media (max-width: 700px)", // seam L4: the designer's Data view, at L3's threshold
+  ]);
 });
 
 // ---------------------------------------------------------------------------
@@ -494,6 +501,9 @@ function stubClient(layouts: LayoutInfo[], hits: SearchHit[] = []): ApiClient {
   return {
     async listLayouts() {
       return layouts;
+    },
+    async getPresentation() {
+      return {}; // no presentation record — today's behaviour (D-xvi)
     },
     async search() {
       return { query: "rem", hits, capped: false };
@@ -747,4 +757,104 @@ test("widening the holder brings the desktop cockpit back", async () => {
   assert.equal(container.querySelector(".inspector") !== null, true, "the inspector rail did not come back");
   assert.equal(container.querySelector(".topbar-layouts") !== null, true, "the tab row did not come back");
   assert.equal(container.querySelector(".viewer-menu-wrap") === null, true, "the ☰ survived into desktop");
+});
+
+// ---------------------------------------------------------------------------
+// Focus discipline across the ☰ → Tags handoff (review of #267)
+// ---------------------------------------------------------------------------
+
+test("the Tags panel does not drag focus back to itself on every parent render", () => {
+  // MEASURED, then fixed. `onClose` is an inline arrow at ViewerScreen's call site, so an
+  // effect keyed on it re-runs on EVERY parent render — and the focus effect focuses on
+  // SETUP, so sharing that key meant every re-render yanked focus onto the panel container.
+  // Live, ViewerScreen re-renders on each renderer-status tick and on every tag toggled:
+  // a finger in the tag filter lost the caret and the soft keyboard, and a keyboard user
+  // could not tab through the chips at all.
+  //
+  // The panel's own mount focus is asserted first so this cannot pass by never focusing.
+  let bump: (() => void) | null = null;
+  function Host(): ReturnType<typeof h> {
+    const [n, setN] = useState(0);
+    bump = () => setN((v) => v + 1);
+    return h(
+      "div",
+      null,
+      h("button", { type: "button", id: "elsewhere" }, `elsewhere ${n}`),
+      h(TagsPanel, {
+        roles: null,
+        selection: { mode: "any", tags: [] } as unknown as TagSelection,
+        onChange: () => {},
+        // Rebuilt every render, exactly as ViewerScreen supplies it. THAT is the input
+        // this pin is about — replacing it with a stable callback here would make the
+        // test pass against the defect.
+        onClose: () => {},
+      }),
+    );
+  }
+  const r = render(h(Host));
+  const panel = r.container.querySelector(".tags-panel") as HTMLElement;
+  assert.notEqual(panel, null, "no Tags panel rendered");
+  assert.equal(document.activeElement === panel, true, "opening the panel did not move focus into it");
+
+  const elsewhere = document.getElementById("elsewhere") as HTMLButtonElement;
+  elsewhere.focus();
+  assert.equal(document.activeElement === elsewhere, true, "could not move focus out of the panel");
+
+  act(() => {
+    bump?.();
+  });
+  assert.equal(
+    document.activeElement === elsewhere,
+    true,
+    "a parent re-render pulled focus back into the Tags panel — a finger in the tag filter " +
+      "loses the caret and the soft keyboard on every status tick",
+  );
+
+  // ...and the Escape binding, which DOES legitimately re-key on `onClose`, still works
+  // after all that rebinding — the two effects were split, not one of them deleted.
+  let closed = 0;
+  cleanup();
+  render(
+    h(TagsPanel, {
+      roles: null,
+      selection: { mode: "any", tags: [] } as unknown as TagSelection,
+      onChange: () => {},
+      onClose: () => {
+        closed += 1;
+      },
+    }),
+  );
+  fireEvent.keyDown(document, { key: "Escape" });
+  assert.equal(closed, 1, "the panel stopped owning Escape");
+});
+
+test("choosing Tags from the ☰ leaves focus on the trigger, so the panel can hand it back", () => {
+  // `TagsPanel` restores focus to whatever `document.activeElement` was when it mounted.
+  // Choosing the row UNMOUNTS it, so without an explicit return the captured opener is
+  // `<body>` — and "Done" then drops a keyboard user at the top of the document instead
+  // of on the ☰ they came through. The layout rows already do this (review #271 F7); the
+  // Tags row did not, and here it costs more than keyboard hygiene because a second
+  // component reads the result.
+  function Probe(): ReturnType<typeof h> {
+    const [open, setOpen] = useState(true);
+    return h(ViewerMenu, {
+      layouts: LAYOUTS,
+      activeLayoutId: "grid",
+      onSwitch: () => {},
+      open,
+      setOpen,
+      onOpenTags: () => {},
+    });
+  }
+  const r = render(h(Probe));
+  const trigger = r.container.querySelector(".viewer-menu-btn") as HTMLElement;
+  const tags = r.container.querySelector(".viewer-menu-tags") as HTMLElement;
+  assert.notEqual(tags, null, "no Tags row rendered");
+  fireEvent.click(tags);
+  assert.equal(
+    document.activeElement === trigger,
+    true,
+    "choosing Tags dropped focus to <body>; the panel it opens captures that as the " +
+      "control to restore, so the way back out is lost too",
+  );
 });

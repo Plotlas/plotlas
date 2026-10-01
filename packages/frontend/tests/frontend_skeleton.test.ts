@@ -44,6 +44,8 @@ test("api-client factory builds a client with every catalogued method (seam 12)"
     "getDataset",
     "listLayouts",
     "getManifest",
+    // D-xv: the presentation record, read on the same boot as the layout list.
+    "getPresentation",
     // v2 (D-33): the pyramid container + detail-tier originals + the bearer
     // header builder replace tileUrl/tileIndexUrl/fetchTile/atlasUrl.
     "pyramidUrl",

@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/v2/presentation.schema.json",
+  "$comment": "NEW (2026-09-07) — schemas/v2. The SECOND record in a dataset directory, beside layout_manifest.json, introduced by decision D-xv (docs/design/INTAKE_REDESIGN.md §6c). The two files have ONE WRITER EACH: the worker writes layout_manifest.json (the reproducible bake record — what the bake produced and the inputs it consumed), the API (and, later, an admin CLI) writes presentation.json (choices a human made about how the dataset is SHOWN). Nothing under packages/pipeline/ ever writes this file; the bake preserves it across a re-bake by construction, because the commit merge-moves staged assets onto the dataset directory and never removes or recreates it. The split exists because a single file with a cheap-edit path would have had two writers, and `manifest.append_manifest_layouts` builds its output from the manifest it read when the bake STARTED — so an edit landing mid-bake would be silently lost. Deliberately NOT called annotations.json: `layouts[].annotations` already exists in the manifest and means the categorical treemap's band labels and the datetime axis.",
+  "title": "Presentation",
+  "description": "OPTIONAL per-dataset presentation record, stored as `presentation.json` in the dataset directory beside `layout_manifest.json`. Holds only D-ix TIER-1 facts — declared-and-INERT: nothing is recomputed from them, no cell moves, no tile changes, so every edit is free and instant. (Declared-but-INVALIDATING facts — `column_roles.datetime`, `column_roles.scatter` and friends, which decide where cells go — and DERIVED facts stay in the manifest. The file boundary IS the cost boundary: tier 1 is free, tiers 2-3 cost a bake.) EVERY KEY IS OPTIONAL AND SO IS THE WHOLE FILE: every dataset committed before 2026-09-07 has no presentation.json at all, and an absent file must mean exactly today's behaviour — absent file = absent everything. FAIL-SOFT IS A PROPERTY OF THIS SCHEMA, NOT ONLY A CONSUMER CONVENTION (D-xvi): the maps below are keyed by identifiers the BAKE RECORD owns (`layout_id`, and the raw column name as it appeared in the metadata source), and this schema deliberately CANNOT check that a key resolves — `default_layout` naming a layout that a re-bake dropped, `title_column` naming a column a metadata update removed, or a `columns` entry for a column that no longer exists all VALIDATE, and a consumer resolves-or-falls-back rather than erroring. That is not laxity: a cross-file integrity check here would re-couple the two files and destroy the independence the split exists to create. Validate on write, fall back on read.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "presentation_version": {
+      "description": "Version of THIS schema (not the dataset, and NOT the manifest's `manifest_version`). Format MAJOR.MINOR, currently '1.0'. Deliberately its OWN version rather than the shared MANIFEST_VERSION: the two files have different writers and change for different reasons, so sharing a number would make a bake that bumps the manifest minor imply a presentation-schema change it did not make — and, worse, would force this file's writer (the API) to know the pipeline's version constant, which is exactly the coupling D-xv removes. OPTIONAL, like every key here, so a hand-authored or `{}` file still validates; but a WRITER ALWAYS EMITS IT (the same always-emit rule `layouts[].missing_count` and `pyramid.dropped_total` follow in the manifest), so an absent version means 'authored by something that was not this contract's writer' and a reader treats it as 1.x rather than as a positive claim.",
+      "type": "string",
+      "pattern": "^1\\.(0|[1-9][0-9]*)$"
+    },
+    "dataset": { "$ref": "#/$defs/datasetPresentation" },
+    "layouts": {
+      "description": "Per-layout presentation overrides, KEYED BY `layout_id` — the identifier `layout_manifest.json` owns (D-xvi). A key naming a layout that is not (or is no longer) in the manifest is IGNORED by consumers, never an error: a re-bake may drop a layout, and an override for it must not break the dataset. Absent, or an absent key, means the manifest's own `layouts[].label` is used unchanged.",
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/layoutIdKey" },
+      "additionalProperties": { "$ref": "#/$defs/layoutPresentation" }
+    },
+    "columns": {
+      "description": "Per-column presentation, KEYED BY THE RAW COLUMN NAME as it appears in the metadata source's header — the same identifier `column_roles`' role entries carry (D-xvi/D-xvii). The manifest keeps the raw name as the identifier; this file says how that column is DRAWN. A key naming a column that no longer exists in `metadata.parquet` is IGNORED by consumers, never an error — a metadata update may drop a column, and a stale display label for it must not break the dataset. Absent, or an absent key, means the column is shown exactly as today.",
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/columnNameKey" },
+      "additionalProperties": { "$ref": "#/$defs/columnPresentation" }
+    }
+  },
+  "$defs": {
+    "datasetPresentation": {
+      "description": "Dataset-level presentation scalars. Every key optional; an absent key means the value is unset and the consumer falls back (D-xvi).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "display_name": {
+          "description": "Human-readable name of the collection, shown instead of `dataset_id` wherever the dataset is named. Lives HERE, not in app-state, per D-i: a dataset copied to another server, restored from a cold kit, or served from an assets origin must arrive WITH its name — app-state lives at ${DATA_ROOT}/app-state/appstate.db, outside the dataset directory, so today it arrives anonymous. (`owner` and `visibility` stay in app-state: the same directory on two servers legitimately has different owners — D-ii.) `maxLength` is a TRANSCRIPTION of `api/appstate.py` DISPLAY_NAME_MAX = 120, not a new pick; `minLength: 1` transcribes `normalize_presentation_text`, which treats a blank value as CLEARED, so a blank string is never a stored value there and must not be a writable one here — clear the field by REMOVING the key. The duplication of these three caps across two homes is real and is P2-2's to de-duplicate when it migrates the fields off app-state; it is flagged here, not solved here.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "attribution": {
+          "description": "Credit line for the collection — who it came from. Travels with the data for the same reason as `display_name` (D-i). `maxLength` TRANSCRIBES `api/appstate.py` ATTRIBUTION_MAX = 200; `minLength: 1` transcribes the blank-is-cleared rule (see `display_name`).",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "attribution_url": {
+          "description": "Link target for the credit line. `maxLength` TRANSCRIBES `api/appstate.py` ATTRIBUTION_URL_MAX = 500 — bounded well above the credit text because it is a URL, but still bounded because it rides in every dataset-list response. `minLength: 1` transcribes the blank-is-cleared rule. NOT format-checked here: a value that does not parse as an absolute http(s) URL is rendered as inert text by the consumer, the same normative rule `column_roles.url` values follow, so a hostile target is unrepresentable at the point of rendering rather than merely discouraged in a schema.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "default_layout": {
+          "description": "The `layout_id` the viewer opens on (D-iv). FAIL-SOFT BY CONSTRUCTION (D-xvi): this schema cannot and MUST NOT check that the id names a layout the manifest actually carries — that lives in the other file, which changes independently. A `default_layout` naming nothing FALLS BACK to the default (the manifest's first layout, which `layouts` requires to exist with `minItems: 1`) and is NEVER an error. Operator, 2026-09-07: 'if it disappears it should fallback to the default (e.g. first layout).' This is what lets grid become optional (D-viii): the guarantee is 'the default layout resolves', not 'grid always exists'.",
+          "$ref": "#/$defs/layoutIdKey"
+        },
+        "title_column": {
+          "description": "The metadata column whose value titles a cell in the inspector — today every cell is headed 'cell {id}' and never its own title. Names a RAW column name, like the `columns` map keys. Same fail-soft rule: a `title_column` that names nothing falls back to today's behaviour and is never an error.",
+          "$ref": "#/$defs/columnNameKey"
+        }
+      }
+    },
+    "layoutPresentation": {
+      "description": "Presentation overrides for ONE layout (D-xviii). Every key optional.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "description": "Display label shown in the layout switcher, OVERRIDING the `layouts[].label` the bake generated. Operator: 'I definitely would like the option of renaming a layout.' Bounds MIRROR the manifest's own `layoutEntry.label` (`minLength: 1`, no maximum) — derived from the field this overrides rather than picked, so an override can say anything the bake could have said.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "columnPresentation": {
+      "description": "Presentation for ONE metadata column (D-xvii/D-xviii). Every key optional; an absent key means today's behaviour for that aspect. This is the general form D-xvii generalises `column_roles.url` into: the manifest keeps the raw CSV column name as the identifier, and this record says what the column is CALLED and how it is DRAWN.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "description": "Display label for the column, overriding the raw header name (and any `column_roles` label). Operator, on why `url` had to move: 'It is an annotation. A mapping even (maybe a user wants to change the visible names of a column later).' Bounds MIRROR `column_roles.schema.json` `roleEntry.label` (`minLength: 1`, no maximum) — derived from the field it overrides, not picked.",
+          "type": "string",
+          "minLength": 1
+        },
+        "render": {
+          "description": "How the column's VALUE is drawn. An ENUM rather than a boolean specifically so `email` and `image` slot in later without a second mechanism (D-xvii); today the one shipped value is `url`. ABSENT means plain text — there is deliberately no explicit `text` member, because two ways to say the same thing is the trap the enum exists to avoid; un-set it by removing the key. `url` REPLACES `column_roles.url` (D-xvii): the bake only ever VALIDATED that role — nothing was computed from it and no cell moved — so it was presentation collected on the bake's input path. The normative rendering rule carries over UNCHANGED from the `column_roles.url` contract (schema 2.8): a value is a live link ONLY if it parses as an absolute http(s) URL; anything else — javascript:, data:, relative, protocol-relative, malformed — renders as the same inert text as any other field, links carry target=\"_blank\" and rel=\"noopener noreferrer\", nothing ever fetches or HEADs the target, and the column is excluded from free-text search. Those obligations are the CONSUMER's; this file only records the intent.",
+          "type": "string",
+          "enum": ["url"]
+        },
+        "hidden": {
+          "description": "True hides this column from the inspector (D-xviii — which metadata columns the inspector shows is not currently a choice anyone can make). Absent or false means shown, i.e. today's behaviour. A DISPLAY choice only: the column stays in `metadata.parquet`, still appears in `/api/metadata`'s `fields`, and is still queryable — hiding it is not a security control and must never be relied on as one.",
+          "type": "boolean"
+        }
+      }
+    },
+    "layoutIdKey": {
+      "description": "The SHAPE of a layout identifier, transcribed from `layout_manifest.schema.json` `layoutEntry.layout_id` so the two files agree on what an id can look like. Constrains the shape of the key ONLY — it deliberately does not, and cannot, assert that the id RESOLVES to a baked layout (D-xvi).",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+$",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "columnNameKey": {
+      "description": "The SHAPE of a metadata column name, transcribed from `column_roles.schema.json` `roleEntry.column` (`minLength: 1`, no pattern — a CSV header may contain anything). Constrains the shape of the key ONLY; it does not assert the column exists in `metadata.parquet` (D-xvi).",
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

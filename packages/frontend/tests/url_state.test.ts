@@ -13,6 +13,8 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import {
   DATASET_PARAM,
+  isDesignerTabSwitch,
+  mayOpenDesigner,
   pushUrlForView,
   routeForUnavailable,
   sameView,
@@ -208,4 +210,71 @@ test("pushUrlForView: leaving the viewer drops ?d= but keeps other params and th
     pushUrlForView({ kind: "viewer", datasetId: "x" }, { kind: "admin" }, loc("?d=x&utm=a", "#foo")),
     "/?utm=a#foo",
   );
+});
+
+// --- the designer route (seam L3 §2b.1). `?edit=<id>` + `&view=data|layouts`; Overview
+// is the default and writes no `view`, a reload returns to the same tab, and a
+// non-owner is sent to the library with the same non-disclosing notice a viewer link
+// gets.
+
+test("?edit=<id>&view=layouts round-trips through the URL", () => {
+  const view = { kind: "designer", datasetId: "golden_dataset_full_v2", tab: "layouts" } as const;
+  const search = searchFromView(view, "");
+  assert.equal(search, "?edit=golden_dataset_full_v2&view=layouts");
+  assert.deepEqual(viewFromSearch(search ?? ""), view);
+  for (const tab of ["overview", "data", "layouts"] as const) {
+    const v = { kind: "designer", datasetId: "3f9c2a71e0b4", tab } as const;
+    assert.deepEqual(viewFromSearch(searchFromView(v, "") ?? ""), v, `round trip failed for ${tab}`);
+  }
+});
+
+test("Overview is the default and writes no view parameter", () => {
+  assert.equal(searchFromView({ kind: "designer", datasetId: "ds", tab: "overview" }, ""), "?edit=ds");
+  assert.deepEqual(viewFromSearch("?edit=ds"), { kind: "designer", datasetId: "ds", tab: "overview" });
+  // An explicit-overview or unknown tab lands on Overview, where every entrance lands.
+  assert.deepEqual(viewFromSearch("?edit=ds&view=overview"), { kind: "designer", datasetId: "ds", tab: "overview" });
+  assert.deepEqual(viewFromSearch("?edit=ds&view=bogus"), { kind: "designer", datasetId: "ds", tab: "overview" });
+});
+
+test("a reload keeps the tab: the URL written for a tab is the URL read back", () => {
+  // The reload IS viewFromSearch(location.search) at App mount — so this is the reload.
+  const onData = searchFromView({ kind: "designer", datasetId: "ds", tab: "data" }, "?utm=x") ?? "";
+  assert.deepEqual(viewFromSearch(onData), { kind: "designer", datasetId: "ds", tab: "data" });
+  assert.equal(new URLSearchParams(onData).get("utm"), "x", "other parameters survive");
+});
+
+test("moving between viewer and designer never leaves the other's address behind", () => {
+  assert.equal(searchFromView({ kind: "viewer", datasetId: "ds" }, "?edit=ds&view=layouts"), "?d=ds");
+  assert.equal(searchFromView({ kind: "designer", datasetId: "ds", tab: "data" }, "?d=ds"), "?edit=ds&view=data");
+  assert.equal(searchFromView({ kind: "admin" }, "?edit=ds&view=data&utm=a"), "?utm=a");
+});
+
+test("a blank ?edit= falls back like a blank ?d= does", () => {
+  assert.deepEqual(viewFromSearch("?edit=%20"), { kind: "admin" });
+  assert.deepEqual(viewFromSearch("?edit=&d=ds"), { kind: "viewer", datasetId: "ds" });
+});
+
+test("sameView tells designer tabs apart; a tab switch is a REPLACE, not a push", () => {
+  const overview = { kind: "designer", datasetId: "ds", tab: "overview" } as const;
+  const layouts = { kind: "designer", datasetId: "ds", tab: "layouts" } as const;
+  assert.equal(sameView(overview, { ...overview }), true);
+  assert.equal(sameView(overview, layouts), false);
+  assert.equal(isDesignerTabSwitch(overview, layouts), true);
+  // Entering or leaving the designer, or switching collection, is a real navigation.
+  assert.equal(isDesignerTabSwitch({ kind: "admin" }, overview), false);
+  assert.equal(isDesignerTabSwitch(overview, { kind: "admin" }), false);
+  assert.equal(isDesignerTabSwitch(overview, { kind: "designer", datasetId: "other", tab: "layouts" }), false);
+  assert.equal(pushUrlForView(overview, layouts, loc("?edit=ds")), "/?edit=ds&view=layouts");
+});
+
+test("only the owner may open the designer; anyone else is routed through routeForUnavailable", () => {
+  assert.equal(mayOpenDesigner("dalew", "dalew"), true);
+  assert.equal(mayOpenDesigner("dalew", "someone_else"), false);
+  assert.equal(mayOpenDesigner("dalew", null), false, "an anonymous visitor owns nothing");
+  assert.equal(mayOpenDesigner("", ""), false, "an unowned (CLI-seeded) collection is nobody's to edit");
+  assert.equal(mayOpenDesigner(undefined, "dalew"), false);
+  // A signed-in non-owner lands on the LIBRARY, with the non-disclosing notice.
+  const route = routeForUnavailable("ds", "someone_else");
+  assert.deepEqual(route.view, { kind: "admin" });
+  assert.match(route.libraryNotice ?? "", /isn’t available/);
 });

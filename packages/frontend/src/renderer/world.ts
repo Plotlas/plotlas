@@ -10,6 +10,9 @@ import {
   zoomAt,
 } from "./gesture.ts";
 import type { PinchFrame, PointerSample, TapRecord } from "./gesture.ts";
+import { errText } from "../api-client/errText.ts";
+import { rendererFailureError } from "./health.ts";
+import type { RendererFailure, RendererHealthHandle } from "./health.ts";
 
 export interface Viewport {
   width: number;
@@ -69,7 +72,12 @@ export interface World {
 export interface WorldHandle extends World {
   getCameraState(): CameraState;
   getViewport(): Viewport;
-  setCameraState(state: Partial<CameraState>): void;
+  /** `focal` is the one-shot anchored world point the emit carries (see `CameraState`).
+   *  It was missing from this declaration while the implementation has always taken it,
+   *  so a consumer typed against `WorldHandle` could not drive an anchored zoom without
+   *  silently dropping the loader's focal point — the regression audit A2 added the field
+   *  to prevent (review of #267). `interface-catalogue.md` carries the same signature. */
+  setCameraState(state: Partial<CameraState>, focal?: [number, number]): void;
   onDispose(cb: () => void): void;
   /** §0.6: halt the render loop on `webglcontextlost` (no point spinning render
    *  calls a lost context no-ops). No-op once disposed. Reversed by
@@ -215,6 +223,12 @@ export interface PointerInput {
    *  interaction never COMPLETED, so it is not a tap and must not seed a double-tap.
    *  Bind it separately; routing it to `onPointerUp` is the defect this pair replaced. */
   onPointerCancel(e: PointerLike): void;
+  /** `lostpointercapture` — the self-heal for a pointer that ends without either a
+   *  `pointerup` or a `pointercancel` (the capturing element leaves the DOM, the browser
+   *  reclaims the capture). It shares `onPointerCancel`'s path, and after a normal
+   *  up/cancel it is a no-op because the id is already out of the map. Without it a
+   *  leaked id makes every later tap read as a pinch — see `onPointerDown`. */
+  onLostPointerCapture(e: PointerLike): void;
   onWheel(e: WheelLike): void;
   /** See `WorldHandle.consumedGesture`. */
   consumedGesture(): boolean;
@@ -279,6 +293,32 @@ export function createPointerInput(surface: InputSurface, cam: InputCamera): Poi
     }
   }
 
+  /**
+   * The leading pair's pinch frame in CANVAS-RELATIVE pixels.
+   *
+   * `pinchFrame` reads the samples, which are CLIENT coordinates, but `pinchCamera`
+   * measures its anchor from the viewport's own centre (`midX - vp.width / 2`) — a
+   * canvas-relative frame. `onWheel` and the double-tap in `endPointer` both subtract
+   * `getBoundingClientRect()` for exactly that reason, and the pinch must too: without
+   * it the anchored world point, and the `focal` the tile loader orders its loads by,
+   * are off by the canvas's own offset within the viewport.
+   *
+   * That offset is (0,0) today because `.canvas-holder` starts at the viewport top —
+   * which is an ASSUMPTION app.css already flags as due to break (`env(safe-area-inset-
+   * top)` / notch handling, SCOPE §5). Neither tier could see it: the free-tier harness
+   * hands the model a `{left: 0, top: 0}` rect, and `e2e/mobile-pinch.spec.ts` asserts
+   * only the DIRECTION of the zoom. `tests/touch_input.test.ts` now drives an offset
+   * surface for this reason. `dist` is a difference, so it needs no offset.
+   */
+  function localPinchFrame(): PinchFrame | null {
+    const frame = pinchFrame(leadPair);
+    if (frame === null) return null;
+    const rect = surface.getBoundingClientRect();
+    frame.midX -= rect.left;
+    frame.midY -= rect.top;
+    return frame;
+  }
+
   function onPointerDown(e: PointerLike): void {
     if (pointers.size === 0) {
       // A fresh interaction: this is the one place `consumed` is cleared (§2b).
@@ -292,11 +332,29 @@ export function createPointerInput(surface: InputSurface, cam: InputCamera): Poi
       // More than one pointer means a pinch, and a pinch is never a click (§2b) —
       // without this every pinch would end by selecting whatever is under a finger.
       consumed = true;
-      pinchPrev = pinchFrame(leadPair);
+      pinchPrev = localPinchFrame();
     }
     // Capture LAST: it is the one call here that can throw (setPointerCapture rejects a
     // pointerId with no active pointer), and no bookkeeping should be lost if it does.
-    surface.setPointerCapture(e.pointerId);
+    //
+    // ...but if it DOES throw, the entry we just made is a LEAK, and this map is the one
+    // place a leak is unrecoverable: `consumed` and `tapOrigin` are only reset while
+    // `pointers.size === 0`, so one id that can never be ended makes every later tap read
+    // as a pinch — `consumedGesture()` wedges true and tap-to-select is dead for the rest
+    // of the session. The pre-M1 model self-healed for free because it kept one boolean it
+    // reset on every press. The id the browser rejected has no active pointer behind it by
+    // definition, so no `pointerup`/`pointercancel` is coming for it: drop it (review of
+    // #267). `lostpointercapture` — bound alongside the other handlers — covers the other
+    // half, a capture lost without either event (the element leaving the DOM, the browser
+    // reclaiming it).
+    try {
+      surface.setPointerCapture(e.pointerId);
+    } catch (err) {
+      console.warn("[world] setPointerCapture rejected a pointer; dropping it", err);
+      pointers.delete(e.pointerId);
+      reseatLead();
+      pinchPrev = localPinchFrame();
+    }
   }
 
   function onPointerMove(e: PointerLike): void {
@@ -315,7 +373,7 @@ export function createPointerInput(surface: InputSurface, cam: InputCamera): Poi
       // does not drive. Checked BEFORE any camera read, so an ignored pointer costs
       // nothing.
       if (e.pointerId !== leadIdA && e.pointerId !== leadIdB) return;
-      const next = pinchFrame(leadPair);
+      const next = localPinchFrame();
       if (next === null || pinchPrev === null) return;
       const step = pinchCamera(cam.camera(), cam.viewport(), pinchPrev, next, cam.clampZoom);
       pinchPrev = next;
@@ -359,7 +417,7 @@ export function createPointerInput(surface: InputSurface, cam: InputCamera): Poi
     // Re-seat against whoever is left: 3->2 changes WHICH pair leads, and a frame from
     // the old pair would be applied as one huge zoom+pan step. null below two pointers.
     reseatLead();
-    pinchPrev = pinchFrame(leadPair);
+    pinchPrev = localPinchFrame();
     // A finger lifting is not a camera event — nothing is driven here, which is half of
     // why 2->1 does not jump; the other half is that every move kept samples current.
     if (pointers.size > 0) return;
@@ -408,6 +466,14 @@ export function createPointerInput(surface: InputSurface, cam: InputCamera): Poi
     endPointer(e, true);
   }
 
+  function onLostPointerCapture(e: PointerLike): void {
+    // Treated exactly as a cancel: the interaction did not complete, so it must not seed
+    // a double-tap. A no-op on the ordinary path — the browser fires this right after
+    // `pointerup`/`pointercancel`, by which time `pointers.delete` has already returned
+    // false and `endPointer` bails on its `!tracked` guard.
+    endPointer(e, true);
+  }
+
   function onWheel(e: WheelLike): void {
     e.preventDefault();
     const state = cam.camera();
@@ -432,12 +498,74 @@ export function createPointerInput(surface: InputSurface, cam: InputCamera): Poi
     onPointerMove,
     onPointerUp,
     onPointerCancel,
+    onLostPointerCapture,
     onWheel,
     consumedGesture: () => consumed,
   };
 }
 
-export function createWorld(canvas: HTMLCanvasElement, viewport: Viewport): WorldHandle {
+/** The health transitions `createWorld` drives (Seam R1). A `Pick` of the full handle
+ *  rather than the handle itself, so the world can only report — it can never mark
+ *  itself starting or tear the observable down, both of which belong to whoever owns
+ *  the stack's lifetime (`ui/ViewerScreen.ts`). */
+export type WorldHealthSink = Pick<RendererHealthHandle, "markContextLost" | "markContextRestored" | "fail">;
+
+/** Injected pieces of one guarded animation frame (Seam R1 P1). Extracted and exported
+ *  for the same reason `createPointerInput` was: `createWorld` needs a real WebGL canvas,
+ *  so anything left inside its closure is unreachable from BOTH test tiers — and "a
+ *  throw inside the render loop is caught" is precisely a behaviour that must be pinned. */
+export interface FrameGuardDeps {
+  render(): void;
+  /** Stop driving frames. A loop that throws once throws every frame, and 60 identical
+   *  failures a second is not more information than one. */
+  halt(): void;
+  fail(failure: RendererFailure): void;
+}
+
+/**
+ * Wrap one render call so a throw inside the animation loop becomes a NAMED failure
+ * instead of a frozen canvas with nothing on screen — then RE-THROW it.
+ *
+ * The re-throw is not a detail, it is the contract (review R1-01/R1-14). three's animation
+ * chain re-arms itself on the line AFTER it calls us:
+ *
+ *   three.module.js:13516  animationLoop( time, frame );
+ *   three.module.js:13518  requestId = context.requestAnimationFrame( onAnimationFrame );
+ *
+ * so a swallowed throw leaves a DEAD loop being driven every frame forever, where `main`'s
+ * unguarded `renderer.render(...)` threw out of the callback and the chain simply died.
+ * Halting cannot substitute: `stop()` is `cancelAnimationFrame(requestId)` and, called from
+ * inside the callback, that id is the frame already executing — a no-op
+ * (three.module.js:13535-13541). Only the throw ends the chain. It also hands devtools and
+ * `window.onerror` the real stack, which a caught-and-summarised error loses.
+ *
+ * `halt()` still runs first, and is NOT redundant with the throw: it clears three's
+ * `isAnimating`, and `start()` early-returns while that is true (13526), so without it a
+ * later `resumeRenderLoop()` builds a SECOND chain and every frame renders twice. Both
+ * numbers are pinned in tests/renderer_health.test.ts.
+ *
+ * The health observable's value-equality is what keeps a caller that ignores the halt from
+ * re-publishing on every frame.
+ *
+ * The hot path stays allocation-free: `try`/`catch` costs nothing until it catches.
+ */
+export function guardRenderFrame(deps: FrameGuardDeps): () => void {
+  return () => {
+    try {
+      deps.render();
+    } catch (err) {
+      deps.halt();
+      deps.fail({
+        code: "render-loop-failed",
+        layoutId: null,
+        detail: errText(err),
+      });
+      throw err;
+    }
+  };
+}
+
+export function createWorld(canvas: HTMLCanvasElement, viewport: Viewport, health?: WorldHealthSink): WorldHandle {
   const scene = new THREE.Scene();
 
   // Orthographic camera over the [0,1]^2 world. The frustum is recomputed from
@@ -447,12 +575,39 @@ export function createWorld(canvas: HTMLCanvasElement, viewport: Viewport): Worl
   const camera = new THREE.OrthographicCamera(0, 1, 0, 1, 0.1, 100);
   camera.position.set(0.5, 0.5, 10);
 
-  const renderer = new THREE.WebGLRenderer({
-    canvas,
-    antialias: false,
-    alpha: true,
-    powerPreference: "high-performance",
-  });
+  // Seam R1 P1, detection point 1. three r169 asks the canvas for `'webgl2'` and NOTHING
+  // else, throwing `Error creating WebGL context.` when it comes back null (measured
+  // 2026-08-20, node_modules/three/build/three.module.js:28966-28984) — so this catch IS
+  // the WebGL 2 capability check, and a probe for a WebGL 1 context would be code that
+  // can never run. Classifying it here (rather than letting an unlabelled throw reach the
+  // shell's generic catch) is what lets the user be told the browser has no WebGL 2
+  // instead of that "rendering was interrupted".
+  let renderer: THREE.WebGLRenderer;
+  try {
+    renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: false,
+      alpha: true,
+      powerPreference: "high-performance",
+    });
+  } catch (err) {
+    // Review R1-06: classify on the CONDITION, not on the fact that construction threw.
+    // three raises two different construction errors — one when webgl2 is unobtainable,
+    // one when it IS obtainable but our attributes are refused — and `initGLContext` can
+    // throw for reasons of its own. Labelling all of them `webgl2-unavailable` told a user
+    // whose browser has WebGL 2 to reload the page for a browser problem they do not have,
+    // and made the "rebuild the stack" remedy unreachable for every construction failure.
+    //
+    // Asking the canvas is the same discrimination three itself makes one line above its
+    // two `throw`s. Safe HERE and only here: it runs after construction has already
+    // failed, on a canvas the shell replaces before any retry (ViewerScreen keys the
+    // element on the retry epoch), so the default-attribute context this may create can
+    // never become the one we render through.
+    if (canvas.getContext("webgl2") === null) {
+      throw rendererFailureError("webgl2-unavailable", errText(err), err);
+    }
+    throw err; // unclassified: the shell falls back to the rebuild remedy
+  }
 
   const gl = renderer.getContext();
   const maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
@@ -513,14 +668,41 @@ export function createWorld(canvas: HTMLCanvasElement, viewport: Viewport): Worl
   canvas.addEventListener("pointermove", input.onPointerMove);
   canvas.addEventListener("pointerup", input.onPointerUp);
   canvas.addEventListener("pointercancel", input.onPointerCancel);
+  canvas.addEventListener("lostpointercapture", input.onLostPointerCapture);
   canvas.addEventListener("wheel", input.onWheel, { passive: false });
 
-  function renderFrame(): void {
-    // Allocation-free hot path: a single render call. Cell positions and texture
-    // bindings are uploaded to the GPU buffers on tile arrival (cells.ts), not
-    // recomputed per frame — there is no per-frame mesh hook.
-    renderer.render(scene, camera);
+  function haltLoop(): void {
+    if (disposed) return;
+    running = false;
+    renderer.setAnimationLoop(null);
   }
+
+  // Allocation-free hot path: a single render call. Cell positions and texture
+  // bindings are uploaded to the GPU buffers on tile arrival (cells.ts), not
+  // recomputed per frame — there is no per-frame mesh hook. Seam R1 P1, detection
+  // point 2: the call is guarded, so a throw halts the loop and publishes a named
+  // failure rather than leaving a frozen canvas and no signal at all.
+  const renderFrame = guardRenderFrame({
+    render: () => renderer.render(scene, camera),
+    halt: haltLoop,
+    fail: (failure) => health?.fail(failure),
+  });
+
+  // Seam R1 P5: make the LOST-CONTEXT window observable, so a control that cannot work
+  // during it can say why. Recovery itself is the loader's (§0.6, tilePyramid.ts) and is
+  // untouched here — these two listeners only publish: no preventDefault, no loop
+  // change, no camera change. three registers its own pair on the same canvas before the
+  // context even exists, and detailOverlay.ts a third, so the ordering is already
+  // established: independent listeners, none of which observes the others.
+  const onHealthContextLost = (): void => health?.markContextLost();
+  // Reports the EVENT, not a verdict on the stack (review R1-04). This used to call
+  // `markReady`, which cleared any failure standing at the time — including the watchdog's
+  // terminal one. `markContextRestored` applies only to the loss it ended; whether the view
+  // is renderable again is the shell's to say, which is why `WorldHealthSink` no longer
+  // carries `markReady` at all.
+  const onHealthContextRestored = (): void => health?.markContextRestored();
+  canvas.addEventListener("webglcontextlost", onHealthContextLost, false);
+  canvas.addEventListener("webglcontextrestored", onHealthContextRestored, false);
 
   renderer.setSize(vp.width, vp.height, false);
   renderer.setPixelRatio(vp.devicePixelRatio);
@@ -562,9 +744,7 @@ export function createWorld(canvas: HTMLCanvasElement, viewport: Viewport): Worl
       // §0.6: on webglcontextlost, stop driving frames. THREE no-ops render()
       // while the context is lost, so this only avoids spinning the loop; the
       // real point is the reversible pair with resumeRenderLoop (no remount).
-      if (disposed) return;
-      running = false;
-      renderer.setAnimationLoop(null);
+      haltLoop();
     },
     resumeRenderLoop(): void {
       // §0.6: on webglcontextrestored, restart the loop so THREE re-uploads the
@@ -583,7 +763,10 @@ export function createWorld(canvas: HTMLCanvasElement, viewport: Viewport): Worl
       canvas.removeEventListener("pointermove", input.onPointerMove);
       canvas.removeEventListener("pointerup", input.onPointerUp);
       canvas.removeEventListener("pointercancel", input.onPointerCancel);
+      canvas.removeEventListener("lostpointercapture", input.onLostPointerCapture);
       canvas.removeEventListener("wheel", input.onWheel);
+      canvas.removeEventListener("webglcontextlost", onHealthContextLost, false);
+      canvas.removeEventListener("webglcontextrestored", onHealthContextRestored, false);
       // Fire teardown hooks (the tile-pyramid loader aborts in-flight fetches)
       // BEFORE we drop the camera subscriptions, then clear both sets.
       for (const cb of disposeCallbacks) {

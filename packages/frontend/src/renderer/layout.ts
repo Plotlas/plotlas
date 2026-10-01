@@ -546,7 +546,7 @@ export function createLayoutController(
   // the controller only pushes the active manifest + position table (syncDetailOverlay
   // below). A 3-arg controller / GL-free test has no world ⇒ no overlay, unaffected.
   const overlay: DetailOverlay | null =
-    world !== undefined ? createDetailOverlay(world, cellsH, client) : null;
+    world !== undefined ? createDetailOverlay(world, client) : null;
 
   // T2-121 tag-highlight overlay (renderer-only, purely additive): the VISIBLE half of
   // the tag filter — gold borders on matching cells + a dim over the rest, drawn from

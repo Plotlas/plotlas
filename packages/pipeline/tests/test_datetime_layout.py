@@ -1744,6 +1744,51 @@ def test_unix_millis_scaling_is_applied() -> None:
     )
 
 
+def _baked(result) -> dict:
+    """Everything a bake hands the manifest and the viewer, for layout-identity checks."""
+    return {
+        "cells": result.cells.to_pydict(),
+        "bbox": result.bbox,
+        "annotations": result.annotations,
+        "options": result.options,
+        "missing_count": result.missing_count,
+    }
+
+
+# The packed fixture plus one undated cell, so the unplaced strip is in play too.
+_A_DATE_IS_A_DATE = _packed_100_over_11_weeks() + [None]
+
+
+def test_a_stored_timestamp_lays_out_alike_under_every_format() -> None:
+    """A timestamp column is already an instant, so its format changes nothing (#391).
+    Until then the plugin divided every value by 1000 under `unix_millis`, a timestamp's
+    included, and a collection holding a committed `unix_millis` over a stored timestamp
+    baked in January 1970. Every format must give `iso8601`'s layout, on the true dates."""
+    as_iso = _baked(_compute(_A_DATE_IS_A_DATE, fmt="iso8601"))
+    assert as_iso["annotations"]["axes"][0]["domain"][0].startswith("2020-01-01"), "premise"
+    for fmt in ("unix_seconds", "unix_millis"):
+        other = _baked(_compute(_A_DATE_IS_A_DATE, fmt=fmt))
+        moved = [part for part, value in other.items() if value != as_iso[part]]
+        assert moved == [], f"{fmt} moved {moved}: axis {other['annotations']}"
+
+
+@pytest.mark.parametrize("fmt, per_second", [("unix_seconds", 1), ("unix_millis", 1000)])
+def test_an_int64_column_lays_out_as_the_timestamp_it_denotes(fmt: str, per_second: int) -> None:
+    """An int64 column read under its own `unix_*` format lays out exactly as the same
+    instants stored as a timestamp do. The reference is the timestamp, which no format
+    scales, so this fails if the integer scaling is lost (`unix_millis` would floor as
+    year ~52,000 and decline the axis) or applied twice (1970), and it pins that
+    `unix_seconds` is unchanged by #391's move of the scaling into `_to_epoch`."""
+    as_timestamp = _baked(_compute(_A_DATE_IS_A_DATE))
+    as_integers = [
+        None if d is None else int(d.replace(tzinfo=UTC).timestamp()) * per_second
+        for d in _A_DATE_IS_A_DATE
+    ]
+    as_int64 = _baked(_compute(as_integers, fmt=fmt, column_type=pa.int64()))
+    moved = [part for part, value in as_int64.items() if value != as_timestamp[part]]
+    assert moved == [], f"{fmt} moved {moved}: axis {as_int64['annotations']}"
+
+
 def test_deterministic_across_runs() -> None:
     """Same input -> byte-identical geometry (no clock/random in the placement)."""
     years = _years([1600, 1750, 1750, 1900, 2000])

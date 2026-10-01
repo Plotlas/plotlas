@@ -38,11 +38,16 @@ from pathlib import Path
 
 from pipeline.worker import (
     AddLayoutsJobPayload,
+    DeleteLayoutJobPayload,
     IngestJobPayload,
+    LayoutLifecycleError,
     RefreshManifestError,
+    SetRolesJobPayload,
     run_add_layouts,
+    run_delete_layout,
     run_ingest,
     run_refresh_manifest,
+    run_set_roles,
 )
 
 
@@ -136,6 +141,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run_add_layouts_cmd(parser, args)
     if args.command == "refresh-manifest":
         return _run_refresh_manifest_cmd(parser, args)
+    if args.command == "delete-layout":
+        return _run_delete_layout_cmd(parser, args)
+    if args.command == "set-roles":
+        return _run_set_roles_cmd(parser, args)
     parser.print_help()
     return 2
 
@@ -191,6 +200,7 @@ def _run_add_layouts_cmd(parser: argparse.ArgumentParser, args: argparse.Namespa
         layout_specs=[spec for spec in args.layout if spec.strip()],
         output_root=Path(args.output_root),
         column_roles=column_roles,
+        replace=tuple(spec for spec in args.replace if spec.strip()),
     )
 
     if not args.sync:
@@ -208,6 +218,11 @@ def _run_add_layouts_cmd(parser: argparse.ArgumentParser, args: argparse.Namespa
         f"added layouts to dataset {args.dataset_id!r} -> version "
         f"{result['dataset_version']} under {args.output_root}; committed={result['committed']}"
     )
+    # A replace destroys the previous bake of that layout, so it is named on the console
+    # rather than only in ingest.log — "committed=[scatter]" alone cannot tell an operator
+    # whether they added a layout or overwrote hours of work.
+    if result.get("replaced"):
+        print(f"  RE-BAKED over the committed layout(s): {result['replaced']}")
     # add-layouts bakes onto an EXISTING tree, so it is the likelier no-op of the two
     # — but an unowned dataset is just as invisible after adding layouts to it as
     # before, and the operator has no other prompt. Same conditional wording.
@@ -231,6 +246,7 @@ def _run_refresh_manifest_cmd(parser: argparse.ArgumentParser, args: argparse.Na
             dataset_id=args.dataset_id,
             output_root=Path(args.output_root),
             force=args.force,
+            assume_roles_unchanged=args.assume_roles_unchanged,
         )
     except RefreshManifestError as exc:
         # An EXPECTED refusal (already enriched / unsafe to derive) — print the reason
@@ -266,6 +282,203 @@ def _run_refresh_manifest_cmd(parser: argparse.ArgumentParser, args: argparse.Na
             f"WARNING: per-cell reproduction gate SKIPPED for layout(s) {skipped} — no "
             f"baked position table (a pre-2.2 bake); their bbox_exact/annotations/"
             f"missing_count rest on the 6-dp bbox gate alone."
+        )
+    # v2.10: which layouts can now say whether their bake is out of date — and, for the
+    # rest, the exact flag and the assertion it makes. Never imply the flag: state what
+    # the operator would be claiming and let them decide (LAYOUT_DESIGNER D-xxix).
+    written = result.get("fingerprints_written") or []
+    contradicted = result.get("assumption_contradicted") or []
+    # The "still unchecked" list is the layouts this run could not record AND that carry no
+    # record of their own — a layout that already has one is not unchecked, and telling the
+    # operator to assert over it is how a durably stale layout gets laundered to fresh
+    # (2026-09-23 review, finding 3). `assumption_contradicted` is the subset whose
+    # existing record actively disagrees, and it needs the opposite advice.
+    unwritten = [
+        lid
+        for lid in result["layouts"]
+        if lid not in written and lid not in result.get("has_record", [])
+    ]
+    print(
+        f"Recorded how {len(written)} layout(s) read their columns "
+        f"(source_fingerprint, manifest 2.10): {written or 'none'}."
+    )
+    if unwritten:
+        print(
+            f"Layout(s) {unwritten} were NOT checked, so no fingerprint was recorded and "
+            f"they stay 'unchecked' rather than 'fresh'. Re-run with "
+            f"`--assume-roles-unchanged` only if no role has changed since this "
+            f"collection was baked."
+        )
+    if contradicted:
+        print(
+            f"WARNING: layout(s) {contradicted} already record how they read their columns, "
+            f"and that record DISAGREES with the committed roles — evidence that a role HAS "
+            f"changed since the bake. --assume-roles-unchanged did NOT overwrite them. They "
+            f"are durably stale: re-bake them with `pixscope add-layouts --replace <id>`."
+        )
+    return 0
+
+
+def _run_delete_layout_cmd(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    """`pixscope delete-layout` — remove ONE committed layout and the bytes it owned
+    (seam L2 / [[T2-a-layout-cannot-be-deleted-only-the-whole]]). No bake, no decode: the
+    manifest is rewritten without that entry and its `tiles/{layout_id}/` +
+    `positions/{layout_id}_v{N}.arrow` are swept AFTER the flip. `presentation.json` is
+    left alone, including a `default_layout` this delete just orphaned (D-xvi: it falls
+    back on read). Refuses to remove the LAST layout. Offline against the tree, like
+    `refresh-manifest` — no --sync, no API, no Redis."""
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    payload = DeleteLayoutJobPayload(
+        dataset_id=args.dataset_id,
+        owner=_resolve_owner(args.owner),
+        layout_id=args.layout,
+        output_root=Path(args.output_root),
+    )
+    try:
+        result = run_delete_layout(payload)
+    except LayoutLifecycleError as exc:
+        # An EXPECTED refusal (not committed / would leave zero layouts / a concurrent
+        # writer landed) — print the reason cleanly and exit non-zero, no traceback.
+        print(str(exc))
+        return 2
+    print(
+        f"deleted layout {result['deleted']!r} from dataset {args.dataset_id!r} -> "
+        f"dataset_version {result['dataset_version']}; remaining layouts="
+        f"{result['layouts']} under {args.output_root}"
+    )
+    # The sweep is the irreversible half (D-xxii: free by the file test, and permanent),
+    # so it is REPORTED rather than left to the log — an operator who expected bytes to go
+    # and sees "swept 0 file(s)" has learned something, and so has one who did not.
+    print(f"  swept {len(result['swept'])} file(s): {result['swept'] or 'none'}")
+    return 0
+
+
+def _run_set_roles_cmd(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    """`pixscope set-roles` — re-declare a committed dataset's `column_roles` with NO
+    bake (seam L2 / [[T2-a-role-cannot-be-changed-without-also-queueing]]). The roles JSON
+    REPLACES the committed map wholesale and is re-validated against the existing
+    metadata.parquet exactly as `add-layouts --column-roles` validates it. Prints the
+    stale set — which committed layouts the change invalidates — because that is the
+    output the change is FOR, plus the three other buckets the edit can produce and
+    nothing else reports: layouts whose provenance is unknown, layouts the roles can no
+    longer produce (split into RENAMED and ORPHANED — opposite causes, opposite advice),
+    and a tag sidecar that no longer matches the declared tag roles. Offline against the
+    tree, like `refresh-manifest`."""
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    payload = SetRolesJobPayload(
+        dataset_id=args.dataset_id,
+        owner=_resolve_owner(args.owner),
+        column_roles=json.loads(Path(args.column_roles_path).read_text(encoding="utf-8")),
+        output_root=Path(args.output_root),
+    )
+    try:
+        result = run_set_roles(payload)
+    except LayoutLifecycleError as exc:
+        print(str(exc))
+        return 2
+    print(
+        f"set roles on dataset {args.dataset_id!r} -> manifest_version "
+        f"{result['manifest_version']} (dataset_version {result['dataset_version']} "
+        f"UNCHANGED — no bake) under {args.output_root}"
+    )
+    print(f"  columns whose role changed: {result['changed_columns'] or 'none'}")
+    print(f"  layouts now STALE: {result['stale_layouts'] or 'none'}")
+    # EVERY COMMAND BELOW IS COMPLETE AND RUNNABLE (2026-09-10 round-2 review finding B).
+    # The first cut interpolated real ids into PARTIAL commands, so they read as
+    # copy-pasteable while none of them ran. Measured 2026-09-10 by handing each to
+    # `_build_parser().parse_args`, all four exit 2: `add-layouts --column-roles {path}`
+    # and `add-layouts --layout {new_id}` (`--images`, `--dataset-id`, `--layout`),
+    # `delete-layout --layout {old_id}` and `refresh-manifest --force` (`--dataset-id`) —
+    # and an `add-layouts` without `--sync` parses but returns 2 without baking.
+    # The rule is `_print_ownership_next_steps`': print the WHOLE command, and use a
+    # `<placeholder>` only for what this process genuinely cannot know — which here is the
+    # original images directory, since `set-roles` never receives one. Placeholders are
+    # single tokens so a pasted line still splits the way a shell would.
+    target = f"--dataset-id {args.dataset_id} --output-root {args.output_root}"
+    bake = f"pixscope add-layouts --images <original-images-dir> {target}"
+    delete = f"pixscope delete-layout {target}"
+    # The two honest silences, printed rather than omitted. An empty stale set on a tree
+    # full of pre-2.9 entries would otherwise read as "nothing was affected" when the
+    # truth is "nothing recorded what it was built from".
+    if result["unknown_layouts"]:
+        # `--force` is REQUIRED, not optional decoration (2026-09-09 review finding 2).
+        # `refresh-manifest` refuses without it whenever the manifest is >= 2.5 AND any
+        # layout carries `bbox_exact`/`annotations` — and `bbox_exact` has been emitted on
+        # EVERY layout since 2.5, so every 2.5-2.8 tree is "already enriched". 2.5-2.8 is
+        # exactly the population that has unknown layouts (no `source_columns`, which
+        # arrived at 2.9), so the plain command refuses on every tree this line is printed
+        # for. Measured 2026-09-09 on `tests/fixtures/golden_dataset_full_v2` (stamped
+        # 2.8, 6 `bbox_exact` keys, 3 `annotations` keys): exit 2, "already at
+        # manifest_version '2.8' carrying the 2.5 enrichment — nothing to do."
+        print(
+            f"  layouts whose provenance is UNKNOWN (baked before manifest 2.9, so they "
+            f"record no source_columns — staleness cannot be decided for them): "
+            f"{result['unknown_layouts']}. `pixscope refresh-manifest {target} --force` "
+            f"backfills it with no re-bake (`--force` because every tree at 2.5-2.8 "
+            f"already carries the 2.5 enrichment, which refresh refuses to re-derive "
+            f"without it)."
+        )
+        if result["orphaned_layouts"]:
+            # The second half of the same trap: with an orphan present, refresh fails on
+            # the unmappable-layout check instead, and --force does not help.
+            print(
+                f"  ...but not until {result['orphaned_layouts']} are resolved: refresh "
+                f"refuses a manifest holding a layout it cannot reproduce from the roles, "
+                f"with or without --force."
+            )
+    if result["renamed_layouts"]:
+        # NOT the orphan message. These layouts kept their role AND their column pairing;
+        # only the family's naming convention moved under them, and telling the operator
+        # to delete a live layout because "the column lost its role" is both wrong and
+        # destructive (finding 1). A layout whose columns changed is NOT in here — the
+        # re-bake below would then place different data under the same name (finding A).
+        for old_id, new_id in sorted(result["renamed_layouts"].items()):
+            print(
+                f"  NOTE: layout {old_id!r} would now be baked as {new_id!r} from the "
+                f"SAME column(s) — the family's layout_id convention changed when the "
+                f"number of declared entries crossed one. Its committed tiles are "
+                f"untouched and still served. To adopt the new id, re-bake it with "
+                f"`{bake} --layout {new_id} --sync` and then remove the old entry with "
+                f"`{delete} --layout {old_id}`."
+            )
+    if result["orphaned_layouts"]:
+        print(
+            f"  WARNING: layout(s) {result['orphaned_layouts']} can no longer be produced "
+            f"from these roles — no declared role reproduces those layout_ids from the "
+            f"column(s) they were baked from. They keep serving their committed tiles, "
+            f"but nothing can re-bake them: remove them with "
+            f"`{delete} --layout <layout-id>`, or restore the role — for a scatter or "
+            f"geographic layout, the exact column PAIR — they were baked from."
+        )
+    # The tag sidecar is the FOURTH bucket (finding 3): it is a BAKED asset, so a
+    # roles-only edit can leave the declaration and the sidecar disagreeing in either
+    # direction, and nothing else in this output would say so.
+    if result["unserved_tag_roles"]:
+        # The re-stage is a BAKE, so it needs a layout to bake: naming an already-committed
+        # one with `--replace` is the form that always exists (a brand-new layout id would
+        # do too, but there may not be one). The sidecar is staged ONCE PER RUN and
+        # re-pointed on every flip, so which layout is named does not matter.
+        print(
+            f"  WARNING: tag role(s) {result['unserved_tag_roles']} are declared but the "
+            f"committed tag sidecar does not carry them — each filter will come back "
+            f"EMPTY in the viewer. Only a bake writes the sidecar: re-stage it with "
+            f"`{bake} --layout <layout-id> --replace <layout-id> --column-roles "
+            f"{args.column_roles_path} --sync`, naming any one committed layout (it is "
+            f"re-baked; the sidecar is re-staged once for the run)."
+        )
+    if result["stale_tag_sidecar"]:
+        # CLEARED, not merely reported (2026-09-10 round-2 review finding B2). This used to
+        # say the block was "repointed only by a bake", and no bake repoints it:
+        # `_stage_tags_sidecar` returns None when the roles carry no tag role, so
+        # `append_manifest_layouts` carries the committed `tags` dict straight through
+        # every `add-layouts` run. `set-roles` now removes the block itself — see
+        # `run_set_roles`. The sidecar FILE is deliberately left where it is.
+        print(
+            f"  NOTE: these roles declare no tag column, so the manifest's `tags` block — "
+            f"which pointed at {result['stale_tag_sidecar']!r} — has been REMOVED, and the "
+            f"viewer stops offering filters for the role that is gone. The sidecar file "
+            f"itself is left on disk, now referenced by nothing: no bake reads it and no "
+            f"verb sweeps it, so delete it by hand if you want the bytes back."
         )
     return 0
 
@@ -365,6 +578,24 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="column_roles_path",
         help="optional column_roles JSON that REPLACES the committed roles (re-validated against the existing metadata.parquet)",
     )
+    # --replace (seam L2 / [[T2-add-layouts-cannot-replace-a-committed-layout]]): opt in,
+    # PER LAYOUT, to re-baking a layout that is already committed. Without it the
+    # collision guard is exactly what it always was and refuses every existing id --
+    # the silent overwrite is the footgun this area was hardened against, so this is a
+    # per-id opt-out and deliberately not a --force mode. Each id must also be passed
+    # with --layout (it has to be in the bake plan) and must already be committed.
+    add_layouts.add_argument(
+        "--replace",
+        action="append",
+        default=[],
+        metavar="LAYOUT_ID",
+        help=(
+            "RE-BAKE this already-committed layout instead of refusing the collision "
+            "(repeatable). The layout_id and its position in the switcher are preserved, "
+            "and the superseded tiles + position table are swept after the flip. Must "
+            "also be passed with --layout"
+        ),
+    )
 
     # refresh-manifest (T2-69/T2-72 Seam 2 backfill): enrich an EXISTING bake's manifest
     # with the v2.5 annotations (categorical band labels + datetime axis domain) +
@@ -387,6 +618,73 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="re-derive + overwrite even if the manifest is already 2.5-enriched (e.g. after a layout-plugin change)",
     )
+    # v2.10 (LAYOUT_DESIGNER D-xxix). Refresh records `source_fingerprint` — HOW each
+    # layout read its columns — only where its per-cell gate PROVED the committed roles
+    # reproduce the baked positions. This flag is the operator supplying the one thing the
+    # software cannot check, and the help text states the assertion rather than describing
+    # the flag, because that assertion is what is being taken on trust.
+    refresh.add_argument(
+        "--assume-roles-unchanged",
+        dest="assume_roles_unchanged",
+        action="store_true",
+        help=(
+            "assert that NO ROLE HAS CHANGED since this collection was baked, so the v2.10 "
+            "source_fingerprint is recorded for the layouts the per-cell reproduction gate "
+            "could not check (those with no baked position table). Without it those layouts "
+            "keep whatever they had and stay 'unchecked' -- which is the honest default"
+        ),
+    )
+
+    # delete-layout (seam L2 / [[T2-a-layout-cannot-be-deleted-only-the-whole]]): remove
+    # ONE committed layout — the manifest entry, its tiles/ container and its position
+    # table. No bake and no decode, so it runs offline against the tree exactly like
+    # refresh-manifest (no --images, no --sync, no API/Redis). Refuses to remove the last
+    # layout, and never touches presentation.json (D-xvi: a default_layout naming the
+    # deleted layout is left to fall back on read).
+    delete_layout = sub.add_parser(
+        "delete-layout",
+        help="remove one committed layout and the bytes it owned (no re-bake)",
+    )
+    delete_layout.add_argument("--dataset-id", required=True, dest="dataset_id")
+    delete_layout.add_argument(
+        "--layout",
+        required=True,
+        help="the committed layout_id to remove (e.g. 'categorical_kingdom')",
+    )
+    delete_layout.add_argument(
+        "--output-root",
+        dest="output_root",
+        default=_default_output_root,
+        help="root under which /{dataset_id}/ lives (default matches ingest's, decision D-30)",
+    )
+    delete_layout.add_argument("--owner", default=None, help=_OWNER_HELP)
+
+    # set-roles (seam L2 / [[T2-a-role-cannot-be-changed-without-also-queueing]]):
+    # re-declare column_roles with NO bake. Until now `column_roles` could only ride as a
+    # passenger on `ingest` or on an `add-layouts` bake, so D-ix's declared-but-
+    # invalidating tier had no write path and a layout could never be left honestly
+    # stale. Offline against the tree, like refresh-manifest and delete-layout.
+    set_roles = sub.add_parser(
+        "set-roles",
+        help="re-declare a committed dataset's column_roles with no bake, and report what it stales",
+    )
+    set_roles.add_argument("--dataset-id", required=True, dest="dataset_id")
+    set_roles.add_argument(
+        "--column-roles",
+        dest="column_roles_path",
+        required=True,
+        help=(
+            "path to a column_roles JSON file that REPLACES the committed roles "
+            "wholesale (not a patch), re-validated against the existing metadata.parquet"
+        ),
+    )
+    set_roles.add_argument(
+        "--output-root",
+        dest="output_root",
+        default=_default_output_root,
+        help="root under which /{dataset_id}/ lives (default matches ingest's, decision D-30)",
+    )
+    set_roles.add_argument("--owner", default=None, help=_OWNER_HELP)
     return parser
 
 

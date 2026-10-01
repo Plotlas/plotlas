@@ -89,6 +89,9 @@ from pipeline.layout_plugins.base import (
     packed_ids,
     spatial_bbox,
 )
+# The ONE per-entry fingerprint rule (v2.10). Imported from the EMITTER, which is where the
+# knob default maps the tuple is derived from already live, so no plugin hand-copies a tuple.
+from pipeline.manifest import role_entry_fingerprints
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -256,4 +259,16 @@ class ScatterLayout(LayoutPlugin):
             # never WHERE. The manifest described this population nowhere at all until now.
             # manifest.py writes the key unconditionally, 0 included.
             missing_count=len(unplaced),
+            # v2.9 provenance: BOTH axis columns — a scatter layout consumes a PAIR, so a
+            # change to either one stales it. `dict.fromkeys` keeps first-seen order (x then
+            # y) and collapses the degenerate x_column == y_column case to one name: this is
+            # the SET of columns depended on, and the pair structure is already recorded in
+            # `column_roles` and echoed in `options`.
+            source_columns=tuple(dict.fromkeys((entry.x_column, entry.y_column))),
+            # v2.10: this PAIR's two tuples — one per axis, each naming its partner and the
+            # four shaping knobs, which DO belong here (a `log` re-scale moves every cell).
+            # A second pair sharing `x_column` adds a tuple to that column's union and none
+            # to this record, so it cannot stale this layout. On the degenerate
+            # x_column == y_column the single key carries BOTH tuples.
+            source_fingerprint=role_entry_fingerprints("scatter", entry),
         )

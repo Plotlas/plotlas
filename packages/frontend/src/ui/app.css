@@ -54,7 +54,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   background: var(--surface); color: var(--text-2); border: 1px solid var(--line);
   border-radius: var(--r-ctrl); padding: 0.35rem 0.7rem;
 }
-.mode-btn:hover:not(:disabled), .layout-tab:hover:not(:disabled) {
+.mode-btn:hover:not(:disabled):not(.is-blocked), .layout-tab:hover:not(:disabled) {
   background: var(--raised); color: var(--text);
 }
 /* Segmented "on" state: accent fill + ink text + weight 700 (design addendum). */
@@ -64,7 +64,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 /* The on-state must hold under the cursor: the base hover rule above is more
  * specific (class + :hover + :not(:disabled)), so restate the fill for hover. */
-.mode-btn-active:hover:not(:disabled), .layout-tab-active:hover:not(:disabled) {
+.mode-btn-active:hover:not(:disabled):not(.is-blocked), .layout-tab-active:hover:not(:disabled) {
   background: var(--accent); color: var(--accent-ink);
 }
 .link-btn { background: none; border: none; color: var(--accent); padding: 0.25rem; }
@@ -121,15 +121,18 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .status-processing { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
 .status-error { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); }
 
-.wizard { max-width: 640px; padding: 1rem; display: flex; flex-direction: column; gap: 0.4rem; overflow: auto; }
+/* `margin-inline: auto` is what centres it: .wizard is a flex ITEM of .admin-screen
+   (a column flex container), so the default cross-axis `stretch` was capped by the
+   max-width and the box settled at flex-start — flush against the left edge, with the
+   rest of the viewport empty. An auto inline margin absorbs the free space on both
+   sides instead. The 640px cap is deliberately UNTOUCHED: whether that is the right
+   container at all is the intake design pass's question
+   (backlog/T2-the-intake-wizard-is-a-640-px-column-pinned-left.md), and this seam is
+   only fixing the alignment. */
+.wizard { max-width: 640px; margin-inline: auto; padding: 1rem; display: flex; flex-direction: column; gap: 0.4rem; overflow: auto; }
 .wizard-actions { display: flex; align-items: center; gap: 0.6rem; }
 .layout-checkboxes { display: flex; gap: 1rem; }
 .checkbox-label { display: inline-flex; align-items: center; gap: 0.3rem; }
-/* Add-layout wizard (T2-92 Seam 1): vertical list of producible layouts — new ones
-   pickable, already-baked ones shown dimmed + disabled. */
-.addlayout-list { display: flex; flex-direction: column; gap: 0.35rem; }
-.addlayout-existing { opacity: 0.6; }
-.addlayout-id { font-family: var(--mono); font-size: 0.78rem; }
 .role-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; }
 .role-row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
 .role-column-name { min-width: 10rem; font-family: var(--mono); color: var(--text-2); }
@@ -320,7 +323,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   padding: 0.4rem 0.5rem; border-radius: var(--r-ctrl); cursor: pointer;
   border: 1px solid transparent;
 }
-.search-row:hover, .search-row.active { background: var(--raised); border-color: var(--line); }
+.search-row:hover:not(.is-blocked), .search-row.active { background: var(--raised); border-color: var(--line); }
 .search-row-primary { color: var(--text); overflow-wrap: anywhere; }
 .search-row-secondary { font-size: 0.78rem; }
 
@@ -389,7 +392,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   background: var(--surface); color: var(--text); border: 1px solid var(--line);
   border-radius: var(--r-ctrl); padding: 0.4rem 0.8rem;
 }
-.btn:hover:not(:disabled) { background: var(--raised); }
+.btn:hover:not(:disabled):not(.is-blocked) { background: var(--raised); }
 .btn:disabled { cursor: not-allowed; opacity: 0.55; }
 .btn.pri {
   background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700;
@@ -584,6 +587,195 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .progress-state { margin: 0; font-weight: 600; }
 .wait-copy { margin: 0; font-size: 0.85rem; }
 .log-disclosure { display: flex; flex-direction: column; gap: 0.4rem; }
+/* ── Seam L3: the layout designer (docs/design/LAYOUT_DESIGNER.md) ────────
+ * One designer, three views, one bar (D-xix): the chrome, the commit bar, Overview, the
+ * collection delete dialog, and the library card's
+ * Edit. Boards: Main, LibraryCard, DeleteConfirm, MobileData / MobileLayouts (390 px).
+ * Token-only, additive — no existing selector changes. */
+
+/* The library card's `Edit` — the note says why it is offered (the owner sees it). */
+.card-owner-note { margin-left: auto; font-size: 0.78rem; }
+
+.designer-screen { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.designer-mono { font-family: var(--mono); }
+.designer-kicker {
+  margin: 0; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.designer-loading {
+  padding: 2rem 1.1rem; display: flex; flex-direction: column; gap: 0.8rem; align-items: flex-start;
+}
+
+/* Header: brand, breadcrumb Library › name, the owner-only pill, Open atlas. */
+.designer-topbar {
+  display: flex; align-items: center; gap: 1rem; min-width: 0;
+  padding: 0.6rem 1.1rem; background: var(--bar); border-bottom: 1px solid var(--line);
+}
+.designer-back { display: none; padding: 0.2rem 0.6rem; font-size: 1.1rem; }
+.designer-title { display: flex; flex-direction: column; min-width: 0; }
+.designer-title-kicker { display: none; }
+.designer-crumbs { display: flex; align-items: center; gap: 0.4rem; min-width: 0; }
+.designer-crumb-library { color: var(--text-2); }
+.designer-crumb-sep { color: var(--muted); }
+.designer-crumb-name {
+  font-weight: 600; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.designer-topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 0.75rem; flex: none; }
+.designer-owner-pill {
+  font-family: var(--mono); font-size: 0.72rem; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 999px; padding: 0.1rem 0.55rem;
+}
+.designer-pill-warn { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.designer-pill-quiet { color: var(--text-2); border-color: var(--line); }
+
+/* The segmented control Overview · Data {n} · Layouts {n}, and the meta line. */
+.designer-tabbar {
+  display: flex; align-items: center; gap: 0.6rem 1rem; flex-wrap: wrap;
+  padding: 0.6rem 1.1rem; border-bottom: 1px solid var(--line);
+}
+.designer-tabs .designer-tab { display: inline-flex; align-items: center; gap: 0.45rem; padding: 0.5rem 0.9rem; }
+.designer-tab-count {
+  font-family: var(--mono); font-size: 0.78rem;
+  border: 1px solid var(--line); border-radius: var(--r-ctrl); padding: 0 0.4rem;
+}
+.designer-tab-badge {
+  font-family: var(--mono); font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.03em;
+  color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: 999px; padding: 0 0.4rem;
+}
+.seg button.on .designer-tab-count,
+.seg button.on .designer-tab-badge { color: var(--accent-ink); border-color: currentColor; }
+.designer-meta { margin: 0 0 0 auto; font-family: var(--mono); font-size: 0.78rem; color: var(--text-2); }
+
+.designer-body { flex: 1; min-height: 0; min-width: 0; overflow: auto; padding: 1rem 1.1rem; }
+/* A reload that failed once the designer had loaded: the last good data stays on screen. */
+.designer-reload-error {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem 1rem;
+  padding: 0.5rem 1.1rem; color: var(--err); overflow-wrap: anywhere;
+  border-bottom: 1px solid color-mix(in srgb, var(--err) 40%, var(--line));
+}
+
+/* Overview: identity header, two doors, the presentation panel. */
+.overview { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.overview-identity { display: flex; align-items: flex-start; gap: 1rem; min-width: 0; }
+.overview-identity-main { flex: 1; min-width: 0; }
+.overview-name { margin: 0; font-size: 1.15rem; font-weight: 700; overflow-wrap: anywhere; }
+.overview-tech {
+  margin: 0.2rem 0 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.3rem;
+  font-size: 0.78rem; color: var(--text-2); overflow-wrap: anywhere;
+}
+.overview-copy { font-size: 0.78rem; }
+.overview-tech-fact { white-space: nowrap; }
+.overview-copy-hint { color: var(--accent); white-space: nowrap; }
+.overview-delete { flex: none; font-size: 0.82rem; color: var(--muted); }
+/* Two doors side by side while each gets 20rem, one above the other below that — an
+ * intrinsic reflow, so it needs no breakpoint of its own. */
+.overview-doors { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(20rem, 100%), 1fr)); gap: 1rem; }
+.overview-door { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
+.overview-door-head { display: flex; align-items: baseline; gap: 0.3rem 0.6rem; flex-wrap: wrap; }
+.overview-door-title { margin: 0; font-size: 1rem; font-weight: 600; }
+.overview-open { margin-left: auto; padding: 0.25rem 0.6rem; }
+.overview-door-text { margin: 0; color: var(--text-2); }
+.overview-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.overview-offer {
+  font-family: var(--mono); font-size: 0.72rem; text-transform: uppercase;
+  color: var(--ok); border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent);
+  border-radius: 999px; padding: 0.1rem 0.55rem;
+}
+.overview-offer-note { text-transform: none; color: var(--muted); }
+.overview-warn { margin: 0; color: var(--accent); overflow-wrap: anywhere; }
+.overview-presentation { display: flex; flex-direction: column; gap: 0.8rem; min-width: 0; }
+.overview-saved-chip {
+  font-family: var(--mono); font-size: 0.72rem; color: var(--ok);
+  border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent); border-radius: 999px; padding: 0.05rem 0.5rem;
+}
+/* 22rem per field: three across at the 1440 board's width, as `Main` draws them (a 15rem
+ * floor packed five and wrapped the labels), fewer as it narrows, one at 390. */
+.overview-fields {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(22rem, 100%), 1fr)); gap: 0.9rem 1rem;
+}
+.overview-field { min-width: 0; }
+.overview-field input, .overview-field select { width: 100%; min-width: 0; }
+.overview-field-label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4rem; font-size: 0.85rem; color: var(--text-2); }
+.overview-field-error { font-size: 0.8rem; }
+.designer-field-status { font-family: var(--mono); font-size: 0.72rem; color: var(--muted); }
+.designer-saved { color: var(--ok); }
+.overview-pointer { margin: 0; padding: 0.35rem 0; }
+.overview-pointer .designer-mono { white-space: nowrap; }
+.overview-footnote { margin: 0; font-size: 0.82rem; }
+
+/* The Data and Layouts views' heading. */
+.designer-section-title { margin: 0; font-size: 1rem; font-weight: 600; }
+
+/* The commit bar — designer level, identical on every tab. */
+.commit-bar {
+  flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 0.6rem 1rem;
+  padding: 0.7rem 1.1rem; background: var(--bar); border-top: 1px solid var(--line);
+}
+.commit-counts { display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; min-width: 0; }
+.commit-count { min-width: 0; }
+.commit-count-title { margin: 0; color: var(--text-2); }
+.commit-count-n { color: var(--accent); }
+.commit-count-line { margin: 0; font-size: 0.8rem; color: var(--text-2); overflow-wrap: anywhere; }
+.commit-count-cols { font-family: var(--mono); }
+.commit-empty { margin: 0; color: var(--muted); }
+.commit-problem { margin: 0; color: var(--err); overflow-wrap: anywhere; }
+.commit-actions { margin-left: auto; display: flex; align-items: center; gap: 0.6rem; }
+.commit-note { margin: 0; max-width: 22rem; text-align: right; font-size: 0.82rem; color: var(--text-2); }
+
+/* The collection delete dialog — the loud half of a quiet trigger (D-xxii). */
+.designer-modal-scrim {
+  position: fixed; inset: 0; z-index: 50; background: var(--scrim);
+  display: flex; align-items: center; justify-content: center; padding: 1rem;
+}
+.designer-modal {
+  width: min(30rem, 100%); display: flex; flex-direction: column; gap: 0.8rem;
+  border-color: color-mix(in srgb, var(--err) 45%, var(--line));
+}
+.designer-modal-head { display: flex; align-items: center; flex-wrap: wrap; gap: 0.6rem; }
+.designer-danger-badge {
+  font-family: var(--mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--err); border: 1px solid color-mix(in srgb, var(--err) 45%, transparent);
+  border-radius: 999px; padding: 0.05rem 0.5rem;
+}
+.designer-modal-title { margin: 0; font-size: 1rem; font-weight: 600; overflow-wrap: anywhere; }
+.designer-modal-body { margin: 0; color: var(--text-2); }
+.designer-modal-body strong { color: var(--text); }
+.designer-confirm-field { gap: 0.35rem; }
+.designer-hint { font-size: 0.78rem; }
+.designer-modal-actions { display: flex; justify-content: flex-end; gap: 0.6rem; }
+/* `DeleteConfirm` draws the armed button FILLED: once the name is typed, the one action
+ * left on the dialog is the destructive one, and it should read as such. Disabled keeps
+ * the shared outline-at-reduced-opacity look. */
+.designer-modal-actions .btn.danger:not(:disabled) { background: var(--err); color: var(--accent-ink); }
+
+/* 390 × 844 (MobileData / MobileLayouts): back chevron + "Layout designer" + name, the
+ * three tabs across the width, the bar's buttons full width. No horizontal scroll: every
+ * flex/grid child above carries min-width: 0 and long names ellipsize or wrap.
+ *
+ * The designer's ONE width query, and deliberately the library grid's existing 700px so
+ * the app still has a single narrow threshold for its non-viewer screens. It is not a
+ * viewer breakpoint: the viewer's narrow mode stays M2's derived, holder-measured class
+ * (the three "no viewer media query" pins list it by name). */
+@media (max-width: 700px) {
+  .designer-topbar { gap: 0.6rem; padding: 0.55rem 0.7rem; }
+  .designer-back { display: inline-flex; }
+  .designer-brand, .designer-crumb-library, .designer-crumb-sep, .designer-owner-pill, .designer-user { display: none; }
+  .designer-title-kicker { display: block; }
+  .designer-topbar-actions { gap: 0.5rem; }
+  .designer-tabbar { padding: 0.6rem 0.7rem; }
+  .designer-tabs { width: 100%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .designer-tabs .designer-tab { justify-content: center; flex-wrap: wrap; padding: 0.55rem 0.4rem; }
+  .designer-meta { margin-left: 0; }
+  .designer-body { padding: 0.8rem 0.7rem; }
+  .overview-identity { flex-direction: column; gap: 0.4rem; }
+  .commit-bar { padding: 0.6rem 0.7rem; }
+  .commit-note { display: none; }
+  .commit-actions { margin-left: 0; width: 100%; }
+  .commit-actions .btn { flex: 1; justify-content: center; }
+  .commit-actions .commit-review { flex: 2; }
+}
+
 /* ── Phase B: Explorer cockpit ──────────────────────────────────────────
  * Full-bleed canvas with floating panels + a docked status bar + minimap.
  * The .canvas-holder (holderRef) is the canvas AREA only — the status bar is a
@@ -777,7 +969,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   bottom: calc(var(--minimap-bottom) + var(--minimap-h) + 6px); z-index: 10;
   padding: 0.25rem 0.55rem; font-size: 0.8rem; color: var(--text-2);
 }
-.fit-view-btn:hover { color: var(--text); }
+.fit-view-btn:hover:not(.is-blocked) { color: var(--text); }
 
 /* Minimap: bottom-right, 14px above the status bar (live overview — T2-54). */
 .minimap {
@@ -1125,9 +1317,18 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 /* (3) The derived gaps. The chip pitch is the load-bearing one: chips wrap, so the row
  * gap IS the vertical distance between two hit areas. 44 - 25 = 19px. Without it the
  * overlays of two stacked rows overlap by 14px and a tap in that band toggles the tag
- * ABOVE the one under the finger. The column gap is untouched (see the residual note). */
-.chip { min-height: var(--chip-h); }
-.chip-row { row-gap: calc(var(--touch-min) - var(--chip-h)); }
+ * ABOVE the one under the finger. The column gap is untouched (see the residual note).
+ *
+ * SCOPED to .viewer-screen like every other rule in this block, and here that is not
+ * house style — it is correctness. `--touch-min` and `--chip-h` are declared ON
+ * `.viewer-screen`, so outside it both `var()`s are undefined and the whole declaration
+ * is invalid at computed-value time: `row-gap` falls back to its initial `normal` and
+ * SILENTLY drops the `gap: 0.3rem` that `.chip-row` sets above. `.chip` is shared
+ * vocabulary — only TagControls renders a `.chip-row` today, so unscoped this was a
+ * latent break waiting for the first chip row on a card or a wizard step (review of
+ * #267). */
+.viewer-screen .chip { min-height: var(--chip-h); }
+.viewer-screen .chip-row { row-gap: calc(var(--touch-min) - var(--chip-h)); }
 
 /* Docked status bar, mono + muted.
  *
@@ -1174,6 +1375,20 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .status-loading { color: var(--accent); }
 /* T2-120 (Fix B/C): honest "tags unavailable" read-out — a muted-warning tint. */
 .status-tags-unavailable { color: var(--err); }
+/* Seam R2 P3: "images not loading". Rendered only while the loader's tile reads are
+   actually failing, so unlike the read-outs below it is never the resting state — and it
+   is deliberately NOT in the `.cockpit-narrow` hide list: a phone visitor watching an
+   atlas go stale needs this exactly as much as a desktop one, and it is a different class
+   from `.status-tiles` (the loading COUNT, which is instrumentation).
+   KNOWN INTERACTION, tracked as [[T2-244]] — NOT settled here. During an outage this adds
+   an item to the narrow bar, and Seam M3 §3.4's "every rendered item shows its FULL TEXT
+   at 390px" (pinned by e2e/touch-surfaces.spec.ts) could ellipsize in that state; neither
+   e2e spec can reach it, because both run against a healthy backend. Containment itself
+   still holds — `.status-group` and `.status-item` both set `overflow: hidden`, which is
+   what mobile-viewport.spec.ts's scrollWidth clamp measures. The row carries the
+   measurement that is still owed and the trade to decide; a deviation from a shipped
+   seam's acceptance criterion does not belong in a comment. */
+.status-tiles-failing { color: var(--err); }
 
 /* ── Seam M3 §3.4 — the narrow bar shows FEWER read-outs (SCOPE S5) ───────────────
  * M0 made the bar FIT (`scrollWidth === clientWidth`) but not READ: measured 2026-08-06
@@ -1514,6 +1729,40 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .selection-notes { display: flex; flex-direction: column; gap: 0.2rem; align-items: flex-start; }
 .selection-note { margin: 0; font-size: 0.8rem; overflow-wrap: anywhere; }
 
+/* ── Seam A1 (intake honesty) ────────────────────────────────────────────────
+ * The uploading view's narration line. It is mounted and VISIBLE for the whole uploading
+ * phase rather than inserted when a note appears, because an aria-live region that
+ * arrives with its text already in place is commonly not announced — the stage change has
+ * to be a text change inside a region that was already there.
+ *
+ * There is deliberately NO `:empty { display: none }` here, and that omission is the
+ * rule. `display: none` is not "invisible", it is removed from the accessibility tree —
+ * so hiding the empty region during the transfer, when the progress bar carries the
+ * narration, meant it came BACK at `sealing` with its text already present: exactly the
+ * not-announced pattern above, defeating the region's only purpose, and invisible to a
+ * jsdom pin because jsdom applies no stylesheet. An empty flex column has no height of
+ * its own, so what it costs while empty is the parent's single 0.4rem gap. That is the
+ * price of the finalize window being announced at all.
+ *
+ * It holds up to two lines — the stage, and (once the bundle is sealed) the reason there
+ * is no longer a Cancel. The second line used to be its own `role="status"` paragraph in
+ * the control slot, which is the same pattern again. Both are narration, so both live in
+ * the one region that was already mounted. */
+.wizard-run-note { display: flex; flex-direction: column; gap: 0.2rem; }
+.wizard-run-line { margin: 0; }
+
+/* The bounded selection panel: every archive plus the largest files, each with its own
+ * Remove, and the bulk left as a count. A selection may hold up to MAX_UPLOAD_ENTRIES
+ * = 1 000 000 parts, so the row count is bounded by the wizard's display budget and never
+ * by the corpus — there is no virtualised list here and there must not be one. */
+.selection-panel { display: flex; flex-direction: column; gap: 0.3rem; align-items: flex-start; }
+.selection-summary { margin: 0; font-size: 0.82rem; }
+.selection-rows { list-style: none; margin: 0; padding: 0; align-self: stretch; display: flex; flex-direction: column; gap: 0.15rem; }
+.selection-row { display: flex; align-items: baseline; gap: 0.5rem; }
+.selection-row-name { font-family: var(--mono); font-size: 0.78rem; color: var(--text-2); overflow-wrap: anywhere; }
+.selection-row-size { margin-left: auto; font-family: var(--mono); font-size: 0.74rem; color: var(--muted); flex: none; }
+.selection-remove { flex: none; padding: 0 0.3rem; line-height: 1; }
+
 /* Resume banner — a persisted, interrupted session was found at mount. */
 .resume-banner {
   display: flex; align-items: center; gap: 0.6rem;
@@ -1592,3 +1841,334 @@ a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-
    inspector is a ~250px column, so a link there must BREAK rather than overflow its
    panel. `anywhere` (not `break-word`) so a URL with no spaces still wraps. */
 .metadata-panel .field-list dd { overflow-wrap: anywhere; }
+
+/* ---- Seam R1: renderer recovery (docs/prompts/brief_renderer_recovery_seam.md) ---- */
+
+/* The recovery surface. Position + emphasis ONLY: the floating-surface recipe
+   (background, blur, radius, shadow) comes from `.panel-float`, which both elements
+   compose in their className — the same pattern `.error-banner-float` uses. Re-declaring
+   it here with its own colors is how a theme-token change would restyle every
+   over-canvas surface EXCEPT the one UI a user can act on when the renderer has failed.
+   Carried over from #274, whose review settled exactly that. */
+.renderer-recovery-panel,
+.renderer-recovery-status {
+  position: absolute; z-index: 12; left: 50%; bottom: 1rem; transform: translateX(-50%);
+  max-width: min(34rem, calc(100% - 2rem)); padding: 0.8rem 1rem;
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.renderer-recovery-status { color: var(--text-2); }
+.renderer-recovery-panel p { margin: 0.25rem 0; }
+/* The underlying error text: the same string the generic banner used to show, kept
+   secondary to the sentence that says what to do about it. */
+.renderer-recovery-detail { font-family: var(--mono); font-size: 0.78rem; color: var(--muted); }
+.renderer-recovery-actions { display: flex; gap: 0.45rem; flex-wrap: wrap; margin-top: 0.65rem; }
+
+/* A switching control the renderer cannot serve (P5, ui/blockedControl.ts). It uses
+   `aria-disabled` and NOT the native attribute — that is what keeps it focusable and its
+   `title` readable — which also means the shipped `:hover:not(:disabled)` rules above
+   still match it. Without these it is pixel-identical to a live control and still lights
+   up under the cursor: the defect #279 shipped, where the class had no rule at all.
+   Specificity TIES with those hover rules (two classes + :hover each), so document order
+   settles it and these must stay at the end of this file. The active-state pairs restate
+   their own resting fill for the same reason `.layout-tab-active:hover` already does. */
+.layout-tab.is-blocked,
+.viewer-menu-layout.is-blocked,
+.fit-view-btn.is-blocked,
+.minimap.is-blocked,
+.mode-btn.is-blocked,
+.chip.is-blocked,
+.tag-retry-btn.is-blocked,
+.search-row.is-blocked { opacity: 0.55; cursor: not-allowed; }
+/* The two switching surfaces keep COUNTER-RULES rather than the exclusion above, because
+   `renderer_recovery.dom.test.ts` (Seam R1, not this seam's to edit) asserts these exact
+   selectors exist. Every control Seam R2 blocks is handled by `:not(.is-blocked)` on the
+   shipped hover rule instead — which is simpler, cannot lose a specificity race, and does
+   not depend on this block staying at the end of the file. Three of the counter-rules
+   this replaced were provable no-ops: `.minimap` and `.chip` and `.chip-selected` ship no
+   `:hover` rule at all, so they restated a resting appearance nothing was overriding. */
+.layout-tab.is-blocked:hover { background: var(--surface); color: var(--text-2); }
+.layout-tab-active.is-blocked:hover { background: var(--accent); color: var(--accent-ink); }
+.viewer-menu-layout.is-blocked:hover { background: transparent; }
+.viewer-menu-layout.on.is-blocked:hover { background: var(--accent); color: var(--accent-ink); }
+
+/* ── designer: Data (seam L4) ───────────────────────────────────────────────────
+ * The role table and the images-only screen (docs/prompts/brief_designer_data_seam.md;
+ * boards Data, RoleDensity, TagSidecar, ImagesOnlyData, MobileData). Every class here is
+ * `data-` prefixed. Token-only, additive — no existing selector changes. */
+.data-view { display: flex; flex-direction: column; gap: 0.8rem; min-width: 0; }
+.data-header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.4rem 0.8rem; min-width: 0; }
+.data-facts {
+  display: flex; flex-wrap: wrap; gap: 0.3rem; min-width: 0;
+  font-family: var(--mono); font-size: 0.78rem; color: var(--text-2);
+}
+.data-fact { white-space: nowrap; }
+/* D-xxvi: the future actions are visible, disabled and honestly marked. */
+.data-future { margin-left: auto; display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; }
+.data-future .btn { font-size: 0.82rem; padding: 0.25rem 0.6rem; }
+.data-coming {
+  font-family: var(--mono); font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--text-2); border: 1px solid var(--line); border-radius: 999px; padding: 0.05rem 0.5rem;
+}
+.data-intro { margin: 0; color: var(--text-2); max-width: 70rem; }
+.data-alert { margin: 0; color: var(--err); overflow-wrap: anywhere; }
+.data-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 0.6rem 1rem; min-width: 0; }
+.data-filter { width: min(18rem, 100%); min-width: 0; }
+.data-chips { min-width: 0; }
+.data-chips .chip { font: inherit; font-size: 0.82rem; cursor: pointer; }
+
+/* Five columns while there is room. Every track is minmax(0, …), so a long column name or
+ * sample wraps inside its cell and can never widen the page. */
+.data-head, .data-row {
+  display: grid; align-items: start; gap: 0.4rem 0.8rem;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 2fr);
+}
+.data-head {
+  padding: 0 calc(0.6rem + 1px); font-size: 0.72rem; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--muted);
+}
+.data-group { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-panel); }
+.data-group-head { display: flex; align-items: center; flex-wrap: wrap; gap: 0.3rem 0.6rem; min-width: 0; padding: 0.5rem 0.6rem; }
+.data-group-toggle {
+  font: inherit; cursor: pointer; background: none; border: none; color: var(--text);
+  display: inline-flex; align-items: baseline; gap: 0.45rem; padding: 0.1rem 0;
+}
+.data-group-caret { width: 0.8rem; color: var(--muted); }
+.data-group-title { font-weight: 600; }
+.data-group-count { font-size: 0.78rem; color: var(--accent); }
+.data-group-note { flex: 1 1 16rem; min-width: 0; font-size: 0.82rem; }
+.data-group-action { margin-left: auto; font-size: 0.82rem; padding: 0.2rem 0.6rem; }
+.data-select-all { font-size: 0.82rem; color: var(--text-2); }
+.data-bulk {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem 0.8rem; margin: 0 0.6rem 0.5rem;
+  padding: 0.45rem 0.6rem; background: var(--accent-wash); border: 1px solid var(--accent-dim); border-radius: var(--r-ctrl);
+}
+.data-bulk-count { font-family: var(--mono); color: var(--accent); }
+.data-rows { display: flex; flex-direction: column; }
+.data-row { min-width: 0; padding: 0.55rem 0.6rem; border-top: 1px solid var(--line); }
+.data-row-changed { background: var(--accent-wash); box-shadow: inset 3px 0 0 var(--accent); }
+.data-cell { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 0.4rem; min-width: 0; overflow-wrap: anywhere; }
+.data-cell-label { display: none; }
+.data-column-name { min-width: 0; color: var(--text-2); overflow-wrap: anywhere; }
+.data-changed { font-size: 0.72rem; color: var(--accent); }
+.data-shown { display: flex; align-items: center; gap: 0.3rem; width: 100%; min-width: 0; }
+.data-control { width: 100%; min-width: 0; }
+.data-hide { flex: none; font-size: 0.72rem; padding: 0.15rem 0.45rem; }
+.data-hide-on { color: var(--accent); }
+.data-field-error { font-size: 0.78rem; }
+.data-locked { color: var(--text-2); border: 1px dashed var(--line); border-radius: var(--r-ctrl); padding: 0.2rem 0.5rem; }
+.data-sample { min-width: 0; color: var(--text-2); overflow-wrap: anywhere; }
+.data-built { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 0.3rem; min-width: 0; }
+/* The consequence spans the whole row, under the cells it is about. */
+.data-consequences {
+  grid-column: 1 / -1; list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: 0.2rem;
+}
+.data-consequence { font-size: 0.85rem; color: var(--accent); overflow-wrap: anywhere; }
+.data-consequence-alert { color: var(--err); }
+.data-footer {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem 0.6rem;
+  padding-top: 0.7rem; border-top: 1px solid var(--line);
+}
+.data-footer-note { font-size: 0.82rem; }
+.data-footer-go { margin-left: auto; }
+.data-offer-off {
+  font-family: var(--mono); font-size: 0.72rem; text-transform: uppercase; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 999px; padding: 0.1rem 0.55rem;
+}
+
+/* ImagesOnlyData: what the collection has, and what metadata would unlock. */
+.data-empty { display: flex; flex-direction: column; gap: 0.8rem; min-width: 0; }
+.data-empty-title { margin: 0; font-size: 1rem; font-weight: 600; }
+.data-empty-text { margin: 0; max-width: 56rem; color: var(--text-2); }
+.data-empty-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(22rem, 100%), 1fr)); gap: 1rem; }
+.data-empty-col { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
+.data-unlocks { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(14rem, 100%), 1fr)); gap: 0.5rem; }
+.data-have, .data-unlock {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 0.6rem; min-width: 0;
+  padding: 0.55rem 0.7rem; background: var(--ground); border: 1px solid var(--line); border-radius: var(--r-ctrl);
+}
+.data-unlock { flex-direction: column; align-items: flex-start; border-style: dashed; }
+.data-have-title { font-weight: 600; }
+.data-have-text { font-size: 0.85rem; color: var(--text-2); overflow-wrap: anywhere; }
+.data-note {
+  margin: 0; padding: 0.55rem 0.7rem; color: var(--text-2);
+  background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-ctrl);
+}
+
+/* 390 × 844 (MobileData): the table becomes a stack of column cards — one track, the
+ * header row gone, each cell carrying its own label — so nothing scrolls sideways. At the
+ * designer's one narrow threshold (L3's 700px), not a new one. */
+@media (max-width: 700px) {
+  .data-head { display: none; }
+  .data-row { grid-template-columns: minmax(0, 1fr); gap: 0.35rem; }
+  .data-cell-label {
+    display: inline; min-width: 6.5rem; font-size: 0.72rem; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--muted);
+  }
+  .data-future { margin-left: 0; }
+  .data-filter { width: 100%; }
+  .data-footer-go { margin-left: 0; }
+}
+
+/* ── Seam L5: the designer's Layouts view and Review & commit ─────────────────
+ * docs/prompts/brief_designer_layouts_seam.md; boards Layouts, LayoutStates,
+ * RoleConsequences, CommitReview, DeleteConfirm (the layout half), MobileLayouts.
+ * One rule carries the card states: a SOLID card exists on disk, a DASHED one does not.
+ * Token-only and additive — every selector here is `layouts-` prefixed. */
+.layouts { display: flex; flex-direction: column; gap: 0.9rem; min-width: 0; }
+.layouts-head { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 0.6rem 1rem; min-width: 0; }
+.layouts-head-main { flex: 1; min-width: min(18rem, 100%); display: flex; flex-direction: column; gap: 0.2rem; }
+.layouts-intro { margin: 0; overflow-wrap: anywhere; }
+.layouts-add { display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem; min-width: 0; }
+.layouts-add-btn { padding: 0.3rem 0.7rem; }
+.layouts-mono { font-family: var(--mono); }
+
+/* A family the data cannot support: 55% opacity, dashed, the reason on its face. */
+.layouts-unavailable-row { display: flex; flex-wrap: wrap; gap: 0.5rem; min-width: 0; }
+.layouts-unavailable {
+  opacity: 0.55; display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; max-width: 22rem;
+  padding: 0.45rem 0.7rem; border: 1px dashed var(--line); border-radius: var(--r-panel);
+}
+.layouts-unavailable-family { font-family: var(--mono); font-size: 0.68rem; text-transform: uppercase; color: var(--muted); }
+.layouts-unavailable-action { font-weight: 600; }
+.layouts-unavailable-reason { font-size: 0.8rem; color: var(--text-2); overflow-wrap: anywhere; }
+
+/* Sections and the card grid: three across at 1440, one at 390, no breakpoint of its own. */
+.layouts-section { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
+.layouts-section-title { margin: 0; }
+.layouts-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(24rem, 100%), 1fr)); gap: 0.8rem; min-width: 0; }
+
+.layouts-card {
+  display: flex; flex-direction: column; gap: 0.5rem; min-width: 0;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-panel); padding: 0.8rem;
+}
+.layouts-card-queued { background: var(--ground); border-style: dashed; }
+.layouts-card-stale { border-color: var(--accent); }
+.layouts-card-baking { box-shadow: inset 3px 0 0 var(--accent); }
+.layouts-card-orphaned { border-color: color-mix(in srgb, var(--err) 55%, var(--line)); }
+.layouts-card-deleting { opacity: 0.6; }
+.layouts-card-deleting .layouts-card-name { text-decoration: line-through; }
+.layouts-card.layouts-card-note { justify-content: center; border-style: dashed; background: transparent; color: var(--text-2); }
+.layouts-card-head { display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem 0.6rem; min-width: 0; }
+.layouts-card-name { font-weight: 600; min-width: 0; overflow-wrap: anywhere; display: inline-flex; align-items: center; flex-wrap: wrap; gap: 0.4rem; }
+.layouts-card-remove { margin-left: auto; padding: 0.25rem 0.6rem; }
+.layouts-card-meta { margin: 0; font-family: var(--mono); font-size: 0.76rem; color: var(--text-2); overflow-wrap: anywhere; }
+p.layouts-card-note { margin: 0; font-size: 0.8rem; }
+.layouts-card-box {
+  margin: 0; padding: 0.45rem 0.6rem; border-radius: var(--r-ctrl); font-size: 0.85rem; overflow-wrap: anywhere;
+  border: 1px solid var(--line); background: var(--raised);
+}
+.layouts-card-box-warn { border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: var(--accent-wash); box-shadow: inset 3px 0 0 var(--accent); }
+.layouts-card-box-err { border-color: color-mix(in srgb, var(--err) 45%, transparent); box-shadow: inset 3px 0 0 var(--err); }
+.layouts-card-box-info { color: var(--text-2); }
+.layouts-card-box-quiet { color: var(--text-2); border-style: dashed; background: transparent; }
+.layouts-card-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem; min-width: 0; }
+/* D-xxii: delete is a quiet text button at the card's edge, never a red slab. */
+.layouts-card-delete { margin-left: auto; color: var(--muted); }
+.layouts-card-delete:disabled { cursor: not-allowed; opacity: 0.6; }
+.layouts-delete-reason { font-size: 0.76rem; }
+.layouts-default {
+  font-family: var(--mono); font-size: 0.7rem; color: var(--accent-ink); background: var(--accent);
+  border-radius: 999px; padding: 0.05rem 0.5rem;
+}
+.layouts-rename { font-size: 0.78rem; font-weight: 400; }
+.layouts-rename-input {
+  font: inherit; min-width: 0; width: min(16rem, 100%); padding: 0.2rem 0.4rem;
+  border: 1px solid var(--accent); border-radius: var(--r-ctrl); background: var(--ground); color: var(--text);
+}
+.layouts-make-default { display: inline-flex; align-items: center; gap: 0.4rem; }
+
+/* Stale is a triangle, never a dot — a dot reads as baking. Dashed = not on disk. */
+.pill.layouts-pill-flag::before { display: none; }
+.pill.layouts-pill-flag:not(.err) { color: var(--accent); border-color: var(--accent); }
+.pill.layouts-pill-dashed { color: var(--text-2); border: 1px dashed var(--line); }
+.pill.layouts-pill-dashed::before { display: none; }
+.pill.err.layouts-pill-dashed { color: var(--err); border-color: color-mix(in srgb, var(--err) 45%, transparent); }
+
+.layouts-progress { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; }
+.layouts-progress-text { margin: 0; font-family: var(--mono); font-size: 0.76rem; color: var(--text-2); overflow-wrap: anywhere; }
+
+/* The pair picker and a queued pair's knobs. */
+.layouts-pair-block { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
+.layouts-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(10rem, 100%), 1fr)); gap: 0.4rem 0.7rem; min-width: 0; }
+.layouts-pair-field { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; }
+.layouts-pair-field select, .layouts-pair-field input { width: 100%; min-width: 0; }
+.layouts-knobs { min-width: 0; }
+/* The shared .knob-grid floor (13rem) is not capped at 100%; inside a card it is. */
+.knob-grid.layouts-knobs { grid-template-columns: repeat(auto-fit, minmax(min(13rem, 100%), 1fr)); }
+.layouts-knob { min-width: 0; }
+.layouts-knob .knob-field { flex-wrap: wrap; }
+.layouts-knob .knob-select { min-width: 0; max-width: 100%; }
+
+.layouts-blocked { margin: 0; padding-left: 1.1rem; }
+
+/* The job banner — what our job is doing, and what its report said. */
+.layouts-banner {
+  margin: 0; display: flex; flex-direction: column; gap: 0.35rem; padding: 0.6rem 0.8rem; min-width: 0;
+  border: 1px solid var(--line); border-radius: var(--r-panel); background: var(--surface); overflow-wrap: anywhere;
+}
+.layouts-banner p { margin: 0; }
+.layouts-banner-warn { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.layouts-banner-err { border-color: color-mix(in srgb, var(--err) 45%, var(--line)); }
+.layouts-banner-dismiss { align-self: flex-start; }
+/* The shell-level follower's slot above every tab; nothing when there is nothing to say. */
+.layouts-follow { padding: 0.6rem 1.1rem 0; min-width: 0; }
+.layouts-follow:empty { display: none; }
+.layouts-findings { margin: 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: 0.2rem; }
+
+/* Review & commit — a sheet over the designer, scrolling inside itself. */
+.layouts-review-scrim { align-items: flex-start; overflow: auto; }
+.layouts-review {
+  width: min(48rem, 100%); max-height: calc(100vh - 2rem); display: flex; flex-direction: column; gap: 0.8rem;
+  padding: 0; overflow: hidden;
+}
+.layouts-review-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem;
+  padding: 0.9rem 0.9rem 0; min-width: 0;
+}
+.layouts-review-sub { margin: 0.15rem 0 0; font-family: var(--mono); font-size: 0.78rem; color: var(--text-2); overflow-wrap: anywhere; }
+.layouts-review-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 0.8rem; padding: 0 0.9rem; }
+.layouts-review-body > p { margin: 0; overflow-wrap: anywhere; }
+.layouts-review-free { padding: 0.5rem 0.7rem; border: 1px solid var(--line); border-radius: var(--r-ctrl); color: var(--text-2); }
+.layouts-tier { border: 1px solid var(--line); border-radius: var(--r-panel); display: flex; flex-direction: column; min-width: 0; }
+.layouts-tier-invalidating, .layouts-tier-bake { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.layouts-tier-head {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem 0.8rem; padding: 0.55rem 0.7rem;
+  border-bottom: 1px solid var(--line); min-width: 0;
+}
+.layouts-tier-bake .layouts-tier-head { background: var(--accent-wash); }
+.layouts-tier-badge {
+  font-family: var(--mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 999px; padding: 0.05rem 0.55rem;
+}
+.layouts-tier-badge-quiet { color: var(--text-2); border-color: var(--line); }
+.layouts-tier-side { margin-left: auto; font-family: var(--mono); font-size: 0.74rem; color: var(--text-2); }
+.layouts-tier-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.layouts-tier-row { padding: 0.45rem 0.7rem; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; min-width: 0; }
+.layouts-tier-row .layouts-mono { margin-right: 0.6rem; }
+.layouts-was { color: var(--muted); text-decoration: line-through; }
+.layouts-chip {
+  display: inline-block; margin-right: 0.5rem; font-family: var(--mono); font-size: 0.68rem; text-transform: uppercase;
+  color: var(--text-2); border: 1px solid var(--line); border-radius: 999px; padding: 0.02rem 0.5rem;
+}
+.layouts-tick { display: flex; align-items: center; flex-wrap: wrap; gap: 0.3rem; }
+.layouts-untick { margin: 0.35rem 0 0; color: var(--accent); font-size: 0.85rem; }
+.layouts-consequences {
+  margin: 0; padding: 0.55rem 0.7rem 0.55rem 1.8rem; display: flex; flex-direction: column; gap: 0.35rem;
+  background: var(--accent-wash); box-shadow: inset 3px 0 0 var(--accent); overflow-wrap: anywhere;
+}
+p.layouts-consequences { padding-left: 0.7rem; }
+.layouts-tier-foot { margin: 0; padding: 0.5rem 0.7rem; font-size: 0.82rem; }
+.layouts-facts { margin: 0; padding: 0.55rem 0.7rem 0.3rem 1.8rem; display: flex; flex-direction: column; gap: 0.2rem; }
+.layouts-tier-bake > p { margin: 0; padding: 0 0.7rem 0.55rem; font-size: 0.82rem; }
+.layouts-review-actions {
+  display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 0.6rem;
+  padding: 0.7rem 0.9rem; border-top: 1px solid var(--line); background: var(--bar);
+}
+.layouts-review-actions > p { margin: 0 auto 0 0; flex: 1 1 14rem; font-size: 0.82rem; }
+/* 390 × 844 (MobileLayouts) needs no width query of its own — and must not add one: three
+ * pins enumerate the stylesheet's width queries. Every grid above reflows intrinsically
+ * (auto-fill / auto-fit with a min() floor), every row wraps, and every flex child carries
+ * min-width: 0, so nothing forces a horizontal scroll. */
+

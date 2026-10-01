@@ -9,7 +9,10 @@ dynamic column name, the query string bound as a parameter, and the D-34
 get_optional_user + appstate.may_read visibility gate (a private dataset a caller
 cannot read 404s before any query runs, the same 404 as a missing dataset). No
 schema change: the search route reads the manifest's existing `column_roles` to
-decide which columns each tier scans.
+decide which columns each tier scans. Which columns are LINKS comes from the dataset's
+presentation record (`presentation.json`) instead — schema v2.9 moved that out of
+`column_roles` (D-xvii) — resolved through `presentation.effective`, which still reads a
+pre-2.9 manifest's `column_roles.url` as its fallback.
 
 The tier model (spike §2, decision D-4):
   * `fields=default` (tier-0, run on debounced keystroke) — the always-indexed set:
@@ -43,7 +46,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api import appstate, db
+from api import appstate, db, presentation
 from api.models import SearchHit, SearchResponse
 
 router = APIRouter()
@@ -176,16 +179,33 @@ def _ambiguous_freeform_columns(roles: dict[str, Any] | None) -> list[str]:
     return out
 
 
-def _url_columns(roles: dict[str, Any] | None) -> set[str]:
-    """The `column_roles.url` names (schema v2.8): columns whose values are link targets,
-    excluded from search. Robust to a hand-patched/malformed manifest — only string entries
-    count, mirroring `_role_map`'s per-entry isinstance guard — so a bad shape can neither
-    crash the search (an unhashable dict entry -> `set([{...}])` TypeError) nor silently
-    mis-classify (a bare string treated as a set of characters). db.load_manifest returns the
-    manifest verbatim, so this is the only gate before the API reads it."""
-    if not isinstance(roles, dict):
-        return set()
-    return {c for c in (roles.get("url") or []) if isinstance(c, str)}
+def _url_columns(ds_dir: Path, roles: dict[str, Any] | None) -> set[str]:
+    """The columns whose values are LINK TARGETS, excluded from search.
+
+    Schema v2.9 moved this out of `column_roles` (D-xvii): it is presentation, so it now
+    lives in `presentation.json` as `columns.<name>.render: "url"`.
+    `presentation.effective_columns` resolves BOTH — the file first, and a pre-2.9
+    manifest's `column_roles.url` as the fallback — which is what keeps the live trees'
+    links out of search before anyone runs the migration. Reading `roles.get("url")` here
+    instead would return an EMPTY SET on every migrated tree, silently re-admitting url
+    columns to search; nothing would have gone red, because `test_search.py` builds its
+    roles dict by hand.
+
+    PERF: this runs on EVERY search request — one per tier-0 debounced keystroke, per
+    user. Two things keep it cheap. `presentation.load` caches the parse on the file's
+    identity (the manifest's cache shape, and the same reason), and `effective_columns`
+    resolves ONLY the map this needs rather than the whole record — the dataset block and
+    `_clean_layouts` were being built and discarded here (review of PR #346, finding 7).
+    Measured 2026-09-09, median of 200 calls: 39.9 us -> 3.9 us on an empty record and
+    34.3 ms -> 5.5 ms on a 10,000-entry one.
+
+    The reason for the exclusion is unchanged and still the point: link targets are not
+    human search text, their values are short (so they classify title-like, i.e. tier-0),
+    and an `https` prefix matches nearly every row. Robustness against a hand-patched
+    manifest or presentation file lives in `presentation.effective_columns`."""
+    return presentation.url_columns(
+        presentation.effective_columns(presentation.load(ds_dir), roles=roles)
+    )
 
 
 def _resolve_role(column: str, role_map: dict[str, tuple[str, str]]) -> tuple[str, str]:
@@ -206,21 +226,30 @@ def _classify_columns(
     scalar_cols: list[str],
     all_fields: bool,
     avg_lengths: dict[str, float],
+    url_cols: set[str],
 ) -> list[SearchColumn]:
     """The searchable columns for the requested tier, in priority order (PURE — the
     unit-testable core of the tier model + the D-2 heuristic). `default` is id +
     filename + title-like freeform + categoricals; `all` is EVERY scalar column
     (annotated by its role, freeform split into title/description). Only columns that
     physically exist in `scalar_cols` are included, so a stale/absent role never names
-    a column the query cannot select."""
+    a column the query cannot select.
+
+    `url_cols` is passed IN rather than derived here, because after D-xvii it comes from
+    the OTHER record (`presentation.json`) and this function must not learn to read files
+    to stay pure. `_url_columns` above resolves it. It is REQUIRED, with no default: it
+    was briefly `set[str] | None = None` collapsing to `set()`, which meant a caller that
+    simply forgot it still compiled, type-checked and ran — with every url column falling
+    through the freeform catch-all into the tier-0 scan, the exact failure the paragraph
+    below describes. A guard that depends on being remembered is a convention; a required
+    argument is a property (review of PR #346, finding 6)."""
     role_map = _role_map(roles)
-    # A `url` column (schema v2.8 column_roles.url) holds LINK TARGETS, not human search
-    # text: its values are short, so they classify title-like (tier-0), and their `https`
-    # prefix matches nearly every row. Drop it from scalar_cols up front so it leaves BOTH
-    # tier loops AND `present`, whatever OTHER role it carries (a url column is also freeform
-    # or categorical). Filtering here — not popping from role_map — is what stops an unmapped
-    # one falling through _resolve_role's freeform catch-all and being searched anyway.
-    url_cols = _url_columns(roles)
+    # A url column holds LINK TARGETS, not human search text: its values are short, so they
+    # classify title-like (tier-0), and their `https` prefix matches nearly every row. Drop
+    # it from scalar_cols up front so it leaves BOTH tier loops AND `present`, whatever
+    # OTHER role it carries (a url column is also freeform or categorical). Filtering here —
+    # not popping from role_map — is what stops an unmapped one falling through
+    # _resolve_role's freeform catch-all and being searched anyway.
     scalar_cols = [c for c in scalar_cols if c not in url_cols]
     present = set(scalar_cols)
     out: list[SearchColumn] = []
@@ -285,10 +314,10 @@ def _run_search(
     roles = _read_roles(ds_dir)
     # A url column is dropped from search by _classify_columns, so probing its average value
     # length here (D-2) would be wasted I/O — exclude it before the length aggregate too.
-    url_cols = _url_columns(roles)
+    url_cols = _url_columns(ds_dir, roles)
     ambiguous = [c for c in _ambiguous_freeform_columns(roles) if c in scalar_cols and c not in url_cols]
     avg_lengths = db.text_column_avg_lengths(cursor, parquet_path, ambiguous) if ambiguous else {}
-    columns = _classify_columns(roles, scalar_cols, all_fields, avg_lengths)
+    columns = _classify_columns(roles, scalar_cols, all_fields, avg_lengths, url_cols)
     return _execute_search(cursor, parquet_path, columns, query, limit)
 
 

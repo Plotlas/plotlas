@@ -1,18 +1,18 @@
-// DOM tier — naming a collection (SCOPE_shareable-collections Part B).
+// DOM tier — naming a collection (SCOPE_shareable-collections Part B; D-xxviii).
 //
-// The operator's primary affordance is renaming IN PLACE from the library card's ⋯
-// menu, so these tests drive that path rather than the client method underneath it.
-// AdminScreen is the stateful container (never imported by the node runner); DatasetList
-// is its presentational leaf and is exercised directly, exactly as admin_screen.dom and
-// anonymous_entry.dom do.
+// Renaming moved from the library card's ⋯ menu into the layout designer's Overview
+// with seam L3 (D-xxiv); its pins moved with it (tests/dom/designer_overview.dom.test.ts).
+// What stays here is how the CARD names a collection: the one fallback rule,
+// `collectionName`, and the id staying discoverable. DatasetList is AdminScreen's
+// presentational leaf and is exercised directly, exactly as anonymous_entry.dom does.
 //
 // The property worth protecting: the card shows the display NAME but the collection is
 // still addressed by its ID everywhere. A rename must never look like it moved the
-// collection.
+// collection — and since D-xxviii, a MINTED id is never shown as a name at all.
 import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement as h } from "react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import type { ApiClient } from "../../src/api-client/client.ts";
 import type { DatasetSummary } from "../../src/api-client/types.ts";
 import { collectionName } from "../../src/api-client/types.ts";
@@ -42,19 +42,14 @@ function stubClient(): ApiClient {
   } as unknown as ApiClient;
 }
 
-function renderList(
-  ds: DatasetSummary,
-  onRename: (dsId: string, edits: { display_name: string | null }) => Promise<void> = async () => {},
-): void {
+function renderList(ds: DatasetSummary): void {
   render(
     h(DatasetList, {
       datasets: [ds],
       client: stubClient(),
-      busyId: null,
       onOpen: () => {},
-      onDelete: () => {},
-      onAddLayout: () => {},
-      onRename: onRename as never,
+      onEdit: () => {},
+      username: "dalew",
       onNewDataset: () => {},
     }),
   );
@@ -81,99 +76,57 @@ test("collectionName is the ONE fallback rule and does not invent a name", () =>
   assert.equal(collectionName({ dataset_id: "a", display_name: "Real" }), "Real");
 });
 
-// --- the ⋯ rename affordance ----------------------------------------------
-
-function openRenameEditor(): void {
-  fireEvent.click(screen.getByLabelText("Actions for rijks_pilot"));
-  fireEvent.click(screen.getByText("Edit details…"));
-}
-
-test("the ⋯ menu offers Rename, which opens an inline editor", () => {
-  renderList(BASE);
-  openRenameEditor();
-  assert.ok(screen.getByLabelText("Name for rijks_pilot"));
+test("D-xxviii: a MINTED id never stands in for a name — it is “Untitled collection”", () => {
+  // The form seam L6 mints and documents: exactly 12 lowercase hex characters.
+  assert.equal(collectionName({ dataset_id: "3f9c2a71e0b4" }), "Untitled collection");
+  assert.equal(collectionName({ dataset_id: "3f9c2a71e0b4", display_name: null }), "Untitled collection");
+  assert.equal(collectionName({ dataset_id: "3f9c2a71e0b4", display_name: "" }), "Untitled collection");
+  // The display name still wins over a minted id.
+  assert.equal(collectionName({ dataset_id: "3f9c2a71e0b4", display_name: "Herbarium" }), "Herbarium");
 });
 
-test("the editor is seeded with the CURRENT name, not blank", () => {
-  renderList({ ...BASE, display_name: "Current name" });
-  openRenameEditor();
-  const input = screen.getByLabelText("Name for rijks_pilot") as HTMLInputElement;
-  assert.equal(input.value, "Current name");
+test("D-xxviii: an AUTHORED id still stands in, including ones that merely look hex-ish", () => {
+  // Someone chose these as words; renaming every existing unnamed collection to
+  // "Untitled" is exactly what D-xxviii refuses. Only the exact minted form is untitled.
+  assert.equal(collectionName({ dataset_id: "smithsonian_art_200k" }), "smithsonian_art_200k");
+  assert.equal(collectionName({ dataset_id: "3F9C2A71E0B4" }), "3F9C2A71E0B4", "uppercase is not the minted form");
+  assert.equal(collectionName({ dataset_id: "3f9c2a71e0b" }), "3f9c2a71e0b", "11 characters is not the minted form");
+  assert.equal(collectionName({ dataset_id: "3f9c2a71e0b4a" }), "3f9c2a71e0b4a", "13 characters is not the minted form");
+  assert.equal(collectionName({ dataset_id: "deadbeefcafe_v2" }), "deadbeefcafe_v2");
 });
 
-test("submitting a name reports it against the collection's ID", () => {
-  // The id is what the API, the CLI and the deep link all use — the rename must be
-  // keyed on it, never on whatever the card happens to be displaying.
-  let seen: { dsId: string; name: string | null } | null = null;
-  renderList(BASE, async (dsId, edits) => {
-    seen = { dsId, name: edits.display_name };
-  });
-  openRenameEditor();
-  const input = screen.getByLabelText("Name for rijks_pilot");
-  fireEvent.change(input, { target: { value: "Rijksmuseum — Public Domain" } });
-  fireEvent.click(screen.getByText("Save"));
-  assert.deepEqual(seen, {
-    dsId: "rijks_pilot",
-    name: "Rijksmuseum — Public Domain",
-  });
-});
-
-test("submitting EMPTY clears the name — the recovery path for a bad one", () => {
-  let seen: { dsId: string; name: string | null } | null = null;
-  renderList({ ...BASE, display_name: "Typo McTypoface" }, async (dsId, edits) => {
-    seen = { dsId, name: edits.display_name };
-  });
-  openRenameEditor();
-  fireEvent.change(screen.getByLabelText("Name for rijks_pilot"), {
-    target: { value: "   " },
-  });
-  fireEvent.click(screen.getByText("Save"));
-  assert.deepEqual(seen, { dsId: "rijks_pilot", name: null });
-});
-
-test("Cancel closes the editor without reporting a rename", () => {
-  let called = false;
-  renderList(BASE, async () => {
-    called = true;
-  });
-  openRenameEditor();
-  fireEvent.click(screen.getByText("Cancel"));
-  assert.equal(called, false);
-  assert.equal(screen.queryByLabelText("Name for rijks_pilot"), null);
-});
-
-test("Escape closes the editor — it is never a trap", () => {
-  renderList(BASE);
-  openRenameEditor();
-  fireEvent.keyDown(screen.getByLabelText("Name for rijks_pilot"), {
-    key: "Escape",
-  });
-  assert.equal(screen.queryByLabelText("Name for rijks_pilot"), null);
+test("a card for an unnamed MINTED collection says “Untitled collection”, never the hex", () => {
+  // Shaped as L6's create answers a web-intake collection nobody has named yet.
+  renderList({ ...BASE, dataset_id: "3f9c2a71e0b4" });
+  assert.ok(screen.getByText("Untitled collection"));
+  assert.equal(screen.queryAllByText("3f9c2a71e0b4").length, 0, "the id is not shown as a name");
+  // ...and not to a screen reader either: the card's accessible name is the name.
+  assert.ok(screen.getByRole("article", { name: "Untitled collection" }));
 });
 
 // --- the id stays discoverable ---------------------------------------------
 
 test("a renamed card still exposes its id, which is what links and the CLI need", () => {
   // If the name fully REPLACED the id in the UI, an operator could not work out what
-  // to put in ?d=… or in `api.admin set-visibility`. The card's aria-label keeps it.
+  // to put in ?d=… or in `api.admin set-visibility`. It stays as the name's tooltip — a
+  // technical detail (D-xxviii) — and as Overview's ID line with its copy button.
   renderList({ ...BASE, display_name: "Rijksmuseum — Public Domain" });
-  assert.ok(screen.getByLabelText("rijks_pilot"));
+  assert.ok(screen.getByTitle("rijks_pilot"));
 });
 
-test("a read-only visitor gets no rename affordance", () => {
+test("a read-only visitor gets no Edit affordance", () => {
   render(
     h(DatasetList, {
       datasets: [{ ...BASE, owner: "" }],
       client: stubClient(),
-      busyId: null,
       onOpen: () => {},
-      onDelete: () => {},
-      onAddLayout: () => {},
-      onRename: async () => {},
+      onEdit: () => {},
+      username: "dalew",
       onNewDataset: () => {},
       readOnly: true,
       onLogin: () => {},
     }),
   );
-  assert.equal(screen.queryByLabelText("Actions for rijks_pilot"), null);
+  assert.equal(screen.queryAllByRole("button", { name: "Edit" }).length, 0);
 });
+

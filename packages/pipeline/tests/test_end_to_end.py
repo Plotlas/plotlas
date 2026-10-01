@@ -198,7 +198,7 @@ def test_images_only_ingest(tmp_path: Path, fixture_n: int) -> None:
 
     manifest = json.loads((dataset_dir / "layout_manifest.json").read_text(encoding="utf-8"))
     _validate_manifest(manifest)
-    assert manifest["manifest_version"] == "2.8"
+    assert manifest["manifest_version"] == "2.10"
     assert "column_roles" not in manifest                      # images-only floor (D-25)
     assert "source" not in manifest["dataset_metadata"]
     assert "tags" not in manifest
@@ -253,7 +253,7 @@ def test_images_with_metadata_ingest(
     dataset_dir = output_root / "ds"
     manifest = json.loads((dataset_dir / "layout_manifest.json").read_text(encoding="utf-8"))
     _validate_manifest(manifest)
-    assert manifest["manifest_version"] == "2.8"
+    assert manifest["manifest_version"] == "2.10"
 
     # Metadata present: column_roles (with the filename role), the tag sidecar, and
     # the datetime/categorical/scatter layouts are all emitted. The two categorical
@@ -268,6 +268,33 @@ def test_images_with_metadata_ingest(
     )
     assert (dataset_dir / manifest["tags"]["path"]).exists()  # tag sidecar (input has a tag role)
     assert manifest["dataset_metadata"]["source"] == metadata_csv.name
+
+    # v2.10 (seam L7 / LAYOUT_DESIGNER D-xxix): a REAL bake records HOW each layout read
+    # its columns, not only which. The lean oracle test (test_layout_provenance.py) proves
+    # the VALUES are the layout's own role-entry tuples; this proves a real ingest writes
+    # them at all — no lean test runs the tiler, the atlas or `write_manifest`'s real call
+    # path, and a field the bake never emits is exactly the failure a plugin-level test
+    # cannot see. The values are written out literally, read off `_COLUMN_ROLES` by hand.
+    # Note the four scatter knob defaults: the role declares none, and
+    # `ColumnRoles.from_config` fills them in before the fingerprint is taken.
+    assert {lay["layout_id"]: lay["source_fingerprint"] for lay in manifest["layouts"]} == {
+        "grid": {},  # reads no column, so no way of reading is recorded — and never stale
+        "datetime": {"date": [["datetime", "iso8601"]]},
+        "categorical_category": {"category": [["categorical"]]},
+        "categorical_place": {"place": [["categorical"]]},
+        "scatter": {
+            "x": [["scatter", "x", "y", "linear", "linear", "fit", "overdraw"]],
+            "y": [["scatter", "y", "x", "linear", "linear", "fit", "overdraw"]],
+        },
+    }
+    for layout in manifest["layouts"]:
+        # The keys ARE the provenance — both are set by the plugin from one role entry, and
+        # a reader joins them without translation. The `tags` column carries a tag role and
+        # appears in NEITHER, because no layout reads it: this is the layout's own entry,
+        # never the column's whole role set.
+        assert sorted(layout["source_fingerprint"]) == sorted(layout["source_columns"]), (
+            layout["layout_id"]
+        )
 
     schema = pq.read_table(dataset_dir / "metadata.parquet").schema
     assert schema.field("filename").type.equals(pa.string())

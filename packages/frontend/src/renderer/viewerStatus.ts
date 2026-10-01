@@ -18,6 +18,8 @@
 // world.start()'s render loop to `frameTick()` for fps. The node unit tests drive it
 // with a fake camera + fake clock, no rAF and no GL.
 import type { CameraState, Viewport } from "./world.ts";
+import { guardScheduledWork } from "./health.ts";
+import type { RendererFailureSink } from "./health.ts";
 
 /** The renderer-owned status payload (T2-54). Distinct from the UI-shaped
  *  `ViewerStatus` in ui/StatusBar.ts, which the shell composes by merging THESE
@@ -57,6 +59,10 @@ export interface ViewerStatusHandle {
    *  only when the fps figure actually changes, so a still 60fps loop does not spam
    *  subscribers every frame. */
   frameTick(now?: number): void;
+  /** Seam R2 P2: re-arm the emit guard after the shell decides the renderer recovered.
+   *  A latched emit freezes the whole read-out — zoom, in-view, fps, the minimap box —
+   *  so it has to be releasable, and by the same event that releases the other sites. */
+  resume(): void;
   dispose(): void;
 }
 
@@ -80,6 +86,13 @@ export interface ViewerStatusDeps {
    *  so they can flush deterministically without rAF. Falls back to a microtask when
    *  requestAnimationFrame is unavailable (SSR / node). */
   schedule?: (fn: () => void) => (() => void);
+  /** Seam R2 P2 (site 3): where a throw inside a COALESCED EMIT is published. This is
+   *  the single point both inputs funnel through — the camera subscription and frameTick
+   *  both only call `scheduleEmit`, and everything that can actually throw (the O(N)
+   *  in-view scan, the subscribers' own work) runs in `emit` on the scheduler's callback,
+   *  where nothing was catching it. Optional: omitted ⇒ a throw is logged and latched but
+   *  not published. */
+  health?: RendererFailureSink;
   /** Monotonic clock for fps (defaults to performance.now()); injectable for tests. */
   now?: () => number;
 }
@@ -157,11 +170,25 @@ export function createViewerStatus(deps: ViewerStatusDeps): ViewerStatusHandle {
   // Coalesce all inputs to one emit per frame: the O(N) in-view scan + the loader
   // reads happen at most once per animation frame regardless of how many camera
   // events / cursor updates arrived, matching the loader's own per-frame coalescing.
+  // Seam R2 P2, site 3. THIS is the point that can throw — `compute()` runs the O(N)
+  // in-view scan and the loader reads, and the subscriber callbacks are the shell's own
+  // setState. Both inputs (the camera subscription and `frameTick`) reach it only through
+  // `scheduleEmit`, on the SCHEDULER's callback, where nothing was catching anything: a
+  // throw escaped as an unhandled rejection and, because `cancelScheduled` is cleared
+  // before the call, the next input re-armed it and it threw again, every frame.
+  const guardedEmit = guardScheduledWork({
+    work: emit,
+    code: "status-emit-failed",
+    fail: (failure) => deps.health?.fail(failure),
+  });
+
   function scheduleEmit(): void {
     if (disposed || cancelScheduled !== null) return;
     cancelScheduled = schedule(() => {
+      // Cleared OUTSIDE the guard, so a latched emit still releases the coalescing flag —
+      // otherwise `resume()` could never get another emit scheduled.
       cancelScheduled = null;
-      emit();
+      guardedEmit();
     });
   }
 
@@ -215,6 +242,10 @@ export function createViewerStatus(deps: ViewerStatusDeps): ViewerStatusHandle {
       // Only wake subscribers when the reported fps actually moves — a steady loop
       // must not force a per-frame O(N) in-view rescan.
       if (recomputeFps(t)) scheduleEmit();
+    },
+
+    resume(): void {
+      guardedEmit.reset();
     },
 
     dispose(): void {

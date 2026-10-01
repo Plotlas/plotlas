@@ -94,10 +94,33 @@ class Dataset(Base):
     # shown in the viewer footer. Credit for the holding institution; free text
     # because there is no registry to validate against.
     #
-    # Both live HERE and not in schemas/v2 for the same reason as `owner` and
-    # `visibility`: they are mutable, per-instance and operator-editable, not part
-    # of the producer→consumer data contract. Putting them in the manifest would
-    # make renaming a collection require a re-bake.
+    # These three columns are now the pre-migration FALLBACK, not the home. The home is
+    # `presentation.json` in the dataset's own directory (D-i/D-xv, api/presentation.py):
+    # what a collection is CALLED and who it came FROM are facts about the data, so they
+    # travel WITH it — a dataset moved to another server, restored from a cold kit, or
+    # served from an assets origin used to arrive anonymous, because app-state lives at
+    # ${DATA_ROOT}/app-state/appstate.db, outside the dataset directory entirely.
+    #
+    # NOTHING WRITES THEM ANY MORE. They are read by `presentation.effective` when — and
+    # only when — the dataset's file carries no `dataset` block, which is every deployment
+    # that predates the migration (`python -m api.admin migrate-presentation`). The
+    # migration COPIES them out and deliberately never clears them: they are the only copy
+    # a rollback to the previous release would find. Do not "tidy" them into a second
+    # source by re-adding a writer — the whole point of the split is one writer per fact.
+    #
+    # The reason originally given for putting them here was: "putting them in the manifest
+    # would make renaming a collection require a re-bake." That is FALSE, and it propagated
+    # to three other files before anyone checked it. `pixscope refresh-manifest` rewrites a
+    # committed manifest in place with no tiles touched and no `dataset_version` bump.
+    # Manifest-resident does NOT imply re-baked: only the DERIVED manifest fields
+    # (annotations, bbox, pyramid) are expensive to change, and these are not derived from
+    # anything. The correction is kept rather than deleted because it is why they were in
+    # the wrong place — but note what the fix actually was: they moved BESIDE the manifest,
+    # not into it, since one file with a cheap-edit path would have had two writers (D-xv).
+    #
+    # The right test is whether the fact survives a copy. `owner` and `visibility` are
+    # genuinely per-instance — the same directory on two servers should have different
+    # owners — so they stay here, permanently.
     display_name: Mapped[str | None] = mapped_column(default=None)
     attribution: Mapped[str | None] = mapped_column(default=None)
     # An OPTIONAL link target for the attribution (Part D §2b). Separate from the
@@ -109,6 +132,48 @@ class Dataset(Base):
     # absolute http(s) URL (frontend `sourceUrl`); anything else stays plain text, so a
     # bad target loses the link, never the credit.
     attribution_url: Mapped[str | None] = mapped_column(default=None)
+    # The finalized upload bundle (DATA_ROOT/users/{owner}/uploads/{id}, D-30) this
+    # dataset's cells were last BUILT FROM — set by create_dataset and by re-ingest
+    # WHEN IT NAMES ONE. It is what ties a dataset to a bundle at all: without it the
+    # only question app-state could answer was "which bundle did this OWNER finalize
+    # last", which is not the same question and gave `GET /api/datasets/{ds_id}/columns`
+    # another collection's columns (review of PR #358, findings 1+2).
+    #
+    # NULLABLE, for two reasons: a row that predates this column, and a CLI-seeded or
+    # operator-transferred dataset that never had a bundle. NEVER cleared once set
+    # (review of PR #390, round 3, findings 1+2 — an EARLIER draft of this PR cleared
+    # it on any unnamed re-ingest of an already-baked dataset, which was itself a
+    # regression: it erased a still-accurate record the moment an owner re-ingested
+    # with nothing new to say, reopening this column's original problem the next time
+    # they uploaded anything else). An unnamed re-ingest now either proceeds because
+    # the record already agrees with the bundle it resolves to, or refuses (409) when
+    # it does not — never guesses, never overwrites, never clears. None means "this
+    # dataset records no source bundle", never "no metadata" — the reader falls
+    # through to its next answer rather than inventing one.
+    #
+    # Per-instance by the copy test, so it belongs here and not in the manifest: an
+    # upload jail is one server's staging area, so the same dataset directory restored
+    # onto another machine has no such bundle and must read None, not a dangling id.
+    #
+    # NOT an authorization input. The bundle is resolved under the dataset's OWNER's
+    # jail at read time (db.resolve_under), so a recorded id can only ever name a
+    # directory that owner could already reach.
+    source_upload_id: Mapped[str | None] = mapped_column(default=None)
+    # The finalized upload a MINTED create built this dataset from — the idempotency key
+    # of a create that authors no id ([[T2-a-minted-create-is-not-idempotent-so-a-retried]]).
+    # Written ONCE, with the row, by that create and by nothing else: re-ingest and an
+    # authored create leave it None, and nothing overwrites it. That is the whole point of
+    # a column separate from `source_upload_id`, which re-ingest and authored creates also
+    # write, so keying on it made a minted create from an upload that had only been
+    # RE-INGESTED into another collection answer 409 and adopt that collection (review of
+    # PR #373, operator finding 1).
+    #
+    # NULLABLE and NOT BACKFILLED: a row minted before this column existed reads None and
+    # is not covered by the key, so a repeat of such a create builds a second collection,
+    # as it did before. The window is the hours between PR #367 (minting) and this column;
+    # backfilling from `source_upload_id` would re-import exactly the ambiguity above.
+    # Per-instance like `source_upload_id`, for the same reason; not an authorization input.
+    minted_from_upload_id: Mapped[str | None] = mapped_column(default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +358,10 @@ async def setup_appstate(
     (create_all never touches an existing table); a fresh DB gets both columns from
     create_all. Each ALTER is guarded by PRAGMA table_info so it runs at most once,
     and carries a constant default so existing rows read back a safe value
-    (last_job_id=None; visibility="private" — owner-only until published)."""
+    (last_job_id=None; visibility="private" — owner-only until published). The
+    presentation columns, `source_upload_id` (seam L1) and `minted_from_upload_id`
+    (PR #373) go the same way, nullable with no default — a pre-existing row backfills
+    as NULL, which every reader already treats as "not recorded"."""
     resolved = db_path if db_path is not None else resolve_appstate_db_path()
     resolved.parent.mkdir(parents=True, exist_ok=True)
     engine = create_appstate_engine(resolved)
@@ -327,11 +395,22 @@ async def setup_appstate(
             except OperationalError as exc:
                 if "duplicate column" not in str(exc).lower():
                     raise
-        # Part B presentation columns. Nullable with NO default: an existing row
+        # The nullable-VARCHAR adds: the Part B presentation columns, plus
+        # `source_upload_id` (seam L1). Nullable with NO default: an existing row
         # backfills as NULL, which every surface already reads as "fall back to
-        # dataset_id" (display_name) / "show nothing" (attribution). Same
+        # dataset_id" (display_name) / "show nothing" (attribution) / "this dataset
+        # records no source bundle" (source_upload_id — which is EVERY row that
+        # predates the column, and the reason it can never be NOT NULL) / "not the
+        # product of a minted create this key covers" (minted_from_upload_id — so a row
+        # minted before the column is simply outside the idempotency key). Same
         # duplicate-column race handling as above.
-        for column in ("display_name", "attribution", "attribution_url"):
+        for column in (
+            "display_name",
+            "attribution",
+            "attribution_url",
+            "source_upload_id",
+            "minted_from_upload_id",
+        ):
             if column in columns:
                 continue
             try:
@@ -452,7 +531,10 @@ async def get_optional_user(
 class DatasetRecord:
     """One app-state datasets row (D-28/D-34). Plain data handed to routers so they
     never touch ORM instances; `last_job_id` is None until the first enqueue;
-    `visibility` is "private" (owner-only) or "public" (readable by anyone)."""
+    `visibility` is "private" (owner-only) or "public" (readable by anyone);
+    `source_upload_id` is None until a bundle-backed bake records one, and never
+    changes again on its own — an unnamed re-ingest proceeds only when it already
+    agrees, or refuses (409) rather than touch it (review of PR #390, round 3)."""
 
     dataset_id: str
     owner: str
@@ -465,6 +547,12 @@ class DatasetRecord:
     attribution: str | None = None
     # Part D §2b: an optional link target for the credit above.
     attribution_url: str | None = None
+    # Seam L1: the finalized upload bundle this dataset was last built from, or None
+    # when it records none — a pre-column row, or a CLI-seeded tree that never had
+    # one. Never cleared once set (review of PR #390, round 3): an unnamed re-ingest
+    # only ever proceeds (already agrees) or refuses (409, disagrees), so nothing here
+    # is ever a guess. None is "not recorded", never "no metadata".
+    source_upload_id: str | None = None
 
 
 def _to_record(dataset: Dataset) -> DatasetRecord:
@@ -477,13 +565,23 @@ def _to_record(dataset: Dataset) -> DatasetRecord:
         display_name=dataset.display_name,
         attribution=dataset.attribution,
         attribution_url=dataset.attribution_url,
+        source_upload_id=dataset.source_upload_id,
     )
 
 
 # Presentation text is operator-supplied free text. It is bounded so a pathological
 # value cannot bloat every list response, and trimmed so trailing whitespace does
 # not masquerade as a set value. Not a security control — authorization never reads
-# these — just hygiene at the one place they enter app-state.
+# these — just hygiene at the one place they enter the system.
+#
+# THE AUTHORITATIVE HOME OF THE THREE CAPS, and the reason they stayed here after the
+# values moved into `presentation.json`: this is what actually runs at every write (via
+# `api/presentation.py`, which defers to `PRESENTATION_LIMITS` rather than re-declaring
+# them), and `schemas/v2/presentation.schema.json` says in its own field descriptions that
+# its `maxLength`s TRANSCRIBE these constants. The lean api image ships no `schemas/`
+# directory, so the code cannot read the schema at runtime and the copy is unavoidable —
+# `tests/test_presentation_schema_parity.py` pins the two equal so a change to one without
+# the other goes red instead of drifting.
 DISPLAY_NAME_MAX = 120
 ATTRIBUTION_MAX = 200
 # A URL, so bounded well above the credit text but still bounded — this rides in every
@@ -514,16 +612,39 @@ def normalize_presentation_text(
 
 
 async def record_dataset_owner(
-    session: AsyncSession, dataset_id: str, owner: str
+    session: AsyncSession,
+    dataset_id: str,
+    owner: str,
+    *,
+    source_upload_id: str | None = None,
+    minted_from_upload_id: str | None = None,
 ) -> None:
     """Record dataset ownership in app-state (decision D-18). Sole writer of the
     owner mapping; never written into the manifest or dataset tree. Upserts the
-    `dataset -> owner` row and commits."""
+    `dataset -> owner` row and commits.
+
+    `source_upload_id`, when given, is written in the SAME commit — so the row and it
+    exist together or not at all. None leaves the column as it is.
+
+    `minted_from_upload_id` is a MINTED create's idempotency key, and the only writer
+    of that column: it is set in the same commit as a NEW row, before the enqueue
+    (review of PR #373, finding 1), and never on a row that already exists — so nothing
+    can overwrite or re-point it later. Passing it for an existing row raises."""
     existing = await session.get(Dataset, dataset_id)
     if existing is None:
-        session.add(Dataset(dataset_id=dataset_id, owner=owner))
+        existing = Dataset(
+            dataset_id=dataset_id, owner=owner, minted_from_upload_id=minted_from_upload_id
+        )
+        session.add(existing)
     else:
+        if minted_from_upload_id is not None:
+            raise ValueError(
+                f"dataset {dataset_id!r} already has an app-state row; "
+                "minted_from_upload_id is written only with a new row"
+            )
         existing.owner = owner
+    if source_upload_id is not None:
+        existing.source_upload_id = source_upload_id
     await session.commit()
 
 
@@ -575,56 +696,19 @@ async def set_dataset_visibility(
 
 # The presentation fields and their length caps. One table, so adding a field is one
 # row here rather than a parameter, a boolean and two branches (PR250-6).
+#
+# There is no `set_dataset_presentation` beside it any more. The three columns above are
+# the pre-migration FALLBACK and nothing writes them: both callers — the PATCH route and
+# `api.admin`'s three set-* verbs — now write `presentation.json` through
+# `api/presentation.py`, whose `apply_updates` carries this function's semantics over
+# intact (key presence is the signal, values are the payload, all-or-nothing, an unknown
+# key raises rather than 500ing). Leaving a live second writer of the same fact is exactly
+# the two-source trap D-xv exists to close, so it was removed rather than left dead.
 PRESENTATION_LIMITS: dict[str, int] = {
     "display_name": DISPLAY_NAME_MAX,
     "attribution": ATTRIBUTION_MAX,
     "attribution_url": ATTRIBUTION_URL_MAX,
 }
-
-
-async def set_dataset_presentation(
-    session: AsyncSession, dataset_id: str, updates: dict[str, str | None]
-) -> bool:
-    """Set a collection's presentation fields (Part B/D). Sole writer of all three
-    (appstate stays app-state's sole writer, D-22). Returns True when the dataset had
-    an app-state row that was updated, False when it has none — an unowned/CLI-seeded
-    tree must get `assign-owner` first, exactly as for visibility.
-
-    KEY PRESENCE IS THE SIGNAL, values are the payload: a key in `updates` is written,
-    a key absent is left alone, and a value of None (or blank) CLEARS that field. That
-    is what lets the PATCH be partial AND able to undo a bad name — and it makes
-    "nothing to set" unrepresentable rather than a runtime guard, since an empty dict
-    simply writes nothing. It also matches both callers exactly: the router's
-    `model_fields_set` IS the key set, and the CLI passes one {field: value}.
-    (PR250-6: this replaces four parameters paired with two `set_*` booleans.)
-
-    Values are normalized (trimmed; blank => cleared) and length-checked, raising
-    PresentationValueError. An unknown key raises PresentationValueError too (→422 at
-    the router, never a 500) — the router only ever passes PRESENTATION_LIMITS keys, so
-    this only guards a future/direct caller that forwards a client-controlled key.
-
-    Never touches `dataset_id`: presentation is presentation only, so the primary key,
-    the on-disk directory, the tile path and any shared deep link all survive it."""
-    unknown = set(updates) - set(PRESENTATION_LIMITS)
-    if unknown:
-        raise PresentationValueError(
-            f"unknown presentation field(s): {sorted(unknown)}"
-        )
-    # Normalize (and reject) EVERY field before touching the row, so a too-long value
-    # in one field cannot leave another already written — the PATCH is all-or-nothing.
-    normalized = {
-        field: normalize_presentation_text(
-            value, field=field, limit=PRESENTATION_LIMITS[field]
-        )
-        for field, value in updates.items()
-    }
-    dataset = await session.get(Dataset, dataset_id)
-    if dataset is None:
-        return False
-    for field, value in normalized.items():
-        setattr(dataset, field, value)
-    await session.commit()
-    return True
 
 
 def is_readable(visibility: str, owner: str | None, user: CurrentUser | None) -> bool:
@@ -676,12 +760,83 @@ async def record_dataset_job(
     await session.commit()
 
 
+async def record_dataset_source_upload(
+    session: AsyncSession, dataset_id: str, upload_id: str
+) -> None:
+    """Record WHICH finalized upload bundle this dataset was built from (seam L1; the
+    API stays app-state's sole writer, D-22). Called by the two routes that resolve a
+    bundle and then bake it — create_dataset and an EXPLICITLY NAMED re-ingest —
+    immediately after the enqueue that will read it, in the same critical section as
+    `record_dataset_job`. The one exception is a MINTED create that made its row: it
+    writes the same column through `record_dataset_owner(..., source_upload_id=)`
+    BEFORE the enqueue, because there it is the idempotency key (review of PR #373,
+    finding 1).
+
+    Always a CALLER-CHOSEN id, never a guess: `create_dataset`'s `body.upload_id` is
+    required, and re-ingest calls this only when `body.upload_id` was given. An
+    UNNAMED re-ingest never calls this at all (review of PR #390, round 3, findings 1
+    and 2 — a round-2 draft of this fix CLEARED the column on any unnamed re-ingest of
+    an already-baked dataset, which was itself a regression: it erased a still-
+    accurate record the instant an owner re-ingested with nothing new to say, and the
+    very next unrelated upload reopened the column's original problem). The route
+    instead proceeds only when the record already agrees with the bundle it resolves
+    to (nothing to write), or refuses (409) when it does not (see `start_ingest`) —
+    so this function is never asked to persist a bundle picked at READ time
+    (`_latest_finalized_bundle(owner)`, PR #358 finding 2's original concern) and never
+    asked to clear anything either.
+
+    Deliberately a SEPARATE writer from `record_dataset_job`: "which job is running"
+    and "which bundle the cells came from" are two facts with two lifetimes, and a job
+    id is replaced by every verb (delete-layout, set-roles, add-layouts) while the
+    source bundle changes only when the dataset is rebuilt from a NAMED bundle.
+
+    Same invariant as `record_dataset_job`: the row is guaranteed by
+    `record_dataset_owner` on the create path and by the ownership check on the
+    re-ingest path, so a missing row raises rather than inserting an ownerless
+    dataset."""
+    dataset = await session.get(Dataset, dataset_id)
+    if dataset is None:
+        raise LookupError(
+            f"dataset {dataset_id!r} has no app-state row; record_dataset_owner "
+            "must run before record_dataset_source_upload"
+        )
+    dataset.source_upload_id = upload_id
+    await session.commit()
+
+
 async def get_dataset_record(
     session: AsyncSession, dataset_id: str
 ) -> DatasetRecord | None:
     """The full app-state record for one dataset (owner + last_job_id), or None
     when app-state does not know the dataset (e.g. CLI-seeded on disk)."""
     dataset = await session.get(Dataset, dataset_id)
+    return _to_record(dataset) if dataset is not None else None
+
+
+async def get_dataset_record_minted_from_upload(
+    session: AsyncSession, owner: str, upload_id: str
+) -> DatasetRecord | None:
+    """The `owner`'s collection that a MINTED create built from finalized upload
+    `upload_id`, or None. The idempotency key of a minted create
+    ([[T2-a-minted-create-is-not-idempotent-so-a-retried]]): (owner, upload_id), matched
+    against `minted_from_upload_id` — which only a minted create writes — and NOT against
+    `source_upload_id`, which re-ingest and authored creates also write (review of PR
+    #373, operator finding 1). Live rows only, so a deleted collection no longer claims
+    its upload. A row minted before `minted_from_upload_id` existed is not found (the
+    column is not backfilled).
+
+    One match is the norm: the key's own 409 stops a second minted create while the first
+    row lives. Two can exist only if the upload lock lapsed before the first create
+    committed its row; then the OLDEST is returned (then the lowest id, so the answer is
+    deterministic even within one whole-second `created_at` tick). A read; commits
+    nothing."""
+    result = await session.execute(
+        select(Dataset)
+        .where(Dataset.owner == owner, Dataset.minted_from_upload_id == upload_id)
+        .order_by(Dataset.created_at, Dataset.dataset_id)
+        .limit(1)
+    )
+    dataset = result.scalars().first()
     return _to_record(dataset) if dataset is not None else None
 
 

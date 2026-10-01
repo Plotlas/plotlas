@@ -52,6 +52,9 @@ from pipeline.layout_plugins.base import (
     packed_ids,
     spatial_bbox,
 )
+# The ONE per-entry fingerprint rule (v2.10). Imported from the EMITTER, which is where the
+# knob default maps the tuple is derived from already live, so no plugin hand-copies a tuple.
+from pipeline.manifest import role_entry_fingerprints
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -169,4 +172,13 @@ class GeographicLayout(LayoutPlugin):
             # unplaced strip, counted so the viewer can explain that band. manifest.py writes
             # the key unconditionally, 0 included.
             missing_count=len(unplaced),
+            # v2.9 provenance: BOTH coordinate columns, lon then lat — like scatter, a
+            # geographic layout consumes a PAIR and a change to either stales it. The
+            # `projection` is a shaping knob echoed in `options`, not a dependency, so it is
+            # not recorded here. `dict.fromkeys` collapses the degenerate lon == lat case.
+            source_columns=tuple(dict.fromkeys((entry.lon_column, entry.lat_column))),
+            # v2.10: this PAIR's two tuples, lon then lat, each naming its partner and the
+            # projection/overlap knobs — a re-projection moves every cell, so it is in the
+            # tuple even though `options` echoes it too. Scatter's rules apply identically.
+            source_fingerprint=role_entry_fingerprints("geographic", entry),
         )

@@ -43,6 +43,7 @@
 // position table via setContext), it runs off its OWN coalesced camera subscription, and it
 // self-tears-down on the World's dispose (symmetric with its two siblings).
 import type { ApiClient } from "../api-client/client.ts";
+import { datetimeInstant } from "../api-client/datetimeValue.ts";
 import type { PositionTable } from "./cells.ts";
 import type { AxisAnnotation, AxisInterval, LabelAnnotation, LayoutEntry, LayoutManifest } from "./layout.ts";
 import type { CameraState, Viewport, World, WorldHandle } from "./world.ts";
@@ -409,27 +410,6 @@ function createLabelMeasurer(config: OverlayLayerConfig): (text: string) => numb
 // ---------------------------------------------------------------------------
 // Datetime axis (pure helpers)
 // ---------------------------------------------------------------------------
-
-/** Parse a getMetadata scalar into a millisecond epoch, keyed by the manifest's declared
- *  datetime `format` (column_roles.datetime.format ∈ iso8601 | unix_seconds | unix_millis).
- *  The API renders a TIMESTAMP role via `.isoformat()` (an ISO string; Date.parse handles it,
- *  ancient years included), and unix_* roles as BIGINT numbers. Returns null for a missing /
- *  unparseable value. Pure + exported. */
-export function parseDatetimeValue(value: string | number | boolean | null, format: string): number | null {
-  if (value === null || value === undefined || typeof value === "boolean") return null;
-  if (format === "unix_seconds") {
-    const n = typeof value === "number" ? value : Number(value);
-    return Number.isFinite(n) ? n * 1000 : null;
-  }
-  if (format === "unix_millis") {
-    const n = typeof value === "number" ? value : Number(value);
-    return Number.isFinite(n) ? n : null;
-  }
-  // iso8601 (default): a string the pipeline wrote as an ISO datetime.
-  if (typeof value === "number") return value; // defensive: an epoch slipped through
-  const t = Date.parse(value);
-  return Number.isFinite(t) ? t : null;
-}
 
 /** The dense ids at the two x-EXTREMES of a position table — `k` smallest-x and `k`
  *  largest-x — the cells to fetch dates for when deriving the datetime domain (the datetime
@@ -1737,7 +1717,9 @@ function defaultResolveTimeDomain(
     const points: { x: number; t: number }[] = [];
     for (const row of rows) {
       if (row.id < 0 || row.id >= positions.count) continue;
-      const t = parseDatetimeValue(row.fields[dt.column] ?? null, dt.format);
+      // By the value's type, not the declared format: the one reader the selection summary
+      // shares, so a stored timestamp committed as `unix_*` still fits (#391).
+      const t = datetimeInstant(row.fields[dt.column], dt.format);
       if (t !== null) points.push({ x: positions.x[row.id], t });
     }
     return fitTimeDomain(points);

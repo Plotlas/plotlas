@@ -5,7 +5,7 @@
 # (decision D-33) packs tiles via `pmtiles` (pure-Python, installed from PyPI as a
 # pipeline dependency below); the v1 quadfeather CLI tiler is retired.
 # Base pinned to a minor tag per docker/README conventions.
-FROM python:3.12-slim-bookworm
+FROM python:3.14-slim-bookworm
 
 # libvips runtime shared lib for pyvips (Spike 01).
 RUN apt-get update \

@@ -9,11 +9,16 @@ the same SQLite file (one asyncio.run loop each), mirroring test_write_ingest.
 Also covers the re-ingest 403-with-hint parity in routers/jobs.py: an unowned
 dataset that exists on disk now answers 403 pointing at this command, while a
 genuinely-absent dataset stays 404.
+
+The three presentation verbs write the dataset's own `presentation.json` rather than
+app-state (D-i/D-xv), so their assertions read the file — same behaviour, new home. The
+app-state fixture is still needed: the CLI keeps requiring an owner row.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from collections.abc import Iterator
 from pathlib import Path
@@ -276,25 +281,31 @@ def test_set_dataset_visibility_rejects_out_of_model_value(app_db) -> None:
 # --- set-display-name / set-attribution (Part B: name & credit a collection) ---
 
 
+def _stored_presentation(dataset_id: str) -> dict:
+    """The `dataset` block of the dataset's OWN `presentation.json` — read straight off
+    disk, not through `presentation.load`, so the test observes the bytes the CLI wrote
+    rather than a code path that could be wrong in the same way twice. `{}` when there is
+    no file (or no block): the file is where these values live now (D-i/D-xv), so it is
+    where the CLI tests look."""
+    path = (
+        Path(os.environ["DATA_ROOT"]) / "datasets" / dataset_id / "presentation.json"
+    )
+    if not path.is_file():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8")).get("dataset", {})
+
+
 def _read_presentation(
     db_path: Path, dataset_id: str
 ) -> tuple[str | None, str | None]:
-    """The (display_name, attribution) stored for `dataset_id`, over a second engine on
-    the same SQLite file — (None, None) when app-state has no row for it."""
-    async def _run() -> tuple[str | None, str | None]:
-        engine, sessionmaker = await appstate.setup_appstate(db_path)
-        try:
-            async with sessionmaker() as session:
-                record = await appstate.get_dataset_record(session, dataset_id)
-                return (
-                    (None, None)
-                    if record is None
-                    else (record.display_name, record.attribution)
-                )
-        finally:
-            await engine.dispose()
+    """The (display_name, attribution) the CLI stored for `dataset_id`.
 
-    return asyncio.run(_run())
+    `db_path` is still taken (and deliberately unused) so every caller keeps naming the
+    app-state fixture it depends on for the owner row — the CLI still requires one — but
+    the VALUES are read from the dataset directory, because that is where they live after
+    D-i/D-xv. Same assertions, new home."""
+    block = _stored_presentation(dataset_id)
+    return block.get("display_name"), block.get("attribution")
 
 
 def test_set_display_name_then_clear_roundtrips(app_db, capsys) -> None:
@@ -359,18 +370,10 @@ def test_set_display_name_over_long_is_nonzero_no_write(app_db, capsys) -> None:
 
 
 def _read_attribution_url(db_path: Path, dataset_id: str) -> str | None:
-    """The attribution_url stored for `dataset_id`, over a second engine on the same
-    SQLite file — None when app-state has no row for it."""
-    async def _run() -> str | None:
-        engine, sessionmaker = await appstate.setup_appstate(db_path)
-        try:
-            async with sessionmaker() as session:
-                record = await appstate.get_dataset_record(session, dataset_id)
-                return None if record is None else record.attribution_url
-        finally:
-            await engine.dispose()
-
-    return asyncio.run(_run())
+    """The attribution_url the CLI stored for `dataset_id` — from the dataset's own
+    `presentation.json` (D-i/D-xv), None when it carries none. `db_path` is kept for the
+    same reason as in `_read_presentation`."""
+    return _stored_presentation(dataset_id).get("attribution_url")
 
 
 def test_set_attribution_url_then_clear_roundtrips(app_db, capsys) -> None:
@@ -926,3 +929,164 @@ def test_reingest_truly_absent_dataset_stays_404(client, auth, fake_queue) -> No
     )
     assert r.status_code == 404
     assert fake_queue.calls == []
+
+
+# --- the CLI takes the per-dataset lock (review of PR #346, finding 4) ------
+#
+# `presentation.update`'s own docstring says callers that can race hold
+# `queue.dataset_lock`. The CLI could race and did not: it is documented to run as
+# `docker compose exec api …`, i.e. INSIDE a live API, so `migrate-presentation` sweeping
+# every dataset while an owner renamed one through the UI was two read-modify-writes on
+# one file — last writer wins wholesale, with no error and no log.
+
+
+class _RecordingLock:
+    """A lock that records acquire/release, and can refuse the way a peer already holding
+    it does (redis-py's `acquire()` returns False for that; an OUTAGE raises instead,
+    which is why the CLI probes with PING rather than reading the message)."""
+
+    def __init__(self, name: str, log: list, grant: bool) -> None:
+        self._name = name
+        self._log = log
+        self._grant = grant
+
+    def acquire(self, *args, **kwargs) -> bool:  # noqa: ANN002, ANN003
+        self._log.append(("acquire", self._name))
+        return self._grant
+
+    def release(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+        self._log.append(("release", self._name))
+
+
+class _RecordingRedis:
+    def __init__(self, grant: bool = True, reachable: bool = True) -> None:
+        self.log: list = []
+        self._grant = grant
+        self._reachable = reachable
+
+    def ping(self) -> bool:
+        if not self._reachable:
+            raise ConnectionError("Error 111 connecting to redis:6379. Connection refused.")
+        return True
+
+    def lock(self, name: str, *, timeout=None, blocking_timeout=None):  # noqa: ANN001, ANN201
+        return _RecordingLock(name, self.log, self._grant)
+
+    def close(self) -> None:
+        return None
+
+
+def _presentation_path(dataset_id: str) -> Path:
+    """Where `_stored_presentation` reads from — as a path, for the assertions that need
+    to say "nothing was written at all"."""
+    return Path(os.environ["DATA_ROOT"]) / "datasets" / dataset_id / "presentation.json"
+
+
+def _make_dataset_with_legacy_url_role(dataset_id: str) -> None:
+    """An on-disk dataset carrying a pre-2.9 `column_roles.url` — the half
+    `migrate-presentation` copies into `presentation.json` (D-xvii). Gives the migration
+    something to WRITE without seeding app-state, so these tests are about the lock and
+    nothing else."""
+    ds_dir = Path(os.environ["DATA_ROOT"]) / "datasets" / dataset_id
+    ds_dir.mkdir(parents=True)
+    (ds_dir / "layout_manifest.json").write_text(
+        json.dumps(
+            {"manifest_version": "2.8", "column_roles": {"url": ["source_url"]}}
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_set_display_name_writes_under_the_dataset_mutation_lock(
+    app_db, monkeypatch
+) -> None:
+    """The SAME `dataset-mutate:{id}` key the PATCH route, create and DELETE take — a
+    different key would be indistinguishable from taking no lock at all."""
+    _seed_user(app_db, "alice")
+    _make_dataset_on_disk("ds_lock")
+    _seed_owner(app_db, "ds_lock", "alice")
+    fake = _RecordingRedis()
+    monkeypatch.setattr(admin.queue, "redis_client", lambda: fake)
+
+    assert admin.main(["set-display-name", "ds_lock", "A Name"]) == 0
+
+    assert fake.log == [
+        ("acquire", "dataset-mutate:ds_lock"),
+        ("release", "dataset-mutate:ds_lock"),
+    ], fake.log
+    assert _stored_presentation("ds_lock")["display_name"] == "A Name"
+
+
+def test_set_display_name_refuses_while_a_peer_holds_the_lock(
+    app_db, monkeypatch, capsys
+) -> None:
+    """A refused acquire means the API is writing this dataset RIGHT NOW. Writing anyway
+    is the lost update the lock exists to prevent, so the CLI writes nothing and exits 1
+    naming the retry."""
+    _seed_user(app_db, "alice")
+    _make_dataset_on_disk("ds_busy")
+    _seed_owner(app_db, "ds_busy", "alice")
+    monkeypatch.setattr(admin.queue, "redis_client", lambda: _RecordingRedis(grant=False))
+
+    assert admin.main(["set-display-name", "ds_busy", "A Name"]) == 1
+    assert not _presentation_path("ds_busy").exists()
+    assert "being written by someone else" in capsys.readouterr().err
+
+
+def test_a_broker_outage_still_writes_but_says_so(app_db, monkeypatch, capsys) -> None:
+    """Degrade LOUDLY. Refusing on an outage would take naming away from an operator with
+    no other route to it — the PATCH route degrades for the same reason
+    (`best_effort_when_down=True`) — but this one runs unattended in a sweep, so the
+    unserialized write has to be visible."""
+    _seed_user(app_db, "alice")
+    _make_dataset_on_disk("ds_down")
+    _seed_owner(app_db, "ds_down", "alice")
+    fake = _RecordingRedis(reachable=False)
+    monkeypatch.setattr(admin.queue, "redis_client", lambda: fake)
+
+    assert admin.main(["set-display-name", "ds_down", "A Name"]) == 0
+
+    assert fake.log == [], "a lock was taken against an unreachable broker"
+    assert _stored_presentation("ds_down")["display_name"] == "A Name"
+    err = capsys.readouterr().err
+    assert "NOT serialized" in err and "ds_down" in err
+
+
+def test_migrate_presentation_locks_each_dataset_it_writes(app_db, monkeypatch) -> None:
+    """Per dataset, not once for the run: the lock orders THIS dataset's
+    read-modify-write against the API's, and one key held across a sweep would protect
+    none of the others."""
+    _seed_user(app_db, "alice")
+    for ds_id in ("ds_a", "ds_b"):
+        _make_dataset_with_legacy_url_role(ds_id)
+        _seed_owner(app_db, ds_id, "alice")
+    fake = _RecordingRedis()
+    monkeypatch.setattr(admin.queue, "redis_client", lambda: fake)
+
+    assert admin.main(["migrate-presentation"]) == 0
+
+    assert fake.log == [
+        ("acquire", "dataset-mutate:ds_a"),
+        ("release", "dataset-mutate:ds_a"),
+        ("acquire", "dataset-mutate:ds_b"),
+        ("release", "dataset-mutate:ds_b"),
+    ], fake.log
+    for ds_id in ("ds_a", "ds_b"):
+        stored = json.loads(_presentation_path(ds_id).read_text(encoding="utf-8"))
+        assert stored["columns"] == {"source_url": {"render": "url"}}
+
+
+def test_migrate_presentation_skips_a_dataset_a_peer_is_writing(
+    app_db, monkeypatch, capsys
+) -> None:
+    """One contended dataset is REPORTED and skipped and the sweep continues — the verb's
+    existing contract ("one failure never aborts the run"), now covering the case where
+    the other writer is the running API."""
+    _seed_user(app_db, "alice")
+    _make_dataset_with_legacy_url_role("ds_c")
+    _seed_owner(app_db, "ds_c", "alice")
+    monkeypatch.setattr(admin.queue, "redis_client", lambda: _RecordingRedis(grant=False))
+
+    assert admin.main(["migrate-presentation"]) == 1  # something was skipped
+    assert not _presentation_path("ds_c").exists()
+    assert "holds the dataset lock" in capsys.readouterr().err

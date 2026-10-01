@@ -430,6 +430,35 @@ test("hit areas are grown from ONE declared minimum, and the visual chrome is no
   assert.equal(heightOnly.length, 1);
   assert.match(heightOnly[0].body, /width:\s*100%/);
   assert.match(heightOnly[0].body, /height:\s*max\(100%,\s*var\(--touch-min\)\)/);
+
+  // ...and technique (2), `min-height` where the control has no visible box an overlay
+  // could avoid distorting. An `<input>` cannot be grown by an `::after` at all, so this
+  // is the ONLY mechanism available for a text field.
+  const minHeight = rulesListing(".viewer-screen .tag-filter");
+  assert.equal(minHeight.length, 1, "the min-height group is not one rule");
+  assert.match(minHeight[0].body, /min-height:\s*var\(--touch-min\)/);
+  assert.deepEqual(minHeight[0].selectors, [
+    ".viewer-screen .viewer-menu .menu-item",
+    ".viewer-screen .sheet-grip",
+    ".viewer-screen .tag-filter",
+  ]);
+});
+
+test("the phone's search field reaches the minimum — the residual list was masking it", () => {
+  // The one control the review of #272 (finding #2) caught the allow-list hiding: the
+  // e2e's ALLOWED_UNDER carries `.search-input` for its DESKTOP residual (growing it there
+  // makes the pill 66.8px and occludes the rails pinned at `top: 72px` — deferred to
+  // [[T2-210]]), and that entry also suppressed the narrow case the seam actually fixes.
+  //
+  // So the fix shipped with NO gate anywhere: no e2e assertion could see it (allow-listed,
+  // and at 390px the field only exists inside an open ☰), and there was no declaration pin
+  // here either — deleting the rule left every tier green (review of #267). This is that
+  // gate. Lift it to all widths, and drop the e2e allow-list entry with it, when T2-210
+  // derives the top-bar band.
+  assert.match(decls(".cockpit-narrow .search-input"), /min-height:\s*var\(--touch-min\)/);
+  // The desktop half is deliberately NOT raised, and that is the whole reason the rule
+  // carries a mode prefix rather than joining the group above.
+  assert.doesNotMatch(decls(".search-input"), /min-height/);
 });
 
 test("an ALREADY-POSITIONED control is never given position: relative", () => {
@@ -460,9 +489,31 @@ test("where two grown hit areas would touch, the gap between them is DERIVED fro
   // 2026-08-06: a chip renders 24.8px tall at a 30px pitch, so a 44px hit area overlapped
   // the row above by 14px. Expressing the gap as `--touch-min - --chip-h` is what keeps
   // the two in step — a chip restyled taller narrows the gap by exactly as much.
-  assert.match(decls(".chip-row"), /row-gap:\s*calc\(var\(--touch-min\)\s*-\s*var\(--chip-h\)\)/);
-  assert.match(decls(".chip"), /min-height:\s*var\(--chip-h\)/);
+  assert.match(
+    decls(".viewer-screen .chip-row"),
+    /row-gap:\s*calc\(var\(--touch-min\)\s*-\s*var\(--chip-h\)\)/,
+  );
+  assert.match(decls(".viewer-screen .chip"), /min-height:\s*var\(--chip-h\)/);
   assert.match(decls(".viewer-screen"), /--chip-h:\s*25px/);
+
+  // ...and BOTH are scoped to .viewer-screen, which is correctness and not house style:
+  // `--touch-min` / `--chip-h` are declared on `.viewer-screen`, so an unscoped rule
+  // resolves two undefined var()s outside the viewer. That is invalid at computed-value
+  // time, so `row-gap` reverts to its initial `normal` and silently DROPS the
+  // `gap: 0.3rem` .chip-row sets for itself — a latent break for the first chip row on a
+  // card or a wizard step (review of #267). Asserted as an ABSENCE over the raw
+  // stylesheet, because the defect is a rule that does not carry the prefix.
+  const chipRules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter((m) =>
+    /var\(--chip-h\)|var\(--touch-min\)/.test(m[2]),
+  );
+  const unscoped = chipRules
+    .map((m) => m[1].trim())
+    .filter((sel) => /(^|,|\s)\.chip(-row)?\b/.test(sel) && !sel.includes(".viewer-screen"));
+  assert.deepEqual(
+    unscoped,
+    [],
+    `these chip rules read .viewer-screen's custom properties from outside it: ${unscoped.join(" | ")}`,
+  );
 
   // Same shape for the lightbox's two chrome buttons, 6.4px apart before this seam and
   // needing (44 - 32) = 12px once each is expanded by 6px on every side.
@@ -482,7 +533,12 @@ test("no viewer media query was added — M2's derived mode is still the only sw
   const widthQueries = [...css.matchAll(/@media[^{]*\((?:min|max)-width[^{]*?\)/g)].map((m) =>
     m[0].replace(/\s+/g, " ").trim(),
   );
-  assert.deepEqual(widthQueries, ["@media (max-width: 1100px)", "@media (max-width: 700px)"]);
+  assert.deepEqual(widthQueries, [
+    "@media (max-width: 1100px)",
+    "@media (max-width: 700px)",
+    "@media (max-width: 700px)", // seam L3: the layout designer, not the viewer
+    "@media (max-width: 700px)", // seam L4: the designer's Data view, at L3's threshold
+  ]);
 });
 
 test("the ☰ label is all-or-nothing: a name that cannot fit whole is replaced by the glyph", () => {
@@ -508,6 +564,56 @@ test("the ☰ label is all-or-nothing: a name that cannot fit whole is replaced 
   // …and it must NOT add a second holder observer — SCOPE §3.1 gives ViewerScreen the one.
   assert.equal(src.includes("new ResizeObserver"), false,
     "ViewerMenu added a competing ResizeObserver; the holder's observer is ViewerScreen's");
+});
+
+test("the ☰ label re-settles on a RE-RENDER, not only when the label text changes", () => {
+  // Review of #267. The allotment is set by the whole flex row, so it moves when a SIBLING
+  // appears: `ActivityPill` mounts into `.cockpit-topbar` for the life of a job and takes
+  // its share. That is no resize and no change to `triggerLabel`, so a `[triggerLabel]`
+  // dependency never re-settled and the trigger sat at exactly the one-letter stub this
+  // mechanism exists to prevent until the job ended AND something fired a resize.
+  //
+  // jsdom does no layout, so the widths are supplied — which is the only way to drive the
+  // decision at all. `settle` reads `scrollWidth` vs `clientWidth`, so defining those two
+  // on the label node IS the measurement it makes.
+  function Probe(props: { squeezed: boolean }): ReturnType<typeof h> {
+    return h(ViewerMenu, {
+      layouts: LAYOUTS,
+      activeLayoutId: "grid",
+      onSwitch: () => {},
+      open: false,
+      setOpen: () => {},
+      // A prop that is NOT the label, standing in for anything that re-renders the menu
+      // while its own text is unchanged.
+      bakedSummary: props.squeezed ? { grid: "squeezed" } : undefined,
+    });
+  }
+  const r = render(h(Probe, { squeezed: false }));
+  const label = r.container.querySelector(".viewer-menu-trigger-label") as HTMLElement;
+  assert.notEqual(label, null, "no ☰ trigger label rendered");
+  // It fits at first: natural width equals the allotment.
+  assert.equal(label.classList.contains("viewer-menu-label-hidden"), false);
+
+  // Now the label no longer fits — and NOTHING about the label itself changed.
+  Object.defineProperty(label, "scrollWidth", { value: 146, configurable: true });
+  Object.defineProperty(label, "clientWidth", { value: 94, configurable: true });
+  r.rerender(h(Probe, { squeezed: true }));
+  assert.equal(
+    label.classList.contains("viewer-menu-label-hidden"),
+    true,
+    "a re-render with less room left the label truncated — the settle is still gated on the label text",
+  );
+
+  // ...and it is reversible, which is what stops a one-way hide: give the room back and
+  // the label returns. This is also the property that makes running it every render safe
+  // — the decision is a pure function of (label, allotment) and cannot chase itself.
+  Object.defineProperty(label, "scrollWidth", { value: 90, configurable: true });
+  r.rerender(h(Probe, { squeezed: false }));
+  assert.equal(
+    label.classList.contains("viewer-menu-label-hidden"),
+    false,
+    "the label never came back once the room did — the hide is one-way",
+  );
 });
 
 test("the sheet's dismiss control points the way the sheet moves", () => {

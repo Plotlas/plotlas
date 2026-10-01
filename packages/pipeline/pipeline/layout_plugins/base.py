@@ -64,7 +64,9 @@ class Role(str, Enum):
     GEOGRAPHIC = "geographic"  # real-world lon/lat pairs, projected to the plane (D-35 G2)
     TAG = "tag"
     FREEFORM = "freeform"
-    URL = "url"             # columns whose values are links (schema v2.8); display only
+    # No URL member: schema v2.8 added one, v2.9 removed it (D-xvii). "This column's values
+    # are links" is presentation, not a role the bake consumes — nothing was computed from it
+    # and no cell moved — so it lives in `presentation.json` as `columns.<name>.render`.
     EMBEDDING = "embedding"
 
 
@@ -153,11 +155,9 @@ class ColumnRoles:
     embedding: EmbeddingRoleEntry | None
     scatter: list[ScatterRoleEntry] = field(default_factory=list)  # D-26; default []
     geographic: list[GeographicRoleEntry] = field(default_factory=list)  # D-35 G2; default []
-    # Columns whose values ARE links (schema v2.8). Just NAMES — the value is the URL,
-    # and the panel already heads each field with the column name, so there is no label
-    # to carry. Display only: drives no layout, no filter, no search. Declared LAST so
-    # the positional order of the existing defaulted fields is untouched.
-    url: list[str] = field(default_factory=list)
+    # No `url` field: schema v2.8 carried one and v2.9 removed it (D-xvii). "Render this
+    # column's value as a link" is a display choice, so it moved to `presentation.json`
+    # (`columns.<name>.render: "url"`), written by the API and never by the bake.
 
     @classmethod
     def from_config(cls, config: dict) -> "ColumnRoles":
@@ -206,7 +206,6 @@ class ColumnRoles:
                 for e in config.get("tag", [])
             ],
             freeform=[_entry(e) for e in config.get("freeform", [])],
-            url=list(config.get("url", [])),  # schema v2.8: bare column names
             embedding=embedding_role,
             scatter=[
                 ScatterRoleEntry(
@@ -298,6 +297,49 @@ class LayoutResult:
                                      # `annotations`: a datetime layout that DECLINES its
                                      # axis still strips its undated cells, and
                                      # scatter/geographic emit no annotations at all.
+    source_columns: tuple[str, ...] = ()
+                                     # v2.9 (T2-a-layout-does-not-record-which-column-it-was):
+                                     # the metadata columns this layout was DERIVED FROM, by
+                                     # RAW source-header name, first-seen order, no
+                                     # duplicates. The PLUGIN is the authority — it is the
+                                     # code that actually read the column — the same reason
+                                     # `options` is set by the layout that applied the knobs.
+                                     # Arity differs by family and that is the point:
+                                     # datetime/categorical name ONE, scatter names its x/y
+                                     # PAIR, geographic names lon+lat, and GRID NAMES NONE —
+                                     # it orders by id == sorted filename and reads no
+                                     # metadata at all (which is why D-viii can make it
+                                     # optional). `()` is therefore grid's honest value, not
+                                     # a special case, and the staleness predicate
+                                     # `any(moved_column in source_columns)` is false for
+                                     # grid by construction rather than by exception.
+                                     # DEFAULTED — like `missing_count` — only so callers
+                                     # outside this package (tests/fixtures/build_fixture.py)
+                                     # keep constructing a LayoutResult positionally; every
+                                     # family must still SET it, because `()` is the claim
+                                     # "this layout depends on no column" and a plugin that
+                                     # leaves it unset is making that claim silently.
+                                     # `test_layout_provenance.py` walks worker._PLUGINS and
+                                     # fails on any plugin with no declared expectation, so a
+                                     # new family cannot inherit the default unnoticed.
+    source_fingerprint: dict[str, tuple[tuple, ...]] = field(default_factory=dict)
+                                     # v2.10 (T2-a-layout-cannot-say-it-is-stale-once-the-job):
+                                     # HOW this layout read those columns —
+                                     # `column -> the fingerprint tuples THIS LAYOUT'S OWN
+                                     # role entry contributed`, built by
+                                     # `manifest.role_entry_fingerprints` and NEVER by hand.
+                                     # Set beside `source_columns`, from the SAME role entry,
+                                     # in the same place: that is what makes its keys equal
+                                     # `source_columns` by construction rather than by a
+                                     # second accessor that could drift. Grid's honest value
+                                     # is `{}` — it reads no column, so it records no way of
+                                     # reading one, and it is never stale. Its SCOPE is the
+                                     # entry, not the column: `_role_fingerprints` unions
+                                     # every role on a column, and a union written into a
+                                     # bake record would never clear (a second scatter pair
+                                     # sharing an axis, or a tag role added to a categorical
+                                     # column, would stale an untouched layout forever —
+                                     # LAYOUT_DESIGNER D-xxix).
 
 
 class LayoutPlugin(ABC):

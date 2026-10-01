@@ -10,6 +10,8 @@
 // Pure, node-test importable: the one src VALUE import (./../layoutOptions, for
 // the shared option defaults) is itself pure and pulls in no react/renderer.
 import type { ColumnRoles } from "../../generated/column_roles";
+import type { Presentation } from "../../generated/presentation";
+import type { ColumnPresentationMap } from "../presentation";
 import { DEFAULT_SCALE } from "../layoutOptions";
 
 export type ColumnRoleChoice = "ignore" | "filename" | "datetime" | "categorical" | "tag" | "freeform";
@@ -70,14 +72,18 @@ export interface RolesDraft {
   // the draft cannot edit it, but dropping it on re-POST would strip it from the
   // committed manifest. Absent for drafts of datasets without one.
   embedding?: ColumnRoles["embedding"];
-  // Schema v2.8 `url` — the columns whose values render as links. ORTHOGONAL to `choice`:
-  // "render as a link" is a display MODIFIER layered on a shown column, not a role that
-  // replaces its storage. A column is a link iff its name is in this list AND its choice is
-  // a shown scalar role (freeform/categorical) — the roles ingest projects into
-  // metadata.parquet as a scalar the panel can draw. buildColumnRoles emits `roles.url` from
-  // here, independently of the column's storing role (no co-emit). This is EDITED by the
-  // wizard (the "render as link" checkbox), unlike the opaque `embedding` carry. (Tag links
-  // are a tracked follow-on; datetime/coordinate columns are not URL-bearing.)
+  // The columns whose values render as links. ORTHOGONAL to `choice`: "render as a link"
+  // is a display MODIFIER layered on a shown column, not a role that replaces its storage.
+  // A column is a link iff its name is in this list AND its choice is a shown scalar role
+  // (freeform/categorical) — the roles ingest projects into metadata.parquet as a scalar
+  // the panel can draw. EDITED by the wizard (the "render as link" checkbox), unlike the
+  // opaque `embedding` carry. (Tag links are a tracked follow-on; datetime/coordinate
+  // columns are not URL-bearing.)
+  //
+  // D-xvii moved where this LANDS, not what it means: `buildPresentation` compiles it into
+  // `presentation.columns.<name>.render`, and `buildColumnRoles` no longer emits it at all.
+  // It stays on the draft because the draft is the WIZARD's model — one table of per-column
+  // decisions — and which file each decision ends up in is the compile step's business.
   url?: string[];
   // The `geographic` role (real-world lon/lat pairs — D-35 Seam G2) is now EDITED by the
   // wizard (Seam G3 / T2-125), decomposed into atomic geoPairs the Geographic section maps —
@@ -105,6 +111,13 @@ export function emptyDraft(columns: string[]): RolesDraft {
 
 function columnsWith(draft: RolesDraft, role: ColumnRoleChoice): string[] {
   return draft.columns.filter((c) => draft.choice[c] === role);
+}
+
+/** The column the draft makes the datetime — the first in `columns`, if a draft
+ *  `validateDraft` refuses makes two — or undefined. The one definition: the compile, the
+ *  layout ids, the designer's role locks and its pending model all read it. */
+export function datetimeColumn(draft: RolesDraft): string | undefined {
+  return draft.columns.find((c) => draft.choice[c] === "datetime");
 }
 
 /** Role choices that STORE the column in their own family. A coordinate axis (scatter x/y,
@@ -232,7 +245,7 @@ export function buildColumnRoles(draft: RolesDraft): ColumnRoles {
   const roles: ColumnRoles = {
     filename: { column: filenameCol, label: label(filenameCol, "Filename") },
   };
-  const datetime = columnsWith(draft, "datetime")[0];
+  const datetime = datetimeColumn(draft);
   if (datetime !== undefined) {
     roles.datetime = { column: datetime, label: label(datetime), format: draft.datetimeFormat };
   }
@@ -264,15 +277,12 @@ export function buildColumnRoles(draft: RolesDraft): ColumnRoles {
   if (freeform.length > 0) {
     roles.freeform = freeform.map((c) => ({ column: c, label: label(c) }));
   }
-  // Schema v2.8: `url` is an ORTHOGONAL display modifier, not a role — "render this shown
-  // column's value as a link". It is emitted from draft.url INDEPENDENTLY of the column's
-  // storing role, so a `categorical` (or `freeform`) column can be a link without being
-  // duplicated into another family (which ingest's enrichment SELECT would reject as a
-  // duplicate column). validateDraft (run at the top) has already rejected any url naming a
-  // coordinate axis or non-linkable column, so emit the list as-is — no re-filtering.
-  if ((draft.url ?? []).length > 0) {
-    roles.url = [...(draft.url ?? [])];
-  }
+  // D-xvii: `url` used to be emitted HERE, into column_roles. It no longer is, and the
+  // absence is the point — the bake only ever VALIDATED that role (nothing computed from
+  // it, no cell moved), so it was presentation collected on the bake's input path. It is
+  // now `presentation.columns.<name>.render`, compiled by buildPresentation below. This
+  // function emits the BAKE's inputs only; a link is a display choice that needs nothing
+  // but the CSV to exist, which is why it can be made before, during or after a bake.
   // The reserved embedding role rides through verbatim (opaque carry — see RolesDraft).
   if (draft.embedding !== undefined) {
     roles.embedding = draft.embedding;
@@ -384,7 +394,10 @@ export function availableLayoutTypes(draft: RolesDraft | null): string[] {
  *  (declared stays declared, absent stays absent — so a re-POST never strips or re-describes
  *  a committed layout's roles), and the reserved `embedding` role (Phase 2) carried opaquely.
  *  Fresh drafts (emptyDraft) still produce the normalized-label defaults. */
-export function rolesDraftFromColumnRoles(roles: ColumnRoles): RolesDraft {
+export function rolesDraftFromColumnRoles(
+  roles: ColumnRoles,
+  presentationColumns?: ColumnPresentationMap,
+): RolesDraft {
   const columns: string[] = [];
   const choice: Record<string, ColumnRoleChoice> = {};
   const labels: Record<string, string> = {};
@@ -454,13 +467,109 @@ export function rolesDraftFromColumnRoles(roles: ColumnRoles): RolesDraft {
     // Opaque carry (see RolesDraft) — spread-conditional so an absent role does not
     // materialize as an own `undefined` key.
     ...(roles.embedding !== undefined ? { embedding: roles.embedding } : {}),
-    // Schema v2.8: the `url` display modifier, orthogonal to `choice`. Keep only names that
-    // resolved to a SHOWN SCALAR role (freeform/categorical) above — a stale link naming an
-    // unstored or non-scalar column is dropped on load, so it can never later throw in
-    // buildColumnRoles or bake a link the panel cannot draw. The wizard's re-POST rebuilds
-    // column_roles.url from this list, so an unedited dataset's links survive add-layout.
-    url: (roles.url ?? []).filter((c) => isLinkable(choice[c])),
+    // The `url` display modifier, orthogonal to `choice`. Read from the PRESENTATION
+    // record now, not from `column_roles` (D-xvii) — the second argument, absent for an
+    // images-only or record-less dataset, in which case no column starts marked. Keep
+    // only names that resolved to a SHOWN SCALAR role (freeform/categorical) above: a
+    // stale link naming an unstored or non-scalar column is dropped on load, so it can
+    // never later throw in validateDraft or offer a link the panel cannot draw. That
+    // filter is now also the DANGLING-REFERENCE case (D-xvi) — the record may name a
+    // column a metadata update removed, and dropping it here is the silent fallback.
+    url: urlColumnsOf(presentationColumns).filter((c) => isLinkable(choice[c])),
   };
+}
+
+/** The columns a presentation record marks `render: "url"`. Sorted for a stable draft —
+ *  object key order is insertion order, which is the record's authoring order rather than
+ *  anything the user chose, and a draft that reorders itself between loads is noise in
+ *  every diff of what the wizard would re-submit. */
+function urlColumnsOf(columns: ColumnPresentationMap): string[] {
+  if (columns === undefined) return [];
+  return Object.entries(columns)
+    .filter(([, entry]) => entry.render === "url")
+    .map(([column]) => column)
+    .sort();
+}
+
+/**
+ * Compile the draft's DISPLAY choices into a presentation record (D-xvii) — the other
+ * half of the payload `buildColumnRoles` used to carry alone.
+ *
+ * Today that is exactly the "render as link" toggle. It is separate from
+ * `buildColumnRoles` because the two go to different FILES with different writers and
+ * different costs: roles are bake inputs (changing one makes the tiles wrong), while a
+ * link is inert — "the only thing the 'decide a URL' needs is the CSV to exist".
+ *
+ * Emits `{}` when the draft marks nothing, so an unset choice writes no keys rather than
+ * an empty `columns` map: absent means absent, at every layer.
+ *
+ * NOT validated here beyond `validateDraft`'s linkable check, which the caller has
+ * already run — the server is the validator (D-11), and this record's own contract is
+ * validate-on-write, fall-back-on-read.
+ */
+export function buildPresentation(draft: RolesDraft): Presentation {
+  const columns: NonNullable<Presentation["columns"]> = {};
+  for (const column of draft.url ?? []) {
+    if (isLinkable(draft.choice[column])) columns[column] = { render: "url" };
+  }
+  return Object.keys(columns).length > 0 ? { columns } : {};
+}
+
+/** A `render` entry as a PATCH sends it: `"url"` to mark the column a link, `null` to
+ *  clear that key and leave the entry's other keys (a label) alone. */
+export type ColumnRenderPatch = Record<string, { render: "url" | null }>;
+
+/**
+ * The `columns` PATCH that turns the STORED link flags into the draft's — or null when
+ * nothing changed.
+ *
+ * The add-layout wizard cannot ride its link choices along with the bake: a bake never
+ * writes the presentation record (D-xv), and `AddLayoutsRequest` carries no presentation
+ * half. So the two halves of that wizard's submit go to two places, which is the file
+ * boundary doing exactly what it exists to do — the roles cost a bake, the link flags do
+ * not, and "the only thing the 'decide a URL' needs is the CSV to exist".
+ *
+ * Returns null for "no change" so an untouched wizard sends no PATCH at all. A write that
+ * says nothing is still a write: it takes the dataset lock and rewrites the file.
+ *
+ * Clears with `{render: null}` rather than `{<column>: null}` — the latter removes the
+ * whole entry, taking a label this wizard never edited with it.
+ *
+ * And it clears ONLY a column this draft has an opinion about — one whose role is linkable,
+ * which is exactly the set the form draws a "render as link" checkbox for. Unticking that
+ * box is the only way to say "not a link" here; everything else the record happens to carry
+ * is a column the draft never modelled, and silence about it is not an untick.
+ *
+ * What it deliberately does NOT cover: re-roling a linked column away from
+ * freeform/categorical inside this wizard. `RoleAssignmentForm.setChoice` drops the column
+ * from `draft.url` in the same interaction, so by submit time that is indistinguishable from
+ * a column that was never linkable, and it is left alone. That is the safer half of the
+ * ambiguity — this PATCH goes BEFORE the enqueue, so clearing on a role change would erase
+ * the flag even when the bake carrying that role change is then refused, and a surviving
+ * `render: "url"` on a non-scalar column draws plain text rather than a broken link
+ * (`sourceLink.sourceUrl` rejects anything that is not an absolute http(s) URL).
+ */
+export function columnRenderPatch(
+  draft: RolesDraft,
+  stored: ColumnPresentationMap,
+): ColumnRenderPatch | null {
+  const wanted = new Set(Object.keys(buildPresentation(draft).columns ?? {}));
+  // Both sides of the diff must be the SAME population. `wanted` is filtered by
+  // `isLinkable` (buildPresentation), so `had` is too — unfiltered, every stored
+  // `render: "url"` the draft cannot model read as an untick: a link on a `tag` column
+  // (reachable since the bake-time "url must be a stored scalar" guard was deleted with the
+  // role — D-xvii — and no writer replaced it), or on a column the roles no longer carry at
+  // all. `rolesDraftFromColumnRoles` drops both from `draft.url` on load, which is D-xvi
+  // failing soft; the wizard then re-emitted that silence as `{col: {render: null}}` on a
+  // submit that only ticked a layout. The erasure is PERMANENT, not merely wrong: the API
+  // keeps an emptied entry as a tombstone (`presentation.apply_updates`, PR #346 review
+  // finding 1), so the manifest's legacy `url` role no longer falls back through it, and on
+  // a migrated tree the manifest key is already gone (PR #346 review finding 2).
+  const had = new Set(urlColumnsOf(stored).filter((c) => isLinkable(draft.choice[c])));
+  const patch: ColumnRenderPatch = {};
+  for (const column of wanted) if (!had.has(column)) patch[column] = { render: "url" };
+  for (const column of had) if (!wanted.has(column)) patch[column] = { render: null };
+  return Object.keys(patch).length > 0 ? patch : null;
 }
 
 /** A layout the current draft can produce, for the add-layout wizard's Step 2 (memo
@@ -518,7 +627,7 @@ export function producibleLayouts(draft: RolesDraft): ProducibleLayout[] {
 
   // datetime — single-compute; sole layout_id is the bare plugin name. Label = the
   // column name (buildColumnRoles).
-  const datetimeCol = draft.columns.find((c) => draft.choice[c] === "datetime");
+  const datetimeCol = datetimeColumn(draft);
   if (datetimeCol !== undefined) {
     out.push({ layout_id: "datetime", type: "datetime", label: datetimeCol });
   }

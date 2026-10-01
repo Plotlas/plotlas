@@ -1,0 +1,45 @@
+{
+  // The e2e suite's OWN TypeScript project (SCOPE_e2e-strategy.md D3).
+  //
+  // WHY a separate project and not `"include": ["src", "e2e"]` in the frontend's
+  // tsconfig: `@playwright/test` is a devDependency of THIS sub-package, resolved from
+  // `packages/frontend/e2e/node_modules`. It is not reachable from
+  // `packages/frontend/node_modules`, so folding these files into the frontend program
+  // would fail to resolve the import on every run — or force a browser-automation
+  // dependency into a runtime package's tree for tests it does not run.
+  //
+  // What it catches: a spec referencing a helper, export or `VizV2` field that does not
+  // exist. Today that surfaces only when a gate runs — ~180 s into a job, after a full
+  // compose boot, as a runtime `undefined is not a function`.
+  //
+  // What it CANNOT catch, by design: the duplicated `TOKEN_KEY` / `USERNAME_KEY` string
+  // constants in helpers.ts. The suite deliberately does not import from `src` (it may
+  // drive a REMOTE stack), so the 2026-08-05 `image-viz.*` -> `plotlas.*` rename could
+  // not have been caught here. See helpers.ts:29-38 and SCOPE_e2e-strategy.md §1d.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    // The specs import `./helpers.ts` WITH the extension (Playwright's ESM loader wants
+    // the real specifier), which plain `tsc` rejects without these two.
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "verbatimModuleSyntax": true,
+    // EXPLICIT, and required since the repo moved to TypeScript 7 (PR #277). TS 5
+    // auto-included every `@types/*` package it found; TS 7 does not, and answers a bare
+    // `process` with "add 'node' to the types field in your tsconfig". Every spec reads
+    // `process.env`, so without this the project does not compile at all.
+    "types": ["node"]
+  },
+  // `capture/` is testIgnore'd from `npx playwright test` (it is a marketing asset
+  // generator, not a gate) but it is still TypeScript that imports helpers.ts, so it rots
+  // exactly like a spec does. Type-checking it costs nothing and is the whole point.
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules"]
+}

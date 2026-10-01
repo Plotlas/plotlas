@@ -784,11 +784,14 @@ def test_region_fill_gutter_covers_the_frontend_label_gap_frac() -> None:
 
 def test_manifest_version_is_the_current_minor() -> None:
     """The stamp the pipeline writes, as a LITERAL — a bump must be a deliberate edit here,
-    never a side effect. 2.7 is the datetime `annotations.axes[].interval` bucketing-rung
-    MINOR (T2-142 / D-36 seam H3); 2.6 was the per-layout `missing_count` (T2-140 / seam U1).
+    never a side effect. 2.10 is the per-layout `source_fingerprint` MINOR — HOW a layout
+    read its columns, so staleness outlives the commit that caused it (LAYOUT_DESIGNER
+    D-xxix); 2.9 was the per-layout `source_columns` provenance MINOR, which also removed
+    `column_roles.url` (INTAKE_REDESIGN §6c D-xvii); 2.8 was `column_roles.url`; 2.7
+    was the datetime `annotations.axes[].interval` bucketing rung (T2-142 / D-36 seam H3).
     Named for the role rather than the value: `test_manifest_version_is_2_5` outlived
     2.5 by one seam and had to be renamed, so the name is a claim that goes stale."""
-    assert MANIFEST_VERSION == "2.8"
+    assert MANIFEST_VERSION == "2.10"
 
 
 def test_layout_entry_emits_annotations_only_when_present() -> None:
@@ -863,18 +866,26 @@ def test_layout_entry_field_order_survives_annotations_and_missing_count_togethe
             options={"overlap": "overdraw"},
             annotations={"axes": []},
             missing_count=7,
+            source_columns=("captured",),
+            source_fingerprint={"captured": (("datetime", "iso8601"),)},
         ),
         _fake_pyramid(detail_path_prefix="images"),
         positions_ref="positions/datetime_v1.arrow",
     )
     assert list(entry) == [
         "layout_id", "label", "type", "bbox", "bbox_exact", "pyramid",
-        "positions_ref", "options", "annotations", "missing_count", "detail",
+        "positions_ref", "options", "annotations", "missing_count", "source_columns",
+        "source_fingerprint", "detail",
     ]
     # `_enrich_layout_entry` rebuilds a committed entry from scratch; it must land on the
     # SAME sequence or a refreshed manifest stops matching a fresh bake byte-for-byte.
     rebuilt = worker._enrich_layout_entry(
-        entry, entry["bbox_exact"], entry["annotations"], entry["missing_count"]
+        entry,
+        entry["bbox_exact"],
+        entry["annotations"],
+        entry["missing_count"],
+        tuple(entry["source_columns"]),
+        {"captured": (("datetime", "iso8601"),)},
     )
     assert list(rebuilt) == list(entry)
     assert rebuilt == entry, "refresh must reproduce the emitter's entry exactly"

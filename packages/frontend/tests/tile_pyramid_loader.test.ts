@@ -2085,3 +2085,142 @@ test("a camera move RESETS the retry budget so a re-engaged view retries afresh 
     timers.restore();
   }
 });
+
+// ---------------------------------------------------------------------------
+// R1-05: a tile-asset failure the user can SEE (Seam R1 P1, detection point 3).
+//
+// Tile loads are fire-and-forget (`void loadTile(...)`) and a layout switch on a held
+// manifest awaits no network at all, so a whole view failing to stream published
+// NOTHING. Reproduced in a browser 2026-08-21: healthy boot of rijks_pilot,
+// `docker compose stop api`, switch tab — the switch resolved, the backdrop watchdog
+// cleared the old layout 2s later, and the user was left on an empty canvas with
+// healthy-looking chrome and no error of any kind.
+//
+// The verdict is VIEW-level, not tile-level, and it is DERIVED from the set streamView
+// already tracks: the view is unrenderable when EVERY tile it wants has terminally
+// failed. No threshold is picked — one capped tile at the edge of the viewport leaves
+// the rest of the view drawn and must stay silent (the second test).
+// ---------------------------------------------------------------------------
+
+/** An archive over the fine grid that REJECTS every tile while `down` is true — the
+ *  shape of a stopped API, where every range request 502s — and serves normally once
+ *  it is cleared. Honours the abort signal like the other fakes. */
+function outageArchive(): FakeArchive & { down: boolean } {
+  const bodies = fineGridBodies();
+  const archive: FakeArchive & { down: boolean } = {
+    bodies,
+    requested: [],
+    down: true,
+    async getTile(z: number, x: number, y: number, signal?: AbortSignal): Promise<Uint8Array | null> {
+      const key = `${z}/${x}/${y}`;
+      archive.requested.push(key);
+      await Promise.resolve();
+      if (signal?.aborted === true) {
+        const err = new Error("aborted");
+        (err as { name: string }).name = "AbortError";
+        throw err;
+      }
+      if (archive.down) throw new Error(`502 Bad Gateway for ${key}`);
+      return bodies.get(key) ?? null;
+    },
+  };
+  return archive;
+}
+
+/** Fire the pending backoff timers until none is left, settling between rounds so each
+ *  retry's fetch rejects before the next round is fired. */
+async function drainRetries(timers: ReturnType<typeof fakeTimers>): Promise<void> {
+  let guard = 0;
+  while (timers.pending.length > 0 && guard++ < 10) {
+    timers.fireAll();
+    await settle();
+  }
+}
+
+/** A view that wants ALL SIXTEEN tiles of the 4x4 fine grid, so one failing tile is a
+ *  clear minority of it. The rect itself straddles only the four middle tiles (a 100px
+ *  viewport at 1/1024 spans 0.0977 of world space, centred on the 0.5/0.5 tile corner),
+ *  and enumerateVisibleTiles' one-tile prefetch margin grows it to the whole grid —
+ *  measured 2026-08-21 by printing the distinct keys the archive was asked for:
+ *  2/0/0 … 2/3/3, 16 of 16. */
+const WHOLE_GRID_VIEW: CameraState = { center: [0.5, 0.5], zoom: FINE_GRID_ZOOM };
+
+test("a view whose EVERY tile fails terminally publishes ONE layout failure (R1-05)", async () => {
+  const archive = outageArchive();
+  const timers = fakeTimers();
+  try {
+    const h = harness({
+      bodies: fineGridBodies(),
+      pyramid: fineGridPyramid(),
+      imageCount: 16,
+      archiveFactory: () => archive,
+    });
+    const failures: { layoutId: string; detail: string }[] = [];
+    h.pyramid.setViewFailureListener((layoutId, detail) => failures.push({ layoutId, detail }));
+    await h.pyramid.activateLayout(h.manifest, "grid", null);
+    h.world.emit(WHOLE_GRID_VIEW, VIEWPORT);
+    await settle();
+    // The retry ladder is the point: a transient blip must self-heal silently, so
+    // nothing may be published until every tile has spent its whole budget.
+    assert.equal(failures.length, 0, "published before the retry ladder was even spent");
+
+    await drainRetries(timers);
+    assert.equal(new Set(archive.requested).size, 16, "the view wanted the whole 4x4 grid — re-anchor this pin");
+    assert.equal(failures.length, 1, "the whole view failed to stream and the loader published nothing");
+    assert.equal(failures[0].layoutId, "grid", "the failure must name the view to re-stream");
+    assert.match(failures[0].detail, /502/, "the failure carries the underlying error text");
+
+    // ...and the assets coming back is recoverable in place: re-streaming the live view
+    // re-issues the terminally-failed loads (this is what "Retry this view" drives).
+    archive.down = false;
+    h.pyramid.restreamView();
+    await settle();
+    assert.equal(
+      h.cells.calls.some((c) => c.kind === "buffers"),
+      true,
+      "the re-stream never re-fetched the terminally-failed tiles",
+    );
+    assert.equal(failures.length, 1, "a recovered re-stream published a second failure");
+  } finally {
+    timers.restore();
+  }
+});
+
+test("ONE capped tile in a view that still draws does NOT publish a layout failure (R1-05)", async () => {
+  // The signal has to mean "this view is unrenderable", not "a tile failed" — a panel
+  // over a view that is three-quarters drawn is a false alarm, and the coarse floor plus
+  // the retain-until-covered sweep already cover a single hole.
+  const archive = flakyFineArchive("2/1/1", 99); // fails forever; the other three serve
+  const timers = fakeTimers();
+  try {
+    const h = harness({
+      bodies: fineGridBodies(),
+      pyramid: fineGridPyramid(),
+      imageCount: 16,
+      archiveFactory: () => archive,
+    });
+    let published = 0;
+    h.pyramid.setViewFailureListener(() => {
+      published++;
+    });
+    await h.pyramid.activateLayout(h.manifest, "grid", null);
+    h.world.emit(WHOLE_GRID_VIEW, VIEWPORT);
+    await settle();
+    await drainRetries(timers);
+
+    assert.equal(new Set(archive.requested).size, 16, "one failing tile must be a MINORITY of the view — re-anchor this pin");
+    assert.equal(
+      archive.requested.filter((k) => k === "2/1/1").length,
+      4,
+      "the one bad tile really did spend its whole retry budget (initial + 3)",
+    );
+    assert.equal(
+      h.cells.calls.some((c) => c.kind === "buffers"),
+      true,
+      "the rest of the view never bound — the setup is broken, not the property",
+    );
+    assert.equal(published, 0, "one dead tile raised a whole-view failure");
+  } finally {
+    timers.restore();
+  }
+});

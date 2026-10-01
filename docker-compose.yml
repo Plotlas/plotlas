@@ -7,7 +7,7 @@ name: image-viz
 
 services:
   redis:
-    image: redis:7.4-alpine
+    image: redis:8.10-alpine
     ports:
       # Bind to the loopback interface only (T2-78): host-local tooling still
       # reaches Redis at 127.0.0.1:6379, but the unauthenticated broker is not
@@ -104,7 +104,7 @@ services:
         condition: service_completed_successfully
 
   caddy:
-    image: caddy:2.8-alpine
+    image: caddy:2.11-alpine
     # Serve datasets from /srv/datasets, NOT /data — the caddy image uses /data
     # as its own writable storage (XDG_DATA_HOME), so the dataset mount must not
     # collide with it.
@@ -136,7 +136,7 @@ services:
     # --experimental-strip-types` inside this service (PR26-10, 2026-06-12).
     # Pinned to the node MINOR per docker/README.md conventions (T2-77) — the
     # major-only node:22 tag floated. 22.22 tracks the latest 22.22.x patch.
-    image: node:22.22-bookworm-slim
+    image: node:26.7-bookworm-slim
     working_dir: /repo/packages/frontend
     volumes:
       - .:/repo

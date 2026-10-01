@@ -8,6 +8,8 @@ import test from "node:test";
 import {
   availableLayoutTypes,
   buildColumnRoles,
+  buildPresentation,
+  columnRenderPatch,
   emptyDraft,
   patchGeoPair,
   patchScatterPair,
@@ -494,12 +496,17 @@ test("producibleLayouts: an incomplete scatter pair is skipped (it fails validat
   assert.deepEqual(producibleLayouts(draft), []);
 });
 
-// --- schema v2.8: `url` is an ORTHOGONAL display modifier, not a role -----------
+// --- D-xvii: `url` is an ORTHOGONAL display modifier, and it is PRESENTATION ------
 //
 // A link is a modifier layered on a shown scalar column (freeform/categorical), carried in
 // draft.url separately from `choice`. The add-layout wizard REBUILDS column_roles wholesale,
 // so the round trip must preserve BOTH the column's storing role and its link flag — and,
 // unlike the earlier co-emit model, must NOT clobber a storing role or double-project it.
+//
+// What CHANGED at P2-3 is which file the flag lands in: `buildPresentation` compiles it,
+// `buildColumnRoles` no longer emits it at all, and the draft is seeded from the
+// presentation record rather than from the roles. The round trip is therefore across the
+// PAIR of compilers — which is the point of the split, so the tests assert it that way.
 
 test("a freeform link column round-trips (freeform role kept, link flag preserved)", () => {
   const roles: ColumnRoles = {
@@ -508,16 +515,15 @@ test("a freeform link column round-trips (freeform role kept, link flag preserve
       { column: "title", label: "Title" },
       { column: "source_url", label: "Source url" },
     ],
-    url: ["source_url"],
   };
-  const draft = rolesDraftFromColumnRoles(roles);
+  const draft = rolesDraftFromColumnRoles(roles, { source_url: { render: "url" } });
   // Orthogonal: the column keeps its freeform role AND carries the link flag (not "url").
   assert.equal(draft.choice.source_url, "freeform");
   assert.equal(draft.choice.title, "freeform");
   assert.deepEqual(draft.url, ["source_url"]);
 
   const rebuilt = buildColumnRoles(draft);
-  assert.deepEqual(rebuilt.url, ["source_url"]);
+  assert.deepEqual(buildPresentation(draft).columns, { source_url: { render: "url" } });
   assert.ok(rebuilt.freeform?.some((e) => e.column === "source_url"));
   assert.ok(rebuilt.freeform?.some((e) => e.column === "title"));
 });
@@ -531,13 +537,25 @@ test("a dataset with no url role emits no url key (pre-2.8 round-trips unchanged
   assert.equal("url" in rebuilt, false);
 });
 
-test("flagging a freeform column as a link emits freeform + url", () => {
+test("D-xvii: buildColumnRoles NEVER emits `url`, even for a draft full of links", () => {
+  // The removal itself. `url` is gone from column_roles.schema.json, so a manifest that
+  // carries the key now FAILS validation at the producer — an emit here would bake a
+  // dataset that cannot later take a refresh-manifest or an add-layouts.
+  const draft = emptyDraft(["filename", "homepage", "museum"]);
+  draft.choice.filename = "filename";
+  draft.choice.homepage = "freeform";
+  draft.choice.museum = "categorical";
+  draft.url = ["homepage", "museum"];
+  assert.equal("url" in buildColumnRoles(draft), false);
+});
+
+test("flagging a freeform column as a link emits freeform in the roles, url in presentation", () => {
   const draft = emptyDraft(["filename", "homepage"]);
   draft.choice.filename = "filename";
   draft.choice.homepage = "freeform";
   draft.url = ["homepage"];
   const roles = buildColumnRoles(draft);
-  assert.deepEqual(roles.url, ["homepage"]);
+  assert.deepEqual(buildPresentation(draft).columns, { homepage: { render: "url" } });
   assert.ok(roles.freeform?.some((e) => e.column === "homepage"));
 });
 
@@ -550,7 +568,7 @@ test("a CATEGORICAL column can be a link without being duplicated into freeform"
   draft.choice.museum = "categorical";
   draft.url = ["museum"];
   const roles = buildColumnRoles(draft);
-  assert.deepEqual(roles.url, ["museum"]);
+  assert.deepEqual(buildPresentation(draft).columns, { museum: { render: "url" } });
   assert.ok(roles.categorical?.some((e) => e.column === "museum"));
   assert.equal(roles.freeform?.some((e) => e.column === "museum") ?? false, false);
 });
@@ -559,14 +577,13 @@ test("a categorical link column round-trips (categorical role kept, not clobbere
   const roles: ColumnRoles = {
     filename: { column: "filename", label: "File" },
     categorical: [{ column: "museum", label: "Museum" }],
-    url: ["museum"],
   };
-  const draft = rolesDraftFromColumnRoles(roles);
+  const draft = rolesDraftFromColumnRoles(roles, { museum: { render: "url" } });
   assert.equal(draft.choice.museum, "categorical"); // NOT clobbered to a link "role"
   assert.deepEqual(draft.url, ["museum"]);
   const rebuilt = buildColumnRoles(draft);
   assert.ok(rebuilt.categorical?.some((e) => e.column === "museum"));
-  assert.deepEqual(rebuilt.url, ["museum"]);
+  assert.deepEqual(buildPresentation(draft).columns, { museum: { render: "url" } });
 });
 
 test("a link on a non-displayed column is rejected by validateDraft", () => {
@@ -579,14 +596,129 @@ test("a link on a non-displayed column is rejected by validateDraft", () => {
 
 test("a stale link naming a non-scalar column is dropped on load (no clobber, no throw)", () => {
   // Previously the url pass overwrote `choice`, so a url on the filename column bricked the
-  // wizard (validateDraft then reported a missing filename). Now the flag is dropped on load.
+  // wizard (validateDraft then reported a missing filename). Now the flag is dropped on load
+  // — and since D-xvii the same filter is D-xvi's dangling-reference fallback, because the
+  // record is keyed by a column name the OTHER file owns and may no longer carry.
   const roles: ColumnRoles = {
     filename: { column: "image_url", label: "Image" },
-    url: ["image_url"],
   };
-  const draft = rolesDraftFromColumnRoles(roles);
+  const draft = rolesDraftFromColumnRoles(roles, { image_url: { render: "url" } });
   assert.equal(draft.choice.image_url, "filename"); // role intact, not clobbered
   assert.deepEqual(draft.url, []); // stale link dropped
   const rebuilt = buildColumnRoles(draft); // must not throw
   assert.equal("url" in rebuilt, false);
+});
+
+test("a presentation column that no longer exists in the roles is dropped, not carried", () => {
+  // D-xvi's other dangling case: a metadata update removed the column entirely, so the
+  // record names something the roles have never heard of. It must vanish silently.
+  const roles: ColumnRoles = {
+    filename: { column: "filename", label: "File" },
+    freeform: [{ column: "title", label: "Title" }],
+  };
+  const draft = rolesDraftFromColumnRoles(roles, { deleted_col: { render: "url" } });
+  assert.deepEqual(draft.url, []);
+  assert.equal(validateDraft(draft), null, "a dangling reference must not brick the wizard");
+});
+
+test("buildPresentation emits NOTHING when no column is marked a link", () => {
+  // Absent means absent, at every layer: an unset choice must not write an empty
+  // `columns: {}`, or a dataset that declared nothing would carry a record saying so.
+  const draft = emptyDraft(["filename", "title"]);
+  draft.choice.filename = "filename";
+  assert.deepEqual(buildPresentation(draft), {});
+});
+
+test("columnRenderPatch: no change ⇒ NO patch, so an untouched wizard writes nothing", () => {
+  // A write that says nothing is still a write: it takes the dataset lock and rewrites
+  // the file. The add-layout wizard opens on every re-bake, so this is the common case.
+  const roles: ColumnRoles = {
+    filename: { column: "filename", label: "File" },
+    freeform: [{ column: "source_url", label: "Source" }],
+  };
+  const stored = { source_url: { render: "url" as const } };
+  const draft = rolesDraftFromColumnRoles(roles, stored);
+  assert.equal(columnRenderPatch(draft, stored), null);
+});
+
+test("columnRenderPatch: marking a column patches it to `url`", () => {
+  const draft = emptyDraft(["filename", "homepage"]);
+  draft.choice.filename = "filename";
+  draft.choice.homepage = "freeform";
+  draft.url = ["homepage"];
+  assert.deepEqual(columnRenderPatch(draft, undefined), { homepage: { render: "url" } });
+});
+
+test("columnRenderPatch: UNmarking clears `render` only, never the whole entry", () => {
+  // `{col: null}` would remove the entry outright and take a label this wizard never
+  // edited with it. `{render: null}` clears one key and leaves the rest.
+  const draft = emptyDraft(["filename", "homepage"]);
+  draft.choice.filename = "filename";
+  draft.choice.homepage = "freeform";
+  draft.url = [];
+  assert.deepEqual(
+    columnRenderPatch(draft, { homepage: { label: "Homepage", render: "url" } }),
+    { homepage: { render: null } },
+  );
+});
+
+// --- The diff clears an UNTICK, never a column the draft never modelled ------------
+//
+// `draft.url` is seeded through `isLinkable`, so a stored link the wizard cannot express
+// — a `tag` column (reachable since D-xvii deleted the bake-time "url must be a stored
+// scalar" guard and no writer replaced it), or a column the roles no longer carry at all
+// — is absent from the draft for D-xvi fail-soft reasons, not because anyone unticked it.
+// Emitting `{render: null}` for it erases the flag PERMANENTLY: the API keeps the emptied
+// entry as a tombstone, so the manifest's legacy `url` role stops falling back through it
+// (PR #346 review, findings 1 and 2).
+
+test("columnRenderPatch: a stored link on a NON-linkable column is left alone, not cleared", () => {
+  const roles: ColumnRoles = {
+    filename: { column: "filename", label: "File" },
+    tag: [{ column: "keywords", label: "Keywords", delimiter: "," }],
+  };
+  const stored = { keywords: { render: "url" as const } };
+  const draft = rolesDraftFromColumnRoles(roles, stored);
+  assert.deepEqual(draft.url, [], "the wizard cannot model a link on a tag column");
+  assert.equal(columnRenderPatch(draft, stored), null, "and must not clear one either");
+});
+
+test("columnRenderPatch: a stored link naming a column the roles dropped is left alone", () => {
+  // D-xvi's dangling case, and the one with no other copy: on a migrated tree the
+  // manifest's legacy `url` key is already gone, so a clear here is the last word.
+  const roles: ColumnRoles = {
+    filename: { column: "filename", label: "File" },
+    freeform: [{ column: "title", label: "Title" }],
+  };
+  const stored = { deleted_col: { render: "url" as const } };
+  const draft = rolesDraftFromColumnRoles(roles, stored);
+  assert.equal(columnRenderPatch(draft, stored), null);
+});
+
+test("columnRenderPatch: an UNTICK still clears, beside a link the draft cannot model", () => {
+  // The narrowing must not cost the diff its job. Same record, two link columns: one the
+  // form draws a checkbox for (freeform) and one it does not (tag). Untick the first.
+  const roles: ColumnRoles = {
+    filename: { column: "filename", label: "File" },
+    freeform: [{ column: "source_url", label: "Source" }],
+    tag: [{ column: "keywords", label: "Keywords", delimiter: "," }],
+  };
+  const stored = {
+    source_url: { render: "url" as const },
+    keywords: { render: "url" as const },
+  };
+  const draft = rolesDraftFromColumnRoles(roles, stored);
+  assert.deepEqual(draft.url, ["source_url"]);
+  draft.url = []; // the user unticks "render as link" on source_url
+  assert.deepEqual(columnRenderPatch(draft, stored), { source_url: { render: null } });
+});
+
+test("buildPresentation drops a link on a column whose role cannot render one", () => {
+  // validateDraft rejects this state at submit time, but buildPresentation is also called
+  // on drafts mid-edit; it must not emit a link the panel could never draw.
+  const draft = emptyDraft(["filename", "shot_date"]);
+  draft.choice.filename = "filename";
+  draft.choice.shot_date = "datetime";
+  draft.url = ["shot_date"];
+  assert.deepEqual(buildPresentation(draft), {});
 });

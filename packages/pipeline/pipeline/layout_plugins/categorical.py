@@ -30,6 +30,9 @@ from pipeline.layout_plugins.base import (
     packed_ids,
     spatial_bbox,
 )
+# The ONE per-entry fingerprint rule (v2.10). Imported from the EMITTER, which is where the
+# knob default maps the tuple is derived from already live, so no plugin hand-copies a tuple.
+from pipeline.manifest import role_entry_fingerprints
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -287,4 +290,12 @@ class CategoricalLayout(LayoutPlugin):
             # here is not zero. Reporting it keeps one number meaning one thing across
             # every family instead of making a reader walk `labels[].missing` for this one.
             missing_count=len(groups.get(_MISSING_KEY, ())),
+            # v2.9 provenance: the ONE column this treemap groups by. A change to it stales
+            # this layout and no other categorical layout — which is exactly the distinction
+            # a `layout_id` slug could not make when two categorical columns slug the same.
+            source_columns=(entry.column,),
+            # v2.10: THIS entry's tuple only. A tag or freeform role later added to the same
+            # column joins `_role_fingerprints`' union for it but not this record, so it
+            # cannot stale a treemap it never touched (LAYOUT_DESIGNER D-xxix).
+            source_fingerprint=role_entry_fingerprints("categorical", entry),
         )

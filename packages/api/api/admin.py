@@ -1,4 +1,5 @@
-"""Server-side operator admin CLI for the API app-state store.
+"""Server-side operator admin CLI for the API app-state store, and for the one dataset-tree
+file the API owns.
 
 Run INSIDE the api container (it targets the running api's app-state DB and
 imports its ORM), e.g.::
@@ -6,6 +7,8 @@ imports its ORM), e.g.::
     docker compose exec api python -m api.admin create-user <username> <email>
     docker compose exec api python -m api.admin assign-owner <dataset_id> <username>
     docker compose exec api python -m api.admin set-visibility <dataset_id> public
+    docker compose exec api python -m api.admin set-display-name <dataset_id> "A Name"
+    docker compose exec api python -m api.admin migrate-presentation
     docker compose exec api python -m api.admin list-unassigned
     docker compose exec api python -m api.admin list-datasets
 
@@ -26,8 +29,15 @@ never in the manifest, the dataset tree, or the JWT (decisions D-18/D-22/D-24).
 These commands are a second writer of the SAME app-state DB the running api
 serves, from a standalone process — they initialize the engine/session exactly as
 the api lifespan does (appstate.setup_appstate), so they hit the same DB file and
-the same tables. They touch app-state only; they never read or write the
-read-only dataset Parquet/tile path (that is db.py's domain).
+the same tables.
+
+Most of them touch app-state only and never the dataset tree. The exceptions are the
+PRESENTATION verbs — `set-display-name`, `set-attribution`, `set-attribution-url` and
+`migrate-presentation` — which write `presentation.json` in the dataset's own directory
+through `api/presentation.py` (D-i/D-xv), so a collection's name and credit TRAVEL with a
+copied tree. They still never write `layout_manifest.json`: that file has exactly one
+writer, the worker, and this one has exactly one writer, the API. The read-only
+Parquet/tile path remains db.py's domain and is untouched here.
 
 `create-user` provisions an account WITHOUT the web signup flow (the #110
 follow-up): it generates a random password, prints it ONCE to stdout with a
@@ -68,8 +78,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import difflib
+import os
 import secrets
 import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -77,7 +91,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api import appstate, db
+from api import appstate, db, presentation, queue
 from api.routers.auth import SignupRequest
 
 # Length (bytes of entropy) of the generated one-time password. secrets.token_urlsafe
@@ -85,6 +99,66 @@ from api.routers.auth import SignupRequest
 # floor — this is a throwaway credential the operator hands over to rotate, not a
 # memorized secret.
 _GENERATED_PASSWORD_BYTES = 18
+
+
+@asynccontextmanager
+async def _presentation_write_lock(dataset_id: str) -> AsyncIterator[None]:
+    """Hold the per-dataset API-mutation lock around a CLI write of `presentation.json`.
+
+    THE SAME `dataset-mutate:{id}` key the PATCH route, create and DELETE take
+    (`queue.dataset_lock`). `presentation.update` says in its own docstring that it is not
+    serialized by itself and that callers who can race must hold this lock; the CLI could
+    race and did not, because it is documented to run as `docker compose exec api …` —
+    i.e. INSIDE a live API. `migrate-presentation` sweeping every dataset while an owner
+    renames one through the UI is a read-modify-write against a read-modify-write: both
+    read the file, both `apply_updates`, both `os.replace`, and one whole set of edits
+    disappears with no error and no log (review of PR #346, finding 4).
+
+    The alternative was to document "run with the API stopped". Rejected: the verb's whole
+    audience is an operator with an already-running showcase, an instruction like that is
+    unenforceable, and a migration that must not be run while the product is up is a worse
+    thing to own than a lock we already have. Silently racing was never an option.
+
+    DEGRADES LOUDLY, never silently. If the broker cannot be reached the CLI still writes —
+    the same posture the PATCH route takes (`best_effort_when_down=True`, "keeps a Redis
+    outage from taking naming away") — but it says so on stderr first, naming the cause and
+    what is unprotected, because unlike a route this runs unattended in a sweep. A lock
+    held by a PEER is different and is NOT degraded: it means the other writer is right
+    there, so it is a refusal the operator can act on by retrying."""
+    client = queue.redis_client()
+    try:
+        if not _broker_is_reachable(client):
+            print(
+                f"  {dataset_id}: WARNING — broker unreachable at "
+                f"{os.environ.get('REDIS_URL', '(default)')}, so this write is NOT "
+                f"serialized; a concurrent PATCH through the running API could overwrite "
+                f"it. Bring Redis up and re-run to serialize.",
+                file=sys.stderr,
+            )
+            yield
+            return
+        # Deliberately NOT `best_effort_when_down`: that flag swallows an outage, and the
+        # probe above is what lets the two failures end differently. Past this point a
+        # LockUnavailableError means a PEER holds the lock (or the broker died in the
+        # window) — a refusal the operator can act on by retrying, not something to
+        # degrade past. It propagates; the verbs below turn it into an exit code.
+        async with queue.dataset_lock(client, dataset_id):
+            yield
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()  # best-effort pool cleanup, as the lifespan does
+
+
+def _broker_is_reachable(client: Any) -> bool:
+    """True when the broker answers a PING. The only way to tell `dataset_lock`'s two
+    `LockUnavailableError` causes apart from the outside — it raises the same class for a
+    `RedisError` and for a peer that held the lock past the blocking timeout, and matching
+    on the message text would break the moment either string is reworded."""
+    try:
+        return bool(client.ping())
+    except Exception:  # noqa: BLE001 — any failure to reach it IS "not reachable"
+        return False
 
 
 async def _all_usernames(session: AsyncSession) -> list[str]:
@@ -454,8 +528,21 @@ async def _run_set_visibility(dataset_id: str, visibility: str) -> int:
 async def _run_set_presentation(dataset_id: str, field: str, value: str) -> int:
     """Async body of `set-display-name` / `set-attribution` / `set-attribution-url`
     (Part B/D) — one function for every presentation field, since the dict payload is the
-    "which field" signal (PR250-6). Same shape as set-visibility: require the dataset on
-    disk AND known to app-state, then write.
+    "which field" signal (PR250-6).
+
+    **Writes `presentation.json` in the dataset's own directory** (D-i/D-xv), not
+    app-state, so the value TRAVELS with the tree: copy the directory to another server
+    and the collection still knows its name. This is also the CLI writer
+    [[T2-presentation-json-has-no-cli-writer-so-an]] asks for, landed here rather than in
+    `pixscope` because `pixscope` IS a pipeline module (`pyproject.toml` declares
+    `pixscope = "pipeline.cli:main"`), and nothing under `packages/pipeline/` may write
+    this file — that is the mirror of the rule that keeps the bake from clobbering it.
+
+    Still requires the dataset on disk AND known to app-state. The app-state row is now
+    VESTIGIAL with respect to the write target — the name lands in the tree, which needs
+    no owner — but relaxing it would change a pinned CLI behaviour (an unowned tree exits
+    non-zero pointing at assign-owner) and belongs with the wider designer work, not here.
+    Filed as [[T2-naming-a-cli-transferred-tree-still-requires-an]].
 
     An EMPTY value clears the field — `set-display-name <id> ""` reverts the library
     to showing the raw id. That is the recovery path for a bad name, so it must be
@@ -475,30 +562,135 @@ async def _run_set_presentation(dataset_id: str, field: str, value: str) -> int:
     engine, sessionmaker = await appstate.setup_appstate()
     try:
         async with sessionmaker() as session:
-            # One {field: value} — the dict IS the "which fields" signal (PR250-6), so
-            # the CLI no longer has to synthesize set_<field> booleans.
-            updated = await appstate.set_dataset_presentation(
-                session, dataset_id, {field: value}
-            )
-    except appstate.PresentationValueError as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
+            record = await appstate.get_dataset_record(session, dataset_id)
     finally:
         await engine.dispose()
 
-    if not updated:
+    if record is None:
         print(
             f"dataset {dataset_id!r} has no app-state record; assign an owner first: "
             f"python -m api.admin assign-owner {dataset_id} <username>",
             file=sys.stderr,
         )
         return 1
+    try:
+        # One {field: value} — the dict IS the "which fields" signal (PR250-6), so the
+        # CLI no longer has to synthesize set_<field> booleans. `fallback=record` is what
+        # makes taking ownership of the file lossless: setting the attribution on a tree
+        # whose display name is still only in app-state carries that name into the file
+        # rather than hiding it. Under the SAME per-dataset lock the PATCH route holds —
+        # this runs inside a live API by design (`docker compose exec api …`), so it is a
+        # racing writer, not a solitary one.
+        async with _presentation_write_lock(dataset_id):
+            presentation.update(ds_dir, {field: value}, fallback=record)
+    except appstate.PresentationValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except queue.LockUnavailableError as exc:
+        print(
+            f"dataset {dataset_id!r} is being written by someone else ({exc}); "
+            f"nothing was changed — retry in a moment",
+            file=sys.stderr,
+        )
+        return 1
+
     shown = value.strip()
     if shown == "":
         print(f"cleared dataset {dataset_id!r} {field}")
     else:
         print(f"set dataset {dataset_id!r} {field} -> {shown!r}")
     return 0
+
+
+async def _run_migrate_presentation(dataset_id: str | None) -> int:
+    """Async body of `migrate-presentation` (D-i): move every dataset's presentation OUT
+    of app-state and INTO its own directory, and copy a pre-2.9 manifest's
+    `column_roles.url` across as `columns.<name>.render` (D-xvii).
+
+    **An explicit verb rather than a startup migration, deliberately.** A migration that
+    writes dataset trees at boot is a strong claim on a host whose content is mounted `:ro`
+    — the showcase profile does exactly that — and it would run on the login-critical path
+    where its failures are noise rather than an answer. Nothing depends on it having run:
+    an un-migrated deployment reads the app-state fallback and behaves exactly as before,
+    so this is the operator's one-shot to make the values travel, not a correctness gate.
+
+    Idempotent, additive, and it never deletes: a value already in the file wins, the
+    app-state row is left intact as the fallback, and a dataset that cannot be written
+    (missing tree, read-only mount, an unusable presentation file, or another writer
+    holding its lock) is REPORTED and skipped while the rest of the run continues. Exit
+    code 1 iff at least one dataset was skipped, so a scripted run notices; "nothing to
+    do" is 0.
+
+    SAFE TO RUN AGAINST A LIVE API, which is the only way it is ever run
+    (`docker compose exec api …`). Each dataset's read-modify-write is held under the same
+    `dataset-mutate:{id}` lock the PATCH route takes, so a sweep and an owner renaming a
+    collection through the UI can no longer both read the same file and both write it
+    (review of PR #346, finding 4)."""
+    engine, sessionmaker = await appstate.setup_appstate()
+    try:
+        async with sessionmaker() as session:
+            records = await appstate.list_dataset_records(session)
+    finally:
+        await engine.dispose()
+    by_id = {record.dataset_id: record for record in records}
+
+    # The union of both sources, because they answer different halves: app-state holds the
+    # display scalars, and the TREE holds a legacy `column_roles.url` — including for a
+    # CLI-transferred dataset app-state has never heard of.
+    ids = (
+        [dataset_id]
+        if dataset_id is not None
+        else sorted(set(db.ondisk_dataset_ids()) | set(by_id))
+    )
+
+    migrated = current = skipped = 0
+    for ds_id in ids:
+        try:
+            ds_dir = db.dataset_dir(db.resolve_data_root(), ds_id)
+        except HTTPException:
+            print(f"  {ds_id}: SKIPPED — not a resolvable dataset id", file=sys.stderr)
+            skipped += 1
+            continue
+        try:
+            roles = db.load_manifest(ds_dir).get("column_roles")
+        except Exception:  # noqa: BLE001 — no manifest, corrupt, or a future major
+            # Not a failure: presentation does not depend on a bake having run (D-xvii),
+            # and a tree whose manifest cannot be read still has app-state values worth
+            # carrying across. Only the legacy `url` half is unavailable.
+            roles = None
+        try:
+            # Per dataset, not once for the run: the lock orders THIS dataset's
+            # read-modify-write against the API's, and holding one key for a whole sweep
+            # would neither protect the others nor be releasable in time.
+            async with _presentation_write_lock(ds_id):
+                outcome, details = presentation.migrate(
+                    ds_dir, record=by_id.get(ds_id), roles=roles
+                )
+        except queue.LockUnavailableError as exc:
+            # A peer is writing this dataset right now. Skip it and keep going — the
+            # sweep's whole contract is that one failure never aborts the rest — and the
+            # non-zero exit tells a scripted run to look.
+            outcome, details = "skipped", [f"another writer holds the dataset lock ({exc})"]
+        if outcome == "migrated":
+            migrated += 1
+            print(f"  {ds_id}: wrote {', '.join(details)}")
+        elif outcome == "current":
+            current += 1
+        else:
+            skipped += 1
+            print(f"  {ds_id}: SKIPPED — {'; '.join(details)}", file=sys.stderr)
+
+    print(
+        f"migrate-presentation: {migrated} migrated, {current} already current, "
+        f"{skipped} skipped (of {len(ids)})"
+    )
+    if migrated:
+        print(
+            "app-state's display_name/attribution/attribution_url columns were NOT "
+            "cleared — they stay as the fallback and as the only copy a rollback would "
+            "find."
+        )
+    return 1 if skipped else 0
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -606,6 +798,34 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     seturl.add_argument("dataset_id", help="the dataset id (DATA_ROOT/datasets/<id>/)")
     seturl.add_argument("url", help='the link target; "" clears it')
+    migrate = sub.add_parser(
+        "migrate-presentation",
+        help="move presentation out of app-state and into each dataset's own directory",
+        description=(
+            "One-shot migration (D-i): write each dataset's display name, attribution and "
+            "attribution link from app-state into presentation.json in its OWN directory, "
+            "so they travel with the tree, and copy a pre-2.9 manifest's column_roles.url "
+            "across as columns.<name>.render=url (D-xvii). Idempotent — a value already in "
+            "the file wins, and re-running writes nothing. NON-DESTRUCTIVE: the app-state "
+            "columns are left exactly as they are (they stay the fallback, and the only "
+            "copy a rollback would find), and the MANIFEST is never touched — this process "
+            "does not write manifests, so a committed column_roles.url is COPIED, not "
+            "moved, and a tree carrying one still cannot take an add-layouts or "
+            "refresh-manifest until the pipeline stops rejecting the stale key. A dataset "
+            "that cannot be written is reported and skipped; one failure never aborts the "
+            "run. Exits 1 if anything was skipped. With no DATASET_ID, every dataset "
+            "app-state or the on-disk tree knows about. Safe to run while the API is "
+            "serving: each dataset is written under the same per-dataset lock the "
+            "presentation PATCH route holds, so a rename through the UI cannot be lost "
+            "(if the broker is unreachable it writes anyway and says so on stderr)."
+        ),
+    )
+    migrate.add_argument(
+        "dataset_id",
+        nargs="?",
+        default=None,
+        help="migrate only this dataset (default: all of them)",
+    )
     sub.add_parser(
         "list-unassigned",
         help="list datasets on disk with NO owner (invisible in the library)",
@@ -660,6 +880,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(
             _run_set_presentation(args.dataset_id, "attribution_url", args.url)
         )
+    if args.command == "migrate-presentation":
+        return asyncio.run(_run_migrate_presentation(args.dataset_id))
     if args.command == "list-unassigned":
         return asyncio.run(_run_list_unassigned())
     if args.command == "list-datasets":

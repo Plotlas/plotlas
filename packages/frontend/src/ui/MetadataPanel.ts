@@ -15,15 +15,21 @@ import type { ReactElement } from "react";
 import type { Table } from "apache-arrow";
 import type { ApiClient } from "../api-client/client";
 import type { MetadataRow } from "../api-client/types";
+import type { ColumnPresentationMap } from "./presentation";
+import { cellTitle, columnLabel, isColumnHidden, isUrlColumn } from "./presentation";
 import { sourceUrl } from "./sourceLink";
 
 export interface MetadataPanelProps {
   dataset: string;
   selectedCellId: number | null;
   client: ApiClient;
-  /** Schema v2.8 `column_roles.url` from the manifest — the columns to render as links.
-   *  Threaded from the viewer shell, which already holds the manifest. */
-  urlColumns?: string[];
+  /** D-xvii/D-xviii `presentation.columns` — what each column is CALLED, whether it is
+   *  shown, and whether its value is a link. Threaded from the viewer shell, which holds
+   *  the record. Absent ⇒ every column drawn exactly as today. */
+  columns?: ColumnPresentationMap;
+  /** D-xviii `presentation.dataset.title_column` — the column whose value heads the
+   *  panel. Absent, or naming nothing the row carries, ⇒ `Cell {id}` as today. */
+  titleColumn?: string | null;
 }
 
 /** A full-resolution preview of one cell: the URL of its DETAIL-tier original
@@ -84,9 +90,12 @@ export interface MetadataPanelViewProps {
   error: string | null;
   tagValues: { column: string; values: string[] }[];
   preview: CellPreviewData | null;
-  /** Schema v2.8 `column_roles.url` — the names of columns whose values are links.
-   *  Optional (absent ⇒ none), so every existing caller and test is unaffected. */
-  urlColumns?: string[];
+  /** D-xvii/D-xviii `presentation.columns` — label, hidden, and link rendering, keyed by
+   *  the RAW column name. Optional (absent ⇒ today's render), so a caller that has no
+   *  record is unaffected. */
+  columns?: ColumnPresentationMap;
+  /** D-xviii `presentation.dataset.title_column` — see MetadataPanelProps. */
+  titleColumn?: string | null;
 }
 
 /** Presentational body of the panel (exported for GL-free smoke tests; the
@@ -100,8 +109,14 @@ export function MetadataPanelView(props: MetadataPanelViewProps): ReactElement {
       h("p", { className: "muted" }, "Click a cell to inspect it."),
     );
   }
+  // D-xviii: the cell's own title when the record declares a usable one, else the
+  // `Cell {id}` ordinal exactly as before. Resolved ONCE and reused by the image `alt`
+  // below — the alt follows the heading deliberately: it is the text alternative for the
+  // same picture, and "Cell 4211 preview" hands a screen-reader user precisely the
+  // meaningless internal ordinal a sighted user just stopped seeing.
+  const title = cellTitle(props.selectedCellId, props.row, props.titleColumn);
   const children: (ReactElement | null)[] = [
-    h("h3", { className: "panel-title", key: "t" }, `Cell ${props.selectedCellId}`),
+    h("h3", { className: "panel-title", key: "t" }, title),
   ];
   if (props.preview !== null && props.preview.cellId === props.selectedCellId) {
     children.push(
@@ -114,7 +129,7 @@ export function MetadataPanelView(props: MetadataPanelViewProps): ReactElement {
         },
         h("img", {
           src: props.preview.imageUrl,
-          alt: `Cell ${props.selectedCellId} preview`,
+          alt: `${title} preview`,
           style: { width: "100%", height: "100%", objectFit: "cover", display: "block" },
         }),
       ),
@@ -125,23 +140,32 @@ export function MetadataPanelView(props: MetadataPanelViewProps): ReactElement {
   } else if (props.loading) {
     children.push(h("p", { className: "muted", key: "l" }, "Loading metadata…"));
   } else if (props.row !== null) {
-    const entries = Object.entries(props.row.fields);
-    // Schema v2.8: hoist the url-column lookup into a Set ONCE — the flatMap below runs per
-    // field on every panel render (selection change, loading flip, preview arrival), so a
-    // per-field `[].includes` (array alloc + linear scan) is pure repeated waste.
-    const urlSet = new Set(props.urlColumns ?? []);
+    // D-xviii: a column the record marks hidden is not drawn. PRESENTATIONAL ONLY — the
+    // value already arrived in this row and is still in /api/metadata's fields; this is a
+    // display choice, never a privacy control (see ui/presentation.isColumnHidden).
+    const entries = Object.entries(props.row.fields).filter(
+      ([name]) => !isColumnHidden(name, props.columns),
+    );
     children.push(
       h(
         "dl",
         { className: "field-list", key: "f" },
-        // Schema v2.8: a column named in `url` renders its value as an anchor IN PLACE —
-        // one row per column exactly as before, so a link can never appear twice. The
-        // `href` is null for anything that is not an absolute http(s) URL, and a null
-        // href falls back to the identical plain text any other field would show.
+        // D-xvii: a column whose entry says `render: "url"` draws its value as an anchor
+        // IN PLACE — one row per column exactly as before, so a link can never appear
+        // twice. The `href` is null for anything that is not an absolute http(s) URL, and
+        // a null href falls back to the identical plain text any other field would show.
+        // The `dt` shows the declared label when there is one; the RAW name stays the
+        // identifier and the React key, because that is what the manifest and the record
+        // both key off — a label is only ever drawn.
+        //
+        // (The Set the url role used to be hoisted into is gone, not forgotten: the record
+        // is already a map keyed by column name, so each of the three lookups is one
+        // property read per field — no allocation and no linear scan, which is what that
+        // hoist was buying.)
         entries.flatMap(([name, value]) => {
-          const href = urlSet.has(name) ? sourceUrl(value) : null;
+          const href = isUrlColumn(name, props.columns) ? sourceUrl(value) : null;
           return [
-            h("dt", { key: `dt-${name}` }, name),
+            h("dt", { key: `dt-${name}` }, columnLabel(name, props.columns)),
             h(
               "dd",
               { key: `dd-${name}` },
@@ -231,6 +255,7 @@ export function MetadataPanel(props: MetadataPanelProps): ReactElement {
     error,
     tagValues,
     preview: data.preview,
-    urlColumns: props.urlColumns,
+    columns: props.columns,
+    titleColumn: props.titleColumn,
   });
 }

@@ -14,7 +14,6 @@ import {
   createHotspotScan,
   declutterChips,
   formatCount,
-  parseDatetimeValue,
   pickDomainSampleIds,
   fitTimeDomain,
   domainToX,
@@ -31,6 +30,7 @@ import {
   type PlacedChip,
   type LabelCandidate,
 } from "../src/renderer/overlayLayer.ts";
+import { datetimeInstant } from "../src/api-client/datetimeValue.ts";
 import { screenToWorld } from "../src/renderer/cells.ts";
 import type { PositionTable } from "../src/renderer/cells.ts";
 import type { AxisAnnotation, LayoutEntry } from "../src/renderer/layout.ts";
@@ -204,13 +204,30 @@ test("formatCount abbreviates thousands + millions", () => {
 // datetime domain derivation + nice ticks
 // ---------------------------------------------------------------------------
 
-test("parseDatetimeValue handles the three declared formats + missing values", () => {
-  assert.equal(parseDatetimeValue("2018-06-01T00:00:00", "iso8601"), Date.parse("2018-06-01T00:00:00"));
-  assert.equal(parseDatetimeValue("1100-01-01", "iso8601"), Date.parse("1100-01-01")); // ancient date
-  assert.equal(parseDatetimeValue(1_600_000_000, "unix_seconds"), 1_600_000_000 * 1000);
-  assert.equal(parseDatetimeValue(1_600_000_000_000, "unix_millis"), 1_600_000_000_000);
-  assert.equal(parseDatetimeValue(null, "iso8601"), null);
-  assert.equal(parseDatetimeValue("not-a-date", "iso8601"), null);
+test("datetimeInstant (the axis shim's reader) handles the three declared formats + missing values", () => {
+  assert.equal(datetimeInstant("2018-06-01T00:00:00", "iso8601"), Date.parse("2018-06-01T00:00:00"));
+  assert.equal(datetimeInstant("1100-01-01", "iso8601"), Date.parse("1100-01-01")); // ancient date
+  assert.equal(datetimeInstant(1_600_000_000, "unix_seconds"), 1_600_000_000 * 1000);
+  assert.equal(datetimeInstant(1_600_000_000_000, "unix_millis"), 1_600_000_000_000);
+  assert.equal(datetimeInstant(null, "iso8601"), null);
+  assert.equal(datetimeInstant("not-a-date", "iso8601"), null);
+});
+
+test("datetimeInstant reads a value by its type, so a stored timestamp's ISO string resolves under any format (#391)", () => {
+  // The case #391 fixes: the API serves a stored timestamp as an ISO string whatever format
+  // is committed, and reading it by a `unix_*` format was Number("2018-…") = NaN.
+  for (const format of ["unix_millis", "unix_seconds"] as const) {
+    assert.equal(datetimeInstant("2018-06-01T00:00:00", format), Date.parse("2018-06-01T00:00:00"), format);
+    assert.equal(datetimeInstant("1100-01-01", format), Date.parse("1100-01-01"), format);
+  }
+  // A number under `iso8601` is SECONDS, as the datetime plugin reads an integer under any
+  // format but `unix_millis` (`_to_epoch`). No writer produces one: ingest stores `iso8601`
+  // as a timestamp, and the worker refuses any datetime role on an int64 column.
+  assert.equal(datetimeInstant(1_600_000_000, "iso8601"), 1_600_000_000 * 1000);
+  // Past the ECMAScript Date window (±8.64e15 ms) a value is no date: `new Date(t)` is Invalid.
+  assert.equal(datetimeInstant(8.64e15, "unix_millis"), 8.64e15);
+  assert.equal(datetimeInstant(8.64e15 + 1, "unix_millis"), null);
+  assert.equal(datetimeInstant(true, "iso8601"), null);
 });
 
 test("pickDomainSampleIds returns the x-extreme cells (t_min / t_max carriers)", () => {

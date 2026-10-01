@@ -136,7 +136,7 @@ def test_success_path_commits_all_layouts_grid_first(tmp_path: Path) -> None:
 
     manifest = _read_manifest(dataset_dir)
     _validate_manifest(manifest)
-    assert manifest["manifest_version"] == "2.8"
+    assert manifest["manifest_version"] == "2.10"
     assert manifest["dataset_version"] == 1
 
     layout_ids = [lv["layout_id"] for lv in manifest["layouts"]]

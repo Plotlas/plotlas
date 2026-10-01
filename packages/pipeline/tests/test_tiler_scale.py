@@ -316,7 +316,7 @@ def test_2d_spread_reconciles_and_has_coarse(scale_bakes: dict) -> None:
 @pytest.mark.skip(
     reason="T2-106 residual: 1M 1D-spread coarse bake exceeds 60min on the fixed tree "
     "(was <20min pre-78b0bfe); dense-blob half fixed in this PR; see "
-    "docs/tier2-backlog.md T2-106"
+    "backlog/T2-106.md"
 )
 @pytest.mark.slow
 def test_full_1m_1d_spread_no_mass_subsample(tmp_path: Path) -> None:

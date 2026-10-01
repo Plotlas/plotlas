@@ -7,3 +7,7 @@
 *.feather binary
 *.arrow   binary
 *.webp    binary
+
+docs/BACKLOG.md         merge=plotlas-generated
+docs/BACKLOG-RESOLVED.md merge=plotlas-generated
+docs/DOCS.md             merge=plotlas-generated

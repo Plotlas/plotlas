@@ -49,6 +49,9 @@ function stubClient(hits: SearchHit[]): ApiClient {
     async listLayouts() {
       return [{ layout_id: "grid", label: "Grid", type: "grid" }];
     },
+    async getPresentation() {
+      return {}; // no presentation record — today's behaviour (D-xvi)
+    },
     async getManifest() {
       return {
         manifest_version: "2.5",

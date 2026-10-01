@@ -26,6 +26,10 @@ export interface TagsPanelProps {
   onChange: (selection: TagSelection) => void;
   rendererTagsFailed?: boolean;
   onRetryTags?: () => void;
+  /** Seam R2 P1: forwarded verbatim to TagControls — the narrow surface must carry the
+   *  same blocked treatment as the rail, or a phone visitor gets the refusal with no
+   *  explanation at all. */
+  blockedReason?: string | null;
   /** Dismiss the panel. Rendered as an explicit, labelled control — a full-screen
    *  surface with no visible way out is how a first-time visitor gets stuck. */
   onClose: () => void;
@@ -43,12 +47,10 @@ export function TagsPanel(props: TagsPanelProps): ReactElement {
   // clear-selection. The Lightbox, a higher-priority modal, also binds in capture and is
   // not open at the same time as this.
   //
-  // Focus moves INTO the panel on open and back to whatever opened it on close — the ☰
-  // item, which is why the trigger is the natural landing spot. No focus TRAP: that is a
-  // bigger commitment than this seam should make, and the panel covers the holder anyway.
+  // Keyed on `onClose`, which is an inline arrow at ViewerScreen's call site — so this
+  // effect re-runs on every parent render. That is harmless HERE (rebinding a listener is
+  // idempotent) and is precisely why the focus move below may not share it.
   useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null;
-    panelRef.current?.focus();
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== "Escape") return;
       e.stopPropagation();
@@ -57,9 +59,30 @@ export function TagsPanel(props: TagsPanelProps): ReactElement {
     document.addEventListener("keydown", onKey, true);
     return () => {
       document.removeEventListener("keydown", onKey, true);
-      opener?.focus?.();
     };
   }, [onClose]);
+
+  // Focus moves INTO the panel on open and back to whatever opened it on close — the ☰
+  // trigger, which `ViewerMenu` focuses before unmounting the row that was clicked, so
+  // `document.activeElement` here is that button and not `<body>`. No focus TRAP: that is
+  // a bigger commitment than this seam should make, and the panel covers the holder anyway.
+  //
+  // ON MOUNT AND UNMOUNT ONLY, and the empty dependency list is LOAD-BEARING — it is not
+  // an omission. This effect focuses on SETUP, so sharing the Escape effect's `[onClose]`
+  // made it re-run on every ViewerScreen render and drag focus back onto this container
+  // each time. Measured in jsdom against this component (review of #267): move focus to a
+  // control outside the panel, force ONE parent re-render, and `document.activeElement` is
+  // `.tags-panel` again. Live that fires on every renderer-status tick and on every tag
+  // chip toggled — so a finger in the tag filter loses the caret and the soft keyboard,
+  // and a keyboard user cannot tab through the chips at all. `onClose` is deliberately not
+  // read here; nothing in this effect calls it.
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    panelRef.current?.focus();
+    return () => {
+      opener?.focus?.();
+    };
+  }, []);
 
   return h(
     "section",
@@ -96,6 +119,7 @@ export function TagsPanel(props: TagsPanelProps): ReactElement {
         onChange: props.onChange,
         rendererTagsFailed: props.rendererTagsFailed,
         onRetryTags: props.onRetryTags,
+        blockedReason: props.blockedReason,
       }),
     ),
   );

@@ -5,13 +5,14 @@
 // types but cannot transform JSX or load .tsx — and the brief's component
 // smokes renderToString this file directly. Same constraint as the renderer's
 // "no extensionless relative VALUE imports" rule: react is a bare npm specifier,
-// and the ONE src-local value import (`./layoutOptions`) is a PURE type-free
-// module the node-test ts-extension-resolver maps (`.ts` appended) — it pulls in
-// no react/renderer at runtime.
+// and both src-local value imports (`./layoutOptions`, `./blockedControl`) are
+// PURE type-free modules the node-test ts-extension-resolver maps (`.ts`
+// appended) — neither pulls in react/renderer at runtime.
 import { createElement as h } from "react";
 import type { ReactElement } from "react";
 import type { LayoutInfo } from "../api-client/types";
 import { familyBadge } from "./layoutOptions";
+import { blockedControl } from "./blockedControl";
 
 export interface LayoutSwitcherProps {
   layouts: LayoutInfo[];
@@ -24,6 +25,16 @@ export interface LayoutSwitcherProps {
   // component only renders it (tab tooltip + a caption for the active layout). Absent/null
   // per layout ⇒ defaults / a family with no shaping options (no caption, plain tooltip).
   bakedSummary?: Record<string, string | null>;
+  /** Seam R1 P5 — WHY switching is blocked right now, or null/absent when it is not.
+   *  ViewerScreen derives it from `renderer/health.rendererControlState`, and passes the
+   *  SAME string to the ☰ menu: below ~855px that menu is the only switcher, so a fix
+   *  applied here alone leaves the dead control live on every phone.
+   *
+   *  The reason is the prop rather than a boolean so a blocked tab cannot render without
+   *  its explanation. NOT blocked during boot — health is `starting` for the whole span
+   *  between the layout list arriving and the stack existing (a multi-MB tag sidecar
+   *  included), and a tap there is queued rather than refused. */
+  blockedReason?: string | null;
 }
 
 /** One button per manifest layout (display order = manifest order). The two COORDINATE
@@ -61,16 +72,23 @@ export function LayoutSwitcher(props: LayoutSwitcherProps): ReactElement {
       // The tooltip still carries family + baked options for a mouse; it is no longer the
       // ONLY place either lives.
       const title = `${layout.label} (${layout.type})${summary !== null ? ` — ${summary}` : ""}`;
+      // Seam R1 P5: aria-disabled + the reason + a styled class, from the one helper both
+      // switching surfaces share. `blocked` is what actually refuses the click —
+      // aria-disabled is advisory and a real click still arrives.
+      const { blocked, ...blockedProps } = blockedControl(props.blockedReason, {
+        className: active ? "layout-tab layout-tab-active" : "layout-tab",
+        title,
+      });
       return h(
         "button",
         {
           key: layout.layout_id,
           type: "button",
-          className: active ? "layout-tab layout-tab-active" : "layout-tab",
+          ...blockedProps,
           "data-family": layout.type,
           "aria-pressed": active,
-          title,
           onClick: () => {
+            if (blocked) return;
             if (!active) props.onSwitch(layout.layout_id);
           },
         },

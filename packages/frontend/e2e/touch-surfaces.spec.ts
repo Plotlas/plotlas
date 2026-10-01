@@ -20,7 +20,7 @@ import { authenticate, openViewerV2 } from "./helpers.ts";
 //
 // WHERE THIS RUNS: the `render-gate.yml` workflow, as a named step on the stack the
 // render / context-loss / mobile-containment / mobile-pinch / narrow-cockpit gates already
-// boot. NOT e2e-nightly.yml — that workflow hard-fails without a `vars.E2E_BASE_URL` repo
+// boot. NOT e2e-nightly.yml — that workflow hard-failed without a `vars.E2E_BASE_URL` repo
 // variable which is not set, so a spec parked there has never executed anywhere but a
 // developer's machine, and a gate that never runs is worse than none.
 //

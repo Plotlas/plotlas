@@ -208,6 +208,249 @@ All schema changes are recorded here. Update this file on every schema version b
   static-edge burst URL `/datasets/{ds}/{path_prefix}/{id}.{ext}` (api-client
   `staticDetailUrl`). Description only — no field/shape change.
 
+## [2.10] — 2026-09-23 — a layout records HOW its columns were read (MINOR)
+
+> **MINOR bump** within major 2 (`SUPPORTED_MANIFEST_MAJOR` stays 2). Design
+> [`LAYOUT_DESIGNER.md`](../../docs/design/LAYOUT_DESIGNER.md) — decision **D-xxix**, gap
+> row 10 — and the seam brief
+> [`brief_layout_fingerprint_seam.md`](../../docs/prompts/brief_layout_fingerprint_seam.md).
+> The pipeline writes `manifest_version "2.10"`. Seam **L7**; producer, API consumer and
+> the client derivation land in the same PR per the Schema Discipline rule.
+
+### Added
+
+- **`layout_manifest.schema.json` — `layoutEntry.source_fingerprint`** (object, optional):
+  `column -> the list of fingerprint TUPLES this layout's OWN role entry contributed`.
+
+  **What it fixes.** `source_columns` (2.9) says *which* columns a layout read. Nothing said
+  *how*, and D-xxix lets a role change commit with **no bake**, leaving a layout deliberately
+  stale. The only record of that was the finished `set-roles` job's `result`, which RQ drops
+  after its default result TTL — **500 s in rq 2.10.0, measured 2026-09-21**; no enqueue sets
+  `result_ttl`. A reload after that showed a stale layout as healthy. With a bake-time record
+  staleness becomes *"what the bake recorded is no longer in what the roles say now"*,
+  computable by the client, forever, with no bookkeeping at the commit.
+
+  **A TUPLE** holds the role kind, every knob that changes how the column is **read**
+  (`datetime.format`, `tag.delimiter`, the scatter scale/normalize/overlap set, the
+  geographic projection/overlap set, `embedding.dim`) and, for a pair family, the partner
+  column and the axis position. A `label` is not in it — a label edit is free and stales
+  nothing (D-xx). It is the same vocabulary `worker._role_fingerprints` has used since 2.9,
+  and is now produced by one extracted function per language
+  (`manifest.role_entry_fingerprints`; `pending.ts`'s `roleEntryFingerprints`) which both
+  per-column implementations are rebuilt on top of.
+
+  **The scope is the layout's own role ENTRY, never the column's whole role set.** That is
+  the field's most important property. A column may carry several roles; recording the union
+  would make an untouched layout read stale forever the moment an unrelated role landed on a
+  column it shares — a second scatter pair over the same x, or a tag role added to a
+  categorical column (a case `_role_fingerprints`' own docstring contemplates). Both are
+  ordinary actions, and D-xxix **pre-queues a re-bake for every layout a change stales**, so
+  the union would pre-tick a multi-hour bake that changes no pixel.
+
+  **Staleness is a SUBSET test, not equality:** a layout is stale when any tuple it recorded
+  is no longer present in the current role map's fingerprint set for that column.
+
+  **Keys are exactly the entry's `source_columns`**, because the plugin sets both from one
+  role entry in one place. `{}` is therefore `grid`'s honest value — it reads no column, so
+  it records no way of reading one, and it is **checkable and never stale** rather than
+  permanently unchecked. A **self-pair** proves the shape: a scatter over `(sx, sx)`
+  de-duplicates to the single source column `sx`, whose one key then carries **two** tuples.
+
+  **Order is not significant in either array.** The producer sorts for a readable diff, but
+  Python's `json.dumps` escapes non-ASCII where `JSON.stringify` does not — with partner
+  columns `é` and `z`, Python orders the escaped `"é"` before `z` and JavaScript orders it
+  after — so a position-wise comparison would read stale when nothing changed. Compare by
+  **set membership**, and never by a hash of the block: a hash makes a mismatch undebuggable
+  and cannot say which column moved.
+
+  **Emitted unconditionally** by every family on every fresh 2.10 entry, `{}` included — the
+  always-emit rule `source_columns` (2.9), `missing_count` (2.6) and `pyramid.dropped_total`
+  (2.5) follow. It is `optional` in the schema for exactly one reason: `append_manifest_layouts`
+  carries pre-2.10 entries forward byte-preserved under a re-stamped version. So an **absent
+  key means "this entry predates 2.10"** and must never be read as *fresh* — the same trap
+  absent-vs-`[]` is for `source_columns`, failing in the dangerous direction, because it
+  clears the flag on exactly the oldest bakes.
+
+  **Who may write it.** A bake — and a `refresh-manifest` run whose **Gate B**
+  (`_assert_positions_reproduce`) reproduced the baked positions, which makes *"these are the
+  roles it was baked from"* checked rather than asserted. `set-roles` and `delete-layout`
+  carry an existing value forward untouched and never synthesise one: after a roles-only
+  commit the committed roles are exactly **not** what the bake read, which is the whole point.
+  Only the layouts refresh lists in `positions_gate_skipped` need the operator's new
+  `--assume-roles-unchanged`, whose help text states what the operator is asserting.
+
+### Changed
+
+- **`manifest_version` is `"2.10"`, and EVERY writer stamps it only when every entry earns
+  it.** `set-roles`, `delete-layout`, **`refresh-manifest`** and — since the 2026-09-24
+  review — **`append_manifest_layouts`** (the `add-layouts` / `--replace` path) all move the
+  stamp only when every entry in the file they write carries `source_fingerprint`. That is
+  the rule 2.9 introduced; refresh and add-layouts used to stamp unconditionally, which on a
+  2.9 tree wrote `"2.10"` over entries that carried no fingerprint — the exact "the stamp
+  claims content that is not there" bug the rule exists to prevent, and add-layouts is the
+  path that reaches it most often, because appending one layout to an old collection is an
+  ordinary thing to do.
+
+  **A mixed manifest therefore self-describes as the OLDER minor**, and that is intended:
+  under-claiming is safe because readers gate on **field presence**, never on the stamp
+  (`manifest.py`'s own rule since 2.5). It is also why `source_fingerprint` is `optional`
+  in the schema — a legitimate file can hold entries that do and do not record it.
+
+### Migration
+
+One `refresh-manifest --force` run per collection. Nothing is re-baked, no
+`dataset_version` moves, and no tile is touched. Until a collection records fingerprints its
+layouts are **unchecked**, not fresh (D-xxix).
+
+## [2.9] — 2026-09-07 — the two-record split: `presentation.json`, per-layout provenance, and `column_roles.url` moves out (MINOR)
+
+> **MINOR bump** within major 2 (`SUPPORTED_MANIFEST_MAJOR` stays 2). Design
+> [`INTAKE_REDESIGN.md` §6c](../../docs/design/INTAKE_REDESIGN.md) — decisions **D-xv**,
+> **D-xvi**, **D-xvii**, **D-xviii**, and the D-ix gap §6c found. The pipeline writes
+> `manifest_version "2.9"`. Seam **P2-1**; the consumer halves are **P2-2** (the API becomes
+> `presentation.json`'s sole writer) and **P2-3** (the viewer honours it), which land with
+> this change per the Schema Discipline rule.
+>
+> **This entry contains a REMOVAL** (`column_roles.url`), which the versioning policy at the
+> foot of this file calls a MAJOR. It is recorded as a MINOR deliberately and the reason is
+> stated below under "Why the `url` removal is not a v3".
+
+### Added
+
+- **`presentation.schema.json`** — a NEW, OPTIONAL second file in the dataset directory,
+  beside `layout_manifest.json`. It holds the choices a human made about how a dataset is
+  shown: `dataset.display_name` / `attribution` / `attribution_url` / `default_layout` /
+  `title_column`, a `layouts` map of per-layout `label` overrides, and a `columns` map of
+  per-column `label` / `render` / `hidden`.
+
+  **One writer each is the whole point (D-xv).** The worker writes `layout_manifest.json`;
+  the API (and, later, an admin CLI) writes `presentation.json`. Nothing under
+  `packages/pipeline/` writes the new file. A bake therefore cannot clobber a display name
+  *by construction* rather than by locking — a real race today, because
+  `append_manifest_layouts` builds its output from the manifest it read when the bake
+  **started**, so an edit landing mid-bake would be silently lost. It also makes something
+  one file could not: on a showcase host `presentation.json` can be mounted **writable while
+  the baked content stays `:ro`**.
+
+  **Every key is optional and so is the whole file.** Every dataset committed before
+  2026-09-07 has none; absent file = absent everything = today's behaviour.
+
+  **Fail-soft is a property of the schema, not only a consumer convention (D-xvi).** The maps
+  are keyed by identifiers the bake record owns (`layout_id`, the raw source column name), and
+  the schema deliberately **cannot** check that a key resolves: a `default_layout` naming a
+  dropped layout, a `title_column` naming a dropped column, and a `columns` entry for a column
+  that no longer exists all **validate**, and consumers resolve-or-fall-back. A cross-file
+  integrity check would re-couple the two files and destroy the independence the split
+  creates. Correctness is **validate-on-write plus fall-back-on-read**.
+
+  It carries its own **`presentation_version`** (`1.0`), not the shared `manifest_version`:
+  the two files have different writers and change for different reasons, and sharing a number
+  would force this file's writer (the API) to know the pipeline's version constant — the exact
+  coupling D-xv removes.
+
+  The three text caps (`display_name` 120, `attribution` 200, `attribution_url` 500) are
+  **transcriptions** of `api/appstate.py`'s `DISPLAY_NAME_MAX` / `ATTRIBUTION_MAX` /
+  `ATTRIBUTION_URL_MAX`, and `minLength: 1` transcribes `normalize_presentation_text`'s
+  blank-means-cleared rule. They are duplicated across two homes until **P2-2** migrates the
+  fields off app-state; that de-duplication is P2-2's, flagged here rather than solved here.
+
+  Not called `annotations.json`: `layouts[].annotations` already exists in the manifest and
+  means the categorical band labels and the datetime axis.
+
+- **`layout_manifest.schema.json` — `layoutEntry.source_columns`** (array of unique
+  non-empty strings, optional). The metadata columns a layout was **derived from**, by raw
+  source-header name.
+
+  This closes a gap the Phase-2 planning pass found in **D-ix**, whose whole purpose is a
+  staleness flag — *"a layout whose underlying data has changed is flagged, with a control to
+  start a re-bake"*, where a metadata change *"stales only the layouts derived from the
+  columns that moved"*. Verified against source 2026-09-07: `LayoutResult`
+  (`layout_plugins/base.py`) carried `layout_id`, `layout_type`, `label`, `cells`, `bbox`,
+  `edges`, `options`, `annotations`, `missing_count` and **no source column**; `options` is
+  explicitly an echo of *shaping knobs*, not provenance; `missing_count`'s comment says *"the
+  column it arranges by"*, so the concept lived in prose and the name was never recorded. The
+  flag was computable only by inferring from `column_roles` + `type` + a `layout_id`
+  convention — guessing, with three categorical columns and three categorical layouts.
+
+  **Arity differs by family, and "grid depends on nothing" is a first-class value, not a
+  special case.** `datetime` and `categorical` name one column, `scatter` names its x/y pair,
+  `geographic` names lon + lat, and **`grid` names none** — it orders by id == sorted filename
+  and reads no metadata at all, which is exactly why D-viii can make it optional. So `[]` is
+  grid's real answer and the predicate `any(moved in entry.source_columns)` is false for grid
+  by construction rather than by exception.
+
+  **Emitted unconditionally by every family on every fresh 2.9 entry, `[]` included** — the
+  same always-emit rule `missing_count` (2.6) and `pyramid.dropped_total` (2.5) follow, and
+  the only rule that makes the presence gate decide something: `[]` means *"this producer
+  recorded its sources and there are none"*, an **absent** key means *"this entry predates
+  2.9"*. It is `optional` in the schema for exactly one reason —
+  `append_manifest_layouts` carries pre-2.9 entries forward byte-preserved under a re-stamped
+  version — so **a reader must never read an absent key as a positive claim**.
+
+  Order is first-seen (scatter: x then y; geographic: lon then lat) and duplicates are
+  collapsed (`uniqueItems`): this is the **set** of columns depended on, and the pair
+  *structure* is already recorded in `column_roles` and echoed in `options`.
+
+  It names columns, not knobs (`options` echoes those) and not images: **added images stale
+  every layout**, since every layout places every cell — a `dataset_metadata.image_count`
+  question, not this one.
+
+  `refresh-manifest` derives it too, so it is the **backfill** path for a pre-2.9 tree: no
+  tiles are touched and `dataset_version` does not bump.
+
+### Removed
+
+- **`column_roles.url`** (added in 2.8) — moved, not dropped. It becomes
+  `presentation.json`'s `columns.<name>.render: "url"` (D-xvii).
+
+  The bake only ever **validated** `roles.url` (`worker.py` checked the column exists and is a
+  shown scalar). Nothing was computed from it and no cell moved: it was **presentation
+  collected on the bake's input path**. Operator: *"It is an annotation. A mapping even (maybe
+  a user wants to change the visible names of a column later). The manifest has the name from
+  the CSV uploaded. `column_roles` should be moved."* What remains in `column_roles` is the
+  reproducibility record — every role there is an input the bake consumed to decide **where
+  cells go**, so changing one makes the tiles wrong.
+
+  `render` is an **enum**, not a boolean, so `email` / `image` slot in later without a second
+  mechanism. Only `url` is shipped now; absent means plain text.
+
+  **The bake's validation goes away with the field and nothing replaces it at bake time** —
+  that is D-xvi's design, not an oversight. A `render` naming a column that does not exist is
+  ignored on read.
+
+  **The consumer obligations from the 2.8 entry are unchanged and now attach to
+  `columns.<name>.render: "url"`**: a value is a live link only if it parses as an absolute
+  `http(s)` URL (`javascript:`, `data:`, relative, protocol-relative and malformed all render
+  as inert text); links carry `target="_blank"` and `rel="noopener noreferrer"`; render in
+  place, one row per column; the column is excluded from free-text search; and nothing ever
+  fetches, HEADs or validates the target.
+
+#### Already-committed manifests carrying `column_roles.url`
+
+**Assumed and stated so the seams do not both skip it: such a manifest now FAILS
+validation, loudly, and this seam writes no migration.** `column_roles` has
+`additionalProperties: false`, so a tree baked between 2.8 and 2.9 that names link columns is
+rejected by `manifest._validate_manifest` (which `refresh-manifest` and `add-layouts` both go
+through) rather than silently ignored. Loud is the deliberate choice: silently dropping the
+key would lose a user's setting with no trace, while a rejection leaves the value sitting in
+the file where a migration can find it. **No committed fixture carries the key (checked
+2026-09-07 across all seven `tests/fixtures/*/layout_manifest.json`), and nothing in the repo
+can produce one after this change.** The migration — read `column_roles.url` out of a live
+manifest and write it into `presentation.json` as `render: "url"` — belongs to **P2-2**,
+together with the API-side read that replaces `routers/search.py`'s `_url_columns`.
+
+#### Why the `url` removal is not a v3
+
+The versioning policy below says removing a field is a MAJOR bump. It is recorded as a MINOR
+here on the operator's standing rule that *"we have schemas to ensure we track breaking
+features; not to stop us from making an efficient, useful project"* (D-ix), and on three
+specific facts: the field is **eleven months old and one MINOR wide** (2.8 → 2.9); **nothing
+computes from it**, so no baked artifact changes and no dataset needs re-tiling; and the
+population that can carry it is **exactly the trees baked between 2.8 and 2.9**, none of them
+in this repo. A v3 would freeze `schemas/v2/` and force a re-ingest of every dataset for a
+display flag. **This is a judgement call that an operator or reviewer may reverse** — the
+alternative is a `schemas/v3/` MAJOR — and it is flagged here rather than buried.
+
 ## [2.8] — 2026-08-04 — `column_roles.url`: mark a column as a link (MINOR)
 
 > **MINOR bump** within major 2 (`SUPPORTED_MANIFEST_MAJOR` stays 2). Scope

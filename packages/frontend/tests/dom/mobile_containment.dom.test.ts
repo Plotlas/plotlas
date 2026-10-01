@@ -74,6 +74,9 @@ function stubClient(): ApiClient {
     async listLayouts() {
       return [{ layout_id: "grid", label: "Grid", type: "grid" }];
     },
+    async getPresentation() {
+      return {}; // no presentation record — today's behaviour (D-xvi)
+    },
     async getManifest() {
       return manifestWith(["grid", [0.25, 0.25, 0.75, 0.75]]);
     },
@@ -275,8 +278,15 @@ test("no viewer breakpoint was added — Seam M2 derives and owns it", () => {
   // the library card grid's, which SCOPE §1d measured as already responsive.
   //
   // M2: when you add yours, extend this list — do not delete the pin.
+  // Seam L3 extended it by ONE: the layout designer's 390 px chrome, at the library grid's
+  // own 700px. The designer is not the viewer, and its threshold is not dataset-dependent.
   const widthQueries = [...css.matchAll(/@media[^{]*\((?:min|max)-width[^{]*?\)/g)].map((m) =>
     m[0].replace(/\s+/g, " ").trim(),
   );
-  assert.deepEqual(widthQueries, ["@media (max-width: 1100px)", "@media (max-width: 700px)"]);
+  assert.deepEqual(widthQueries, [
+    "@media (max-width: 1100px)",
+    "@media (max-width: 700px)",
+    "@media (max-width: 700px)", // seam L3: the layout designer, not the viewer
+    "@media (max-width: 700px)", // seam L4: the designer's Data view, at L3's threshold
+  ]);
 });

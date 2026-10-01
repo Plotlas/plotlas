@@ -37,6 +37,7 @@ import { fetchCellPreview, detailForManifest } from "./cellPreview.ts";
 import type { PreviewCache } from "./cellPreview.ts";
 import { MetadataPanelView, tagValuesForId } from "./MetadataPanel.ts";
 import type { CellPreviewData } from "./MetadataPanel.ts";
+import type { ColumnPresentationMap } from "./presentation.ts";
 import type { MetadataRow } from "../api-client/types.ts";
 import { isTypingTarget } from "./keys.ts";
 
@@ -68,6 +69,13 @@ export interface LightboxProps {
   previewCache: PreviewCache;
   /** The D-14 tag sidecar (shared with the inspector); null when absent/failed. */
   tagsTable: Table | null;
+  /** D-xvii/D-xviii `presentation.columns` — label, hidden, link rendering. Passed
+   *  DOWN rather than read off the manifest: the record is the other file now (D-xv),
+   *  and ViewerScreen already holds it. Absent ⇒ today's render. */
+  columns?: ColumnPresentationMap;
+  /** D-xviii `presentation.dataset.title_column` — heads the side inspector's field
+   *  list with the cell's own title. Absent ⇒ `Cell {id}`. */
+  titleColumn?: string | null;
 }
 
 /** The keyboard actions the lightbox reduces raw keys to. Pure + exported so the
@@ -163,8 +171,10 @@ export interface LightboxBodyProps {
   metaLoading: boolean;
   metaError: string | null;
   tagValues: { column: string; values: string[] }[];
-  /** Schema v2.8 `column_roles.url` — columns the inspector renders as links. */
-  urlColumns?: string[];
+  /** D-xvii/D-xviii per-column presentation — see LightboxProps. */
+  columns?: ColumnPresentationMap;
+  /** D-xviii `title_column` — see LightboxProps. */
+  titleColumn?: string | null;
   onPrev: () => void;
   onNext: () => void;
   onClose: () => void;
@@ -301,7 +311,8 @@ export function LightboxBody(props: LightboxBodyProps): ReactElement {
             loading: props.metaLoading,
             error: props.metaError,
             tagValues: props.tagValues,
-            urlColumns: props.urlColumns,
+            columns: props.columns,
+            titleColumn: props.titleColumn,
             preview: null as CellPreviewData | null,
           }),
         ),
@@ -514,9 +525,12 @@ export function Lightbox(props: LightboxProps): ReactElement {
     metaLoading,
     metaError,
     tagValues,
-    // Schema v2.8: the container already holds the manifest (it needs it for the
-    // detail-tier preview), so the link columns cost no extra fetch.
-    urlColumns: manifest.column_roles?.url,
+    // D-xvii: the link columns used to be read off `manifest.column_roles.url` here.
+    // They are presentation, not a bake input, so they now ride in from ViewerScreen
+    // with the rest of the record (D-xv) — one fetch for the whole record, and the
+    // lightbox stays a pure consumer of what the shell already holds.
+    columns: props.columns,
+    titleColumn: props.titleColumn,
     onPrev: () => onNavigate(Math.max(0, props.index - 1)),
     onNext: () => onNavigate(Math.min(count - 1, props.index + 1)),
     onClose,

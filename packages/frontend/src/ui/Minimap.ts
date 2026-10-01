@@ -28,6 +28,7 @@
 // test runner cannot load JSX/.tsx or extensionless src specifiers).
 import { createElement as h, useEffect, useRef } from "react";
 import type { ReactElement } from "react";
+import { blockedControl } from "./blockedControl";
 
 /** A world rectangle in `[0,1]²` (mirrors the renderer BBox without importing it). */
 export interface MinimapRect {
@@ -59,6 +60,12 @@ export interface MinimapProps {
   view?: MinimapRect | null;
   /** Fired with WORLD coords on click/drag; ViewerScreen centres the camera there. */
   onJump?: (worldX: number, worldY: number) => void;
+  /** Seam R2 P1: why the renderer cannot serve a jump right now, or null/absent when it
+   *  can. The minimap is a bare click/drag target with no other affordance, so on a dead
+   *  renderer it would otherwise look live and drag the viewport box over a canvas that
+   *  cannot follow. Presentation only — ViewerScreen refuses the jump against LIVE
+   *  health, as `blockedControl` requires of every caller. */
+  blockedReason?: string | null;
 }
 
 // The minimap canvas backing-store size (CSS box is 150×94 per app.css; a 2× backing
@@ -295,8 +302,15 @@ export function Minimap(props: MinimapProps): ReactElement {
     };
   }
 
+  // Seam R2 P1 — the same helper both switching surfaces use, so the minimap cannot grow
+  // a treatment of its own. `aria-disabled` is advisory on any element, so `blocked` is
+  // what actually stops the jump here; the shell refuses it again on live health.
+  const { blocked, ...blockedProps } = blockedControl(props.blockedReason, {
+    className: "minimap panel-float",
+  });
+
   const jump = (e: { clientX: number; clientY: number; currentTarget: HTMLElement }): void => {
-    if (props.onJump === undefined) return;
+    if (blocked || props.onJump === undefined) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const fx = rect.width > 0 ? (e.clientX - rect.left) / rect.width : 0;
     const fy = rect.height > 0 ? (e.clientY - rect.top) / rect.height : 0;
@@ -314,7 +328,7 @@ export function Minimap(props: MinimapProps): ReactElement {
   return h(
     "div",
     {
-      className: "minimap panel-float",
+      ...blockedProps,
       "aria-label": "Overview minimap",
       // Click jumps; a drag (pointer held) re-jumps as it moves so the box follows.
       onClick: jump,

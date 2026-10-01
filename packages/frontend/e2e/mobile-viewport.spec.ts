@@ -23,7 +23,7 @@ import { authenticate, openViewerV2 } from "./helpers.ts";
 // third named step on the stack the render + context-loss gates already boot. It is
 // PR-blocking there and green today.
 //
-// It is deliberately NOT parked in `e2e-nightly.yml`, where SCOPE decision D6 first put
+// It is deliberately NOT parked in `e2e-nightly.yml` (since DELETED), where D6 first put
 // it: that workflow hard-fails without a `vars.E2E_BASE_URL` repo variable, which is not
 // set, so a spec left there runs nowhere but a developer's local stack. A gate that never
 // executes is worse than no gate, because it reads as coverage.

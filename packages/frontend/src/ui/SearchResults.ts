@@ -26,6 +26,7 @@ import type { SearchHit } from "../api-client/types";
 // the ACTIVE layout's manifest entry + its v2.5 band-label shape, read to snap a category
 // hit to its TRUE band extent and show its EXACT member count (T2-72 Seam 2 consumer).
 import type { LayoutEntry, LabelAnnotation } from "../renderer/layout";
+import { blockedControl } from "./blockedControl";
 
 // ---------------------------------------------------------------------------
 // Display rows: group categorical hits; keep cell hits individual
@@ -343,6 +344,14 @@ export interface SearchResultsProps {
   onActivate: (row: SearchRow) => void;
   /** Set the active row (pointer hover) so mouse + keyboard stay in sync. */
   onHover: (index: number) => void;
+  /** Seam R2 P1: why the renderer cannot serve a row activation right now, or null/absent
+   *  when it can. Applied to CATEGORY rows only, and that asymmetry is the point: a
+   *  category row is nothing but a camera snap, so on a dead renderer activating it does
+   *  literally nothing — while a CELL row still selects the cell and fills the Inspector,
+   *  which the API serves, and only its camera move is refused (the same reasoning that
+   *  leaves `handleCanvasClick` unguarded). Per-option `aria-disabled` is exactly what a
+   *  listbox is for. */
+  blockedReason?: string | null;
   /** The ACTIVE layout's manifest entry (T2-72 Seam 2), or null. When it is the
    *  categorical layout for a category row's column and carries band annotations, that row
    *  shows the band's EXACT member total instead of the capped "N+" floor (matchCategoryLabel).
@@ -441,13 +450,23 @@ export function SearchResults(props: SearchResultsProps): ReactElement {
           // categorical layout's v2.5 annotations (else null ⇒ the capped "N+" floor).
           const trueCount =
             row.kind === "category" ? matchCategoryLabel(row, props.activeLayout)?.count ?? null : null;
+          // Seam R2 P1 — see `blockedReason`. PRESENTATION ONLY: the refusal belongs to
+          // `jumpToRow`, which dismisses the ☰ the user just acted in BEFORE it declines
+          // the camera work (review #271 F2). Refusing here short-circuited that dismiss,
+          // so on a narrow holder the popover stuck over the canvas with nothing
+          // explaining why — and only for the mouse, since the keyboard path reaches
+          // `jumpToRow` directly and never saw this branch.
+          const { blocked: _refusedByJumpToRow, ...blockedProps } = blockedControl(
+            row.kind === "category" ? props.blockedReason : null,
+            { className: `search-row${index === state.activeIndex ? " active" : ""}` },
+          );
           return h(
             "li",
             {
               key: row.kind === "category" ? `c:${row.field}:${row.value}` : `x:${row.id}`,
               id: props.optionId(index),
               role: "option",
-              className: `search-row${index === state.activeIndex ? " active" : ""}`,
+              ...blockedProps,
               "aria-selected": index === state.activeIndex,
               onMouseEnter: () => props.onHover(index),
               onClick: () => props.onActivate(row),

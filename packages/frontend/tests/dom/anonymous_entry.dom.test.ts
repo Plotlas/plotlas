@@ -6,7 +6,7 @@
 // runner, so the matrix is exercised over AdminScreen + AuthPanel, its two switchable
 // leaves, exactly as the existing admin_screen.dom test does):
 //   1. anonymous lands on the library (read-only), NOT a wall;
-//   2. the chrome-hiding matrix (anon vs authed) — create / ⋯ menu / activity / logout;
+//   2. the chrome-hiding matrix (anon vs authed) — create / Edit / activity / logout;
 //   3. the "Log in" and "browse without logging in" round-trip affordances;
 //   4. the honest anonymous empty state (zero public datasets);
 //   5. the no-bounce pin — an anonymous 401 never triggers the session-expiry route.
@@ -82,13 +82,9 @@ test("anonymous visitor lands on the read-only public library — no wall, no ow
   assert.equal(screen.queryByRole("button", { name: "Log out" }), null, "no Log out");
   assert.equal(screen.queryByText("ada"), null, "no username surfaced");
 
-  // The card offers "Open" (read) but no ⋯ owner action menu (Add layout / Delete).
+  // The card offers "Open" (read) but no owner action — no Edit (D-xxiv retired the ⋯ menu).
   assert.ok(screen.getByRole("button", { name: "Open" }), "the card can be opened");
-  assert.equal(
-    screen.queryByRole("button", { name: /^Actions for/ }),
-    null,
-    "no ⋯ owner action menu on a read-only card",
-  );
+  assert.equal(screen.queryAllByRole("button", { name: "Edit" }).length, 0, "no Edit on a read-only card");
 });
 
 test("authenticated library keeps the owner chrome (the matrix contrast)", async () => {
@@ -98,6 +94,7 @@ test("authenticated library keeps the owner chrome (the matrix contrast)", async
       client: stubClient([{ ...PUBLIC_DATASET, owner: "ada" }]),
       username: "ada", // authenticated
       onOpenDataset: () => {},
+      onEditDataset: () => {},
       onAuthExpired: () => {},
       onLogout: () => {},
       onLogin: () => {},
@@ -109,7 +106,7 @@ test("authenticated library keeps the owner chrome (the matrix contrast)", async
   assert.ok(screen.getByRole("button", { name: "+ New dataset" }), "create button present");
   assert.ok(screen.getByRole("button", { name: "Log out" }), "Log out present");
   assert.ok(screen.getByText("ada"), "username surfaced");
-  assert.ok(screen.getByRole("button", { name: /^Actions for/ }), "⋯ owner action menu present");
+  assert.ok(screen.getByRole("button", { name: "Edit" }), "the owner's card offers Edit (D-xxiv)");
   assert.equal(screen.queryByRole("button", { name: "Log in" }), null, "no Log in when authed");
 });
 

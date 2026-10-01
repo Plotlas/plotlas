@@ -71,7 +71,7 @@ That discards local edits to the checkout. It does not touch `./data`.
 
 ## Add your own images
 
-You can add datasets via the frontend UI interface, but it will be faster if you point
+You can add datasets via the frontend UI interface, but it will be faster if you point 
 Plotlas at existing images on your hard-drive for larger sets.
 
 The `--sync` flag runs the work in the foreground so you can watch it. Point `-v` at a

@@ -3,7 +3,7 @@
 // or `npm run gen:check` to fail when the committed output drifts from the
 // schema (the CI diff-gate, decision D-16).
 //
-// Only column_roles is generated. Two schemas are deliberately excluded:
+// column_roles and presentation are generated. Two schemas are deliberately excluded:
 //   - cell_record: the renderer consumes cell records as struct-of-arrays typed
 //     buffers (CellBuffers), never as row objects.
 //   - layout_manifest: the manifest is data the frontend *receives* over the
@@ -14,6 +14,14 @@
 //     schema's real enforcement for the manifest is RUNTIME validation in the
 //     api-client's getManifest (issue #4), which reads the .json schema
 //     directly, not a generated .ts type. See issue #5 for the D-16 reconcile.
+//
+// presentation (D-xv/D-xvi, added at seam P2-3) IS generated, and neither
+// exclusion applies to it: it is a small row-shaped record and it needs no
+// range-check, because every key is optional and every reference fails soft by
+// contract — the frontend narrows an unknown body field-by-field
+// (api-client/presentation.ts) and drops what does not fit rather than throwing.
+// Generating it is what keeps the viewer's idea of the record from drifting
+// away from the file the API writes.
 import { compileFromFile } from "json-schema-to-typescript";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -43,6 +51,7 @@ const options = {
 
 const targets = [
   { schema: "column_roles.schema.json", out: "column_roles.ts" },
+  { schema: "presentation.schema.json", out: "presentation.ts" },
 ];
 
 const check = process.argv.includes("--check");

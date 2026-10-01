@@ -23,7 +23,7 @@
 # run in the worker image via `make test-pipeline`. Both packages are imported
 # from the mounted source via PYTHONPATH below; the api package is also installed
 # (--no-deps) to mirror the previous `api[test]` install without re-resolving.
-FROM python:3.12-slim-bookworm
+FROM python:3.14-slim-bookworm
 
 COPY docker/locks/test.lock.txt /tmp/test.lock.txt
 RUN pip install --no-cache-dir -r /tmp/test.lock.txt

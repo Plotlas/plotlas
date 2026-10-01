@@ -127,15 +127,90 @@ def _cat_meta(cat: list) -> pa.Table:
 # --- THE round-trip proof ----------------------------------------------------------
 
 
+# The committed golden fixture is a 2.8 bake, so it predates the v2.9 per-layout
+# `source_columns` provenance list ([[T2-a-layout-does-not-record-which-column-it-was]]) and a
+# refresh of it legitimately ADDS a field it never carried — exactly what 2.5's `bbox_exact`
+# and 2.6's `missing_count` did to the fixtures of their day. The round-trip expectation is
+# therefore the committed manifest UPGRADED to the current minor, not the committed bytes.
+#
+# The values are written out LITERALLY, read off the fixture's own `column_roles` by hand
+# (`datetime.column == "captured"`, `categorical == [group, bucket]`, `scatter == (sx, sy)`,
+# `geographic == (lon, lat)`, and grid has no column at all). Deriving them from those roles
+# in the test would re-implement the producer and compare it to itself; a literal table is
+# the independent side of the comparison.
+_FIXTURE_SOURCE_COLUMNS: dict[str, list[str]] = {
+    "grid": [],                        # reads no metadata — the images-only floor (D-viii)
+    "datetime": ["captured"],
+    "scatter": ["sx", "sy"],           # the x/y PAIR, x first
+    "categorical_group": ["group"],    # two categorical layouts on DIFFERENT columns: the
+    "categorical_bucket": ["bucket"],  # case a layout_id convention could not disambiguate
+    "geographic": ["lon", "lat"],      # lon then lat
+}
+
+# The v2.10 half, read off the SAME `column_roles` by hand and for the same reason. Each
+# value is what THAT LAYOUT'S OWN role entry contributes — never the column's whole role
+# set: the fixture's `tags` column also carries a tag role, and no layout here reads it.
+# The knobs are the defaults `ColumnRoles.from_config` fills in for entries that declare
+# none (scatter: x_scale, y_scale, normalize, overlap; geographic: projection, overlap), in
+# the order `_SCATTER_KNOB_DEFAULTS` / `_GEO_KNOB_DEFAULTS` list them — which is why an
+# entry with no knobs in the file still fingerprints with four of them.
+_FIXTURE_SOURCE_FINGERPRINT: dict[str, dict[str, list[list]]] = {
+    "grid": {},                        # no column read ⇒ no way-of-reading recorded
+    "datetime": {"captured": [["datetime", "iso8601"]]},
+    "scatter": {
+        "sx": [["scatter", "x", "sy", "linear", "linear", "fit", "overdraw"]],
+        "sy": [["scatter", "y", "sx", "linear", "linear", "fit", "overdraw"]],
+    },
+    "categorical_group": {"group": [["categorical"]]},
+    "categorical_bucket": {"bucket": [["categorical"]]},
+    "geographic": {
+        "lat": [["geographic", "lat", "lon", "equirectangular", "overdraw"]],
+        "lon": [["geographic", "lon", "lat", "equirectangular", "overdraw"]],
+    },
+}
+
+
+def _upgraded_to_current_minor(manifest: dict) -> dict:
+    """The committed manifest as a CURRENT-minor bake would write it: the stamp re-stamped
+    and `source_columns` + `source_fingerprint` inserted in the emitter's canonical slots —
+    immediately after `missing_count`, before `detail`."""
+    out = copy.deepcopy(manifest)
+    out["manifest_version"] = MANIFEST_VERSION
+    upgraded = []
+    for layout in out["layouts"]:
+        assert "missing_count" in layout, (  # the anchor the insert hangs off
+            f"{layout['layout_id']}: the fixture entry has no missing_count, so this helper "
+            f"cannot place source_columns in canonical order"
+        )
+        entry: dict = {}
+        for key, value in layout.items():
+            entry[key] = value
+            if key == "missing_count":
+                entry["source_columns"] = _FIXTURE_SOURCE_COLUMNS[layout["layout_id"]]
+                entry["source_fingerprint"] = _FIXTURE_SOURCE_FINGERPRINT[
+                    layout["layout_id"]
+                ]
+        upgraded.append(entry)
+    out["layouts"] = upgraded
+    return out
+
+
 def test_roundtrip_reproduces_committed_25_manifest(tmp_path: Path) -> None:
     """Strip ``annotations`` + ``bbox_exact`` + ``missing_count`` from the committed golden
-    fixture, downgrade the stamp, run refresh — the manifest must come back BYTE-FOR-BYTE.
-    This is the proof that the derivation reproduces the bake."""
+    fixture, downgrade the stamp, run refresh — the manifest must come back BYTE-FOR-BYTE
+    (modulo the v2.9 `source_columns` the 2.8 fixture never carried; see
+    ``_upgraded_to_current_minor``). This is the proof that the derivation reproduces the
+    bake."""
     ds_id = "golden_dataset_full_v2"
     dst = tmp_path / ds_id
     shutil.copytree(GOLDEN_FULL, dst)
     original_text = (GOLDEN_FULL / "layout_manifest.json").read_text(encoding="utf-8")
     original = json.loads(original_text)
+    # The byte-exact assertion below rests on a re-dump reproducing the committed bytes, so
+    # state that rather than assume it — otherwise an upgraded expectation could silently
+    # weaken "field order + full-precision float repr" into a values-only comparison.
+    assert json.dumps(original, indent=2) + "\n" == original_text
+    expected = _upgraded_to_current_minor(original)
 
     stripped = copy.deepcopy(original)
     stripped["manifest_version"] = "2.4"
@@ -153,8 +228,9 @@ def test_roundtrip_reproduces_committed_25_manifest(tmp_path: Path) -> None:
     result = run_refresh_manifest(ds_id, tmp_path)
 
     refreshed_text = (dst / "layout_manifest.json").read_text(encoding="utf-8")
-    assert json.loads(refreshed_text) == original  # value-exact (annotations + bbox_exact)
-    assert refreshed_text == original_text  # BYTE-exact: field order + full-precision float repr
+    assert json.loads(refreshed_text) == expected  # value-exact (annotations + bbox_exact)
+    # BYTE-exact: field order + full-precision float repr
+    assert refreshed_text == json.dumps(expected, indent=2) + "\n"
     assert result["manifest_version"] == MANIFEST_VERSION
     assert result["annotations"] == 3  # datetime axis + the two categorical label sets
 
@@ -167,18 +243,26 @@ def test_force_rerun_over_an_enriched_manifest_is_a_fixed_point(tmp_path: Path) 
     The copy starts byte-identical to the fixture, so equality ALONE would also pass if
     refresh wrote nothing at all. The run is therefore observed as well: it must report the
     current minor and must actually have rewritten the file (proved by the ``.bak`` it takes
-    before the rewrite), so a refresh that silently no-ops fails here."""
+    before the rewrite), so a refresh that silently no-ops fails here.
+
+    Since v2.9 the FIRST run over the 2.8 fixture is not a no-op — it adds the
+    `source_columns` the fixture predates — so the fixed point is asserted where it actually
+    lives: run one produces the upgraded manifest, run two reproduces it byte-for-byte."""
     ds_id = "golden_dataset_full_v2"
     dst = tmp_path / ds_id
     shutil.copytree(GOLDEN_FULL, dst)
-    original_text = (GOLDEN_FULL / "layout_manifest.json").read_text(encoding="utf-8")
+    original = json.loads((GOLDEN_FULL / "layout_manifest.json").read_text(encoding="utf-8"))
+    expected_text = json.dumps(_upgraded_to_current_minor(original), indent=2) + "\n"
 
     result = run_refresh_manifest(ds_id, tmp_path, force=True)
 
-    assert (dst / "layout_manifest.json").read_text(encoding="utf-8") == original_text
+    assert (dst / "layout_manifest.json").read_text(encoding="utf-8") == expected_text
     assert result["manifest_version"] == MANIFEST_VERSION
     assert result["backup_written"] is True, "the rewrite path did not run"
     assert (dst / "layout_manifest.json.bak").is_file()
+    # The actual fixed point: a second --force over the now-current manifest changes nothing.
+    run_refresh_manifest(ds_id, tmp_path, force=True)
+    assert (dst / "layout_manifest.json").read_text(encoding="utf-8") == expected_text
     # The counts the run derived are REPORTED, not just written (v2.6) — only the layouts
     # with something unplaced are named, and the fixture's are scatter/geographic at 9 each.
     assert result["missing_counts"] == {"scatter": 9, "geographic": 9}
@@ -225,12 +309,55 @@ def test_refresh_replaces_a_stale_missing_count_rather_than_carrying_it(tmp_path
     # ...and in the canonical slot, not appended after `detail`/`edges` by the catch-all loop.
     assert list(_layout(refreshed, "scatter")) == [
         "layout_id", "label", "type", "bbox", "bbox_exact", "pyramid",
-        "positions_ref", "missing_count",
+        "positions_ref", "missing_count", "source_columns", "source_fingerprint",
     ]
     # The correction is REPORTED: grid's bogus 5 is gone from the run's own account of what
     # it found, and scatter's real 2 is named. A silent rewrite of "how many of your images
     # this layout could not place" is what this surface exists to prevent.
     assert result["missing_counts"] == {"scatter": 2}
+
+
+def test_refresh_replaces_stale_source_columns_rather_than_carrying_them(tmp_path: Path) -> None:
+    """The v2.9 twin of the test above, and it exists because a mutation proved the field-order
+    pin could not see this. `source_columns` is DERIVED (from the manifest's own
+    `column_roles`, through the real plugins), so a committed value must be OVERWRITTEN.
+
+    Dropping `source_columns` from `_LAYOUT_ENTRY_KNOWN` does NOT disturb the field order —
+    `_enrich_layout_entry` has already written the key, and re-assigning an existing dict key
+    leaves its insertion position alone — so the catch-all loop silently substitutes the
+    COMMITTED value for the recomputed one and every order assertion still passes. Provenance
+    that survives a role change is worse than absent provenance: the staleness flag would then
+    point at the wrong columns with full confidence.
+
+    Both directions, as above: `scatter` really depends on (sx, sy) but claims a column that
+    never existed, and `grid` depends on NOTHING but claims one — grid is the case the
+    carry-through would resurrect, because `[]` is the value a reader must be able to trust."""
+    ds = tmp_path / "stale_provenance"
+    meta = pa.table(
+        {
+            "id": pa.array(range(4), pa.int64()),
+            "filename": pa.array([f"{i:03d}.png" for i in range(4)], pa.string()),
+            "sx": pa.array([0.0, 1.0, 2.0, 3.0], pa.float64()),
+            "sy": pa.array([3.0, 2.0, 1.0, 0.0], pa.float64()),
+        }
+    )
+    roles = {
+        "filename": {"column": "filename", "label": "File"},
+        "scatter": [{"x_column": "sx", "y_column": "sy", "label": "Scatter"}],
+    }
+    committed = _build_pre25_dataset(ds, meta, roles, [("grid", "grid"), ("scatter", "scatter")])
+    _layout(committed, "scatter")["source_columns"] = ["a_column_that_never_existed"]
+    _layout(committed, "grid")["source_columns"] = ["filename"]
+    (ds / "layout_manifest.json").write_text(json.dumps(committed, indent=2) + "\n", "utf-8")
+
+    run_refresh_manifest("stale_provenance", tmp_path)
+
+    refreshed = json.loads((ds / "layout_manifest.json").read_text(encoding="utf-8"))
+    assert _layout(refreshed, "scatter")["source_columns"] == ["sx", "sy"]
+    assert _layout(refreshed, "grid")["source_columns"] == [], (
+        "grid depends on nothing, so the stale ['filename'] must be REPLACED by a written "
+        "[] — carrying it through would stale grid on every metadata change forever"
+    )
 
 
 # --- per-derivation gates ----------------------------------------------------------
@@ -684,6 +811,286 @@ def test_cli_prints_positions_gate_skip_warning(
     _build_pre25_dataset(ds2, _cat_meta(["a", "a", "b"]), _cat_roles(), [("categorical", "categorical")])
     assert main(["refresh-manifest", "--dataset-id", "cli_with_pos", "--output-root", root]) == 0
     assert "SKIPPED" not in capsys.readouterr().out
+
+
+# --- v2.10: the fingerprint backfill (seam L7 / LAYOUT_DESIGNER D-xxix) ---------------
+#
+# Refresh is the ONLY non-bake writer of `source_fingerprint`, and only because Gate B
+# RAISES unless the layout recomputed from the committed roles reproduces the baked
+# positions — which turns "these are the roles it was baked from" from an assertion into a
+# check. Everything below is about the boundary of that licence.
+
+
+def test_refresh_writes_a_fingerprint_for_a_layout_gate_b_checked(tmp_path: Path) -> None:
+    """The migration path D-xxix names: one refresh run and a pre-2.10 collection can say
+    whether its layouts are stale. Gate B ran (the tree has position tables), so the claim
+    is checked and the key is written — in the emitter's canonical slot, and with the
+    tuples the layout's own role entry contributes."""
+    ds = tmp_path / "backfill"
+    _build_pre25_dataset(ds, _cat_meta(["a", "a", "b"]), _cat_roles(), [("categorical", "categorical")])
+
+    result = run_refresh_manifest("backfill", tmp_path)
+
+    assert result["positions_gate_skipped"] == [], "premise: Gate B ran on every layout"
+    assert result["fingerprints_written"] == ["categorical"]
+    entry = _layout(json.loads((ds / "layout_manifest.json").read_text(encoding="utf-8")), "categorical")
+    assert entry["source_fingerprint"] == {"cat": [["categorical"]]}
+    assert list(entry).index("source_fingerprint") == list(entry).index("source_columns") + 1
+
+
+def test_refresh_keeps_an_EXISTING_fingerprint_byte_for_byte(tmp_path: Path) -> None:
+    """The `_LAYOUT_ENTRY_KNOWN` trap, and the reason that frozenset needed BOTH halves of
+    the change. `_enrich_layout_entry` rebuilds every entry from scratch and appends
+    anything outside that set through a catch-all, so naming `source_fingerprint` there
+    WITHOUT re-emitting it drops every recorded fingerprint on the floor — turning every
+    checkable layout unchecked, silently, on the very run meant to make them checkable.
+
+    The committed record here is deliberately NOT what this run would derive (it claims a
+    `tag` reading), so a re-derivation and a carry-through are distinguishable. That is the
+    production shape whenever the roles have moved since the bake: the bake record must
+    win, because it is the only evidence of what was actually read."""
+    ds = tmp_path / "keep_fp"
+    _build_pre25_dataset(ds, _cat_meta(["a", "a", "b"]), _cat_roles(), [("categorical", "categorical")])
+    manifest_path = ds / "layout_manifest.json"
+    committed = json.loads(manifest_path.read_text(encoding="utf-8"))
+    baked_record = {"cat": [["tag", ";"]]}
+    _layout(committed, "categorical")["source_fingerprint"] = baked_record
+    manifest_path.write_text(json.dumps(committed, indent=2) + "\n", encoding="utf-8")
+
+    # Without the flag AND with Gate B skipped: nothing is checked, so nothing is written.
+    _strip_positions_ref(ds)
+    result = run_refresh_manifest("keep_fp", tmp_path, force=True)
+
+    assert result["positions_gate_skipped"] == ["categorical"]
+    assert result["fingerprints_written"] == []
+    refreshed = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert _layout(refreshed, "categorical")["source_fingerprint"] == baked_record, (
+        "the committed record survived, and was not re-derived from the current roles"
+    )
+    # ...and in the canonical slot, not appended after the catch-all loop's fields.
+    entry = _layout(refreshed, "categorical")
+    assert list(entry).index("source_fingerprint") == list(entry).index("source_columns") + 1
+
+
+def test_refresh_leaves_a_gate_b_skipped_layout_unwritten_unless_asserted(
+    tmp_path: Path,
+) -> None:
+    """Gate B could not run (a pre-2.2 bake, no position table), so nothing has been
+    checked and refresh must not invent a record from the CURRENT roles — that would be a
+    claim about a bake it cannot see. `--assume-roles-unchanged` is the operator supplying
+    exactly that claim, and it is never implied."""
+    ds = tmp_path / "no_pos_fp"
+    _build_pre25_dataset(ds, _cat_meta(["a", "a", "b"]), _cat_roles(), [("categorical", "categorical")])
+    _strip_positions_ref(ds)
+
+    unchecked = run_refresh_manifest("no_pos_fp", tmp_path)
+
+    assert unchecked["fingerprints_written"] == []
+    refreshed = json.loads((ds / "layout_manifest.json").read_text(encoding="utf-8"))
+    assert "source_fingerprint" not in _layout(refreshed, "categorical"), (
+        "ABSENT, not `{}` — `{}` would claim the layout reads no column"
+    )
+    # ...and the stamp did NOT move to 2.10 over a file with no such key anywhere.
+    assert refreshed["manifest_version"] == "2.4"
+    assert unchecked["manifest_version"] == "2.4"
+
+    asserted = run_refresh_manifest(
+        "no_pos_fp", tmp_path, force=True, assume_roles_unchanged=True
+    )
+
+    assert asserted["fingerprints_written"] == ["categorical"]
+    assert asserted["manifest_version"] == MANIFEST_VERSION
+    refreshed = json.loads((ds / "layout_manifest.json").read_text(encoding="utf-8"))
+    assert _layout(refreshed, "categorical")["source_fingerprint"] == {"cat": [["categorical"]]}
+    assert refreshed["manifest_version"] == MANIFEST_VERSION
+
+
+def test_refresh_stamps_210_only_when_every_entry_carries_the_key(tmp_path: Path) -> None:
+    """The stamp describes the FILE — the rule `set-roles` and `delete-layout` already
+    follow, and which refresh used to be exempt from because every field it wrote landed on
+    every entry. `source_fingerprint` is the first one it may have to leave off, and
+    stamping 2.10 over a file where an entry has no such key is exactly the "the stamp
+    claims content that is not there" bug the 2.9 rule exists to prevent.
+
+    Two layouts, one with a position table and one without, in one tree: the mixed case a
+    single-layout fixture cannot show."""
+    ds = tmp_path / "mixed"
+    meta = pa.table(
+        {
+            "id": pa.array(range(3), pa.int64()),
+            "filename": pa.array(["a.png", "b.png", "c.png"], pa.string()),
+            "cat": pa.array(["a", "a", "b"], pa.string()),
+        }
+    )
+    _build_pre25_dataset(ds, meta, _cat_roles(), [("grid", "grid"), ("categorical", "categorical")])
+    manifest_path = ds / "layout_manifest.json"
+    committed = json.loads(manifest_path.read_text(encoding="utf-8"))
+    _layout(committed, "categorical").pop("positions_ref")  # only THIS one skips Gate B
+    manifest_path.write_text(json.dumps(committed, indent=2) + "\n", encoding="utf-8")
+
+    result = run_refresh_manifest("mixed", tmp_path)
+
+    assert result["positions_gate_skipped"] == ["categorical"]
+    assert result["fingerprints_written"] == ["grid"], "the checked one, and only it"
+    refreshed = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert _layout(refreshed, "grid")["source_fingerprint"] == {}
+    assert "source_fingerprint" not in _layout(refreshed, "categorical")
+    assert refreshed["manifest_version"] == "2.4", (
+        "one entry lacks the key, so the whole file has not earned the 2.10 stamp"
+    )
+    # Every OTHER derived field still landed on both entries — the withheld stamp is a
+    # judgement about the fingerprint, not a refusal to enrich.
+    assert all("bbox_exact" in la for la in refreshed["layouts"])
+    assert all("source_columns" in la for la in refreshed["layouts"])
+
+
+def test_the_flag_never_overwrites_an_existing_record_and_says_why(tmp_path: Path) -> None:
+    """`--assume-roles-unchanged` asserts *no role has changed since this collection was
+    baked*. A layout that already records HOW it read its columns, with a record that
+    DISAGREES with the committed roles, is direct evidence that the assertion is false —
+    so overwriting it would launder a durably stale layout to fresh, which is the single
+    outcome this seam exists to prevent (2026-09-23 review, finding 3).
+
+    The shape is the one `test_refresh_keeps_an_EXISTING_fingerprint_byte_for_byte` builds:
+    a Gate-B-skipped layout whose record says `tag` where the roles say `categorical`."""
+    ds = tmp_path / "no_overwrite"
+    _build_pre25_dataset(ds, _cat_meta(["a", "a", "b"]), _cat_roles(), [("categorical", "categorical")])
+    manifest_path = ds / "layout_manifest.json"
+    committed = json.loads(manifest_path.read_text(encoding="utf-8"))
+    baked_record = {"cat": [["tag", ";"]]}
+    _layout(committed, "categorical")["source_fingerprint"] = baked_record
+    manifest_path.write_text(json.dumps(committed, indent=2) + "\n", encoding="utf-8")
+    _strip_positions_ref(ds)
+
+    result = run_refresh_manifest(
+        "no_overwrite", tmp_path, force=True, assume_roles_unchanged=True
+    )
+
+    refreshed = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert _layout(refreshed, "categorical")["source_fingerprint"] == baked_record, (
+        "the bake record survived the operator's assertion — it is the evidence against it"
+    )
+    assert result["fingerprints_written"] == []
+    assert result["assumption_contradicted"] == ["categorical"]
+    assert "DISAGREES with the committed roles" in (ds / "ingest.log").read_text(encoding="utf-8")
+    # ...and the layout is NOT in the "still unchecked" population the CLI advises on.
+    assert result["has_record"] == ["categorical"]
+
+
+def test_the_flag_still_fills_an_ABSENT_record(tmp_path: Path) -> None:
+    """The other half: the flag exists to fill gaps, and a layout with nothing to say is
+    exactly the gap. Same tree, no pre-existing record."""
+    ds = tmp_path / "fills_gap"
+    _build_pre25_dataset(ds, _cat_meta(["a", "a", "b"]), _cat_roles(), [("categorical", "categorical")])
+    _strip_positions_ref(ds)
+
+    result = run_refresh_manifest("fills_gap", tmp_path, assume_roles_unchanged=True)
+
+    assert result["fingerprints_written"] == ["categorical"]
+    assert result["assumption_contradicted"] == []
+    refreshed = json.loads((ds / "layout_manifest.json").read_text(encoding="utf-8"))
+    assert _layout(refreshed, "categorical")["source_fingerprint"] == {"cat": [["categorical"]]}
+
+
+def test_refresh_offers_the_fingerprint_backfill_on_a_25_to_29_tree(tmp_path: Path) -> None:
+    """THE MIGRATION MUST BE ONE RUN (2026-09-23 review, finding 4). The schema, the
+    CHANGELOG and D-xxix all describe backfilling `source_fingerprint` as "one
+    refresh-manifest run". The guard used to key on `manifest_version >= 2.5` plus
+    bbox_exact/annotations, so EVERY existing 2.5-2.9 collection — which is every
+    collection — answered "nothing to do" while carrying no fingerprint at all, and the
+    documented migration was impossible without `--force`.
+
+    Keyed on FIELD PRESENCE, the same tree now has outstanding work and is refreshed."""
+    ds = tmp_path / "enriched_29"
+    _build_pre25_dataset(ds, _cat_meta(["a", "a", "b"]), _cat_roles(), [("categorical", "categorical")])
+    run_refresh_manifest("enriched_29", tmp_path)  # bring it up to date...
+    manifest_path = ds / "layout_manifest.json"
+    committed = json.loads(manifest_path.read_text(encoding="utf-8"))
+    # ...then wind it back to exactly a 2.9 collection: every derived field but the 2.10 one.
+    committed["manifest_version"] = "2.9"
+    del _layout(committed, "categorical")["source_fingerprint"]
+    manifest_path.write_text(json.dumps(committed, indent=2) + "\n", encoding="utf-8")
+
+    result = run_refresh_manifest("enriched_29", tmp_path)  # NO --force
+
+    assert result["fingerprints_written"] == ["categorical"]
+    assert result["manifest_version"] == MANIFEST_VERSION
+    refreshed = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert _layout(refreshed, "categorical")["source_fingerprint"] == {"cat": [["categorical"]]}
+
+    # ...and with nothing outstanding, the guard fires again and names what it checked.
+    with pytest.raises(RefreshManifestError, match="every layout entry carries every"):
+        run_refresh_manifest("enriched_29", tmp_path)
+
+
+def test_a_fully_enriched_tree_at_an_OLD_stamp_is_still_refused(tmp_path: Path) -> None:
+    """The conditional stamp disabled the idempotency guard (2026-09-23 review, finding 7).
+    A pre-2.5 tree with a Gate-B-skipped layout gets every derived field written, but the
+    stamp cannot move to 2.10 while that layout records no fingerprint — so a guard keyed
+    on the STAMP never fires again and every flagless run re-derives and rewrites the file.
+
+    Keyed on field presence, and counting only the work THIS RUN COULD DO, the second run
+    is refused — stamp notwithstanding, and although a `source_fingerprint` is still
+    missing. It is missing because Gate B cannot run on this layout and the operator did
+    not assert; re-deriving the whole manifest for a key that will not be written either
+    way is a treadmill, not progress."""
+    ds = tmp_path / "old_stamp_unchecked"
+    _build_pre25_dataset(ds, _cat_meta(["a", "a", "b"]), _cat_roles(), [("categorical", "categorical")])
+    _strip_positions_ref(ds)
+
+    first = run_refresh_manifest("old_stamp_unchecked", tmp_path)
+
+    assert first["manifest_version"] == "2.4", "premise: enriched, but the stamp is withheld"
+    enriched = json.loads((ds / "layout_manifest.json").read_text(encoding="utf-8"))
+    assert "bbox_exact" in _layout(enriched, "categorical"), "premise: it really was enriched"
+    assert "source_fingerprint" not in _layout(enriched, "categorical")
+
+    # ...and the refusal NAMES the gap and the flag that fills it (2026-09-24 round-2
+    # review, N3). "Nothing to do" alone reads as "you are done" while the collection is
+    # still unchecked and the operator holds the one thing that would change that.
+    with pytest.raises(RefreshManifestError) as refusal:
+        run_refresh_manifest("old_stamp_unchecked", tmp_path)
+    assert "['categorical']" in str(refusal.value)
+    assert "--assume-roles-unchanged" in str(refusal.value)
+    assert "no role has changed since this collection was baked" in str(refusal.value)
+
+    # ...and the flag DOES make it work again, because now the gap is fillable.
+    asserted = run_refresh_manifest(
+        "old_stamp_unchecked", tmp_path, assume_roles_unchanged=True
+    )
+    assert asserted["fingerprints_written"] == ["categorical"]
+    assert asserted["manifest_version"] == MANIFEST_VERSION
+
+
+def test_cli_names_the_flag_and_states_what_it_asserts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The operator has to be able to act on the unchecked case, and the flag's help text
+    states the ASSERTION rather than describing the flag — because that assertion is what
+    is being taken on trust. The run also says which layouts it recorded for."""
+    from pipeline.cli import main
+
+    ds = tmp_path / "cli_fp"
+    _build_pre25_dataset(ds, _cat_meta(["a", "a", "b"]), _cat_roles(), [("categorical", "categorical")])
+    _strip_positions_ref(ds)
+    root = str(tmp_path)
+
+    assert main(["refresh-manifest", "--dataset-id", "cli_fp", "--output-root", root]) == 0
+    out = capsys.readouterr().out
+    assert "Recorded how 0 layout(s) read their columns" in out
+    assert "--assume-roles-unchanged" in out
+    assert "no role has changed since this collection was baked" in out
+    # ...and NOT `--force` (2026-09-24 round-2 review, N3): the flag alone now makes the gap
+    # outstanding, so the hint must not tell the operator to overwrite everything as well.
+    assert "--force" not in out
+
+    assert main([
+        "refresh-manifest", "--dataset-id", "cli_fp", "--output-root", root,
+        "--force", "--assume-roles-unchanged",
+    ]) == 0
+    out = capsys.readouterr().out
+    assert "Recorded how 1 layout(s) read their columns" in out
+    assert "--assume-roles-unchanged" not in out, "nothing left to assert"
 
 
 def test_missing_dataset_raises(tmp_path: Path) -> None:

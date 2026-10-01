@@ -9,9 +9,11 @@
 // the selection), so the one button lives in the inspector's header — see ViewerScreen.
 //
 // Seam-internal props (not catalogued). Presentational: the shell fetches the
-// rows. .ts + createElement, runtime imports bare-only: see LayoutSwitcher.ts.
+// rows. .ts + createElement, runtime imports bare-only: see LayoutSwitcher.ts. The one
+// src-local value import, `datetimeInstant`, is a pure type-free module.
 import { createElement as h } from "react";
 import type { ReactElement } from "react";
+import { datetimeInstant } from "../api-client/datetimeValue";
 import type { MetadataRow } from "../api-client/types";
 import type { ColumnRoles } from "../generated/column_roles";
 
@@ -27,7 +29,8 @@ export interface SelectionDigest {
 
 /** Aggregate fetched rows by the dataset's roles: per-categorical-value counts
  *  (value desc by count, then asc by value) and the datetime column's min/max.
- *  Pure — unit-tested directly. */
+ *  The range is ordered by instant (`datetimeInstant`). An ISO string is shown as
+ *  served; a number is shown as the UTC date it denotes. Pure — unit-tested directly. */
 export function summarizeRows(
   rows: MetadataRow[],
   roles: ColumnRoles | null | undefined,
@@ -52,19 +55,18 @@ export function summarizeRows(
   let dateRange: SelectionDigest["dateRange"] = null;
   const dt = roles?.datetime ?? null;
   if (dt !== null && dt !== undefined) {
-    const numeric = dt.format === "unix_seconds" || dt.format === "unix_millis";
-    let min: string | number | null = null;
-    let max: string | number | null = null;
+    let min: { at: number; shown: string } | null = null;
+    let max: { at: number; shown: string } | null = null;
     for (const row of rows) {
       const raw = row.fields[dt.column];
-      if (raw === null || raw === undefined) continue;
-      const v = numeric ? Number(raw) : String(raw);
-      if (numeric && !Number.isFinite(v as number)) continue;
-      if (min === null || v < min) min = v;
-      if (max === null || v > max) max = v;
+      const at = datetimeInstant(raw, dt.format);
+      if (at === null) continue;
+      const shown = typeof raw === "string" ? raw : new Date(at).toISOString();
+      if (min === null || at < min.at) min = { at, shown };
+      if (max === null || at > max.at) max = { at, shown };
     }
     if (min !== null && max !== null) {
-      dateRange = { column: dt.column, label: dt.label || dt.column, min: String(min), max: String(max) };
+      dateRange = { column: dt.column, label: dt.label || dt.column, min: min.shown, max: max.shown };
     }
   }
   return { categorical, dateRange };

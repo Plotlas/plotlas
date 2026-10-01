@@ -399,27 +399,7 @@ def _apply_renames(roles: ColumnRoles, renamed: dict[str, str]) -> ColumnRoles:
         embedding=repoint(roles.embedding) if roles.embedding is not None else None,
         scatter=[repoint_scatter(e) for e in roles.scatter],
         geographic=[repoint_geographic(e) for e in roles.geographic],
-        # Schema v2.8: url holds bare column NAMES, so a name whose column was stored under a
-        # derived physical name (reserved-name collision) must be repointed too — otherwise the
-        # manifest's url would name the pre-rename column and the link would never render.
-        url=[renamed.get(c, c) for c in roles.url],
     )
-
-
-# Schema v2.8: `url` is a display modifier, not a storing role — _enrichment_select does not
-# project it — so a url column must ALSO be stored/shown as a scalar (categorical/freeform),
-# or the manifest names a link the panel could never draw. Shared with worker's add-layouts
-# validator (_validate_roles_against_parquet) so both entry points enforce it identically.
-_URL_NOT_SHOWN_MSG = (
-    "url column must also be a categorical or freeform column so its value is "
-    "stored and shown (a link can only be drawn on a displayed scalar value)"
-)
-
-
-def _shown_scalar_columns(roles: ColumnRoles) -> set[str]:
-    """Columns _enrichment_select projects as a shown scalar string (categorical + freeform)
-    — the only columns a `url` link may be layered on (schema v2.8)."""
-    return {e.column for e in roles.categorical} | {e.column for e in roles.freeform}
 
 
 def _validate_columns_present(roles: ColumnRoles, header: list[str]) -> None:
@@ -432,21 +412,16 @@ def _validate_columns_present(roles: ColumnRoles, header: list[str]) -> None:
     referenced += [("geographic", c) for e in roles.geographic for c in (e.lon_column, e.lat_column)]
     referenced += [("tag", e.column) for e in roles.tag]
     referenced += [("freeform", e.column) for e in roles.freeform]
-    # Schema v2.8: url holds bare column names — existence-check them like any other role.
-    referenced += [("url", c) for c in roles.url]
+    # No `url` entry here any more (schema v2.9, D-xvii): the role left column_roles for
+    # `presentation.json`'s `columns.<name>.render`. The two guards it used to carry — the
+    # column exists, and it is also a categorical/freeform column so its value is actually
+    # stored — went with it and are NOT replaced at bake time. That is deliberate (D-xvi):
+    # `presentation.json` is keyed by identifiers this file owns, and a key that no longer
+    # resolves falls back on read instead of failing a bake. A bake-time check would have to
+    # read the other file, which is the coupling the two-file split exists to remove.
     for role, column in referenced:
         if column not in present:
             raise ColumnRoleError(column, f"{role} column not found in metadata header {sorted(present)}")
-    # Schema v2.8: `url` is a display MODIFIER, not a storing role — _enrichment_select does
-    # NOT project it. A url column must therefore ALSO be a categorical or freeform column so
-    # its value is written to metadata.parquet as a shown scalar the panel can render as a
-    # link; a url naming an otherwise-unstored (or non-scalar) column would bake a link the
-    # frontend could never draw — the silent drop this guard forbids. (Value-level URL shape
-    # is still not checked: values are per-row data the renderer gates per cell.)
-    shown_scalar = _shown_scalar_columns(roles)
-    for column in roles.url:
-        if column not in shown_scalar:
-            raise ColumnRoleError(column, _URL_NOT_SHOWN_MSG)
 
 
 def _validate_datetime(con: duckdb.DuckDBPyConnection, source: str, dt_col: str, fmt: str) -> None:

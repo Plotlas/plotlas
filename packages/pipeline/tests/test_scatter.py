@@ -972,11 +972,20 @@ def test_append_manifest_layouts_restamps_manifest_version(tmp_path: Path) -> No
 
 
 def _knob_parquet(tmp_path: Path, xs: list[float | None], ys: list[float | None]) -> Path:
-    """A committed-style metadata.parquet with float64 scatter columns u/v."""
+    """A committed-style metadata.parquet with float64 scatter columns u/v.
+
+    `filename` is here because a real one always has it: `ingest_metadata` is the sole
+    writer of metadata.parquet and always writes `(id, filename, width, height)` beside
+    the enrichment columns, then rebinds the filename role to that canonical name. The
+    gate under test now checks the JOIN KEY as well (2026-09-09 review finding 7), so a
+    parquet without it is not a committed-style one — `_roles_with` declares
+    `filename.column == "filename"`, exactly as a committed manifest does.
+    """
     path = tmp_path / "metadata.parquet"
     table = pa.table(
         {
             "id": pa.array(range(len(xs)), pa.int64()),
+            "filename": pa.array([f"img_{i:03d}.webp" for i in range(len(xs))], pa.string()),
             "u": pa.array(xs, pa.float64()),
             "v": pa.array(ys, pa.float64()),
         }

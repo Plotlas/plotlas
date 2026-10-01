@@ -345,6 +345,10 @@ def _mock_job_for(monkeypatch, dataset_id: str) -> None:
         kwargs={"dataset_id": dataset_id, "output_root": "/nonexistent"},
         exc_info=None,
         get_meta=lambda refresh=False: {},
+        # Seam L1: a FINISHED job's return value is read for JobStatus.result. A real
+        # rq.Job always has this; the double has to as well or it is not a double of
+        # the interface the route uses.
+        return_value=lambda refresh=False: None,
     )
     monkeypatch.setattr(jobs.Job, "fetch", lambda job_id, connection=None: fake_job)
 

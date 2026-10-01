@@ -54,5 +54,3 @@ rq==2.10.0
     # via -r /tmp/worker-extra.in
 six==1.17.0
     # via python-dateutil
-typing-extensions==4.16.0
-    # via referencing

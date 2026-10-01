@@ -7,7 +7,10 @@ import { defineConfig } from "vite";
 // this config is what the build-clean check (test-frontend's typecheck path)
 // confirms compiles.
 export default defineConfig({
-  root: __dirname,
+  // `import.meta.dirname`, not `__dirname`: vite 8 warns that `__dirname` is
+  // unsupported by `configLoader: "native"`, which becomes the default in a
+  // later major. Same value, no CJS interop shim needed.
+  root: import.meta.dirname,
   server: {
     host: "0.0.0.0",
     port: 5174,

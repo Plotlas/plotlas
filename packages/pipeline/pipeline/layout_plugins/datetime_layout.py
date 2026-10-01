@@ -48,6 +48,9 @@ from pipeline.layout_plugins.base import (
     packed_ids,
     spatial_bbox,
 )
+# The ONE per-entry fingerprint rule (v2.10). Imported from the EMITTER, which is where the
+# knob default maps the tuple is derived from already live, so no plugin hand-copies a tuple.
+from pipeline.manifest import role_entry_fingerprints
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -59,9 +62,13 @@ logger = logging.getLogger(__name__)
 
 
 def _to_epoch(value: object, fmt: str) -> float | None:
-    """Map a parsed metadata datetime value to a sortable epoch float. ingest.py
-    already validated/parsed the column (TIMESTAMP for iso8601, BIGINT epoch for
-    unix_*); here we only need a monotonic number for relative positioning."""
+    """Map a parsed metadata datetime value to REAL UTC SECONDS. ingest.py already
+    validated/parsed the column (TIMESTAMP for iso8601, BIGINT epoch for unix_*).
+
+    The format scales an INTEGER value only. A stored timestamp is already an instant, so
+    no format moves it. Until #391 the ÷1000 for `unix_millis` was applied to every value
+    after this function, a timestamp's included: `unix_millis` committed over a stored
+    timestamp baked every date at a thousandth of itself (golden's axis on 1970-01-19)."""
     if value is None:
         return None
     if isinstance(value, _dt.datetime):
@@ -70,7 +77,8 @@ def _to_epoch(value: object, fmt: str) -> float | None:
     if isinstance(value, _dt.date):
         return _dt.datetime(value.year, value.month, value.day, tzinfo=_dt.timezone.utc).timestamp()
     if isinstance(value, (int, float)):
-        return float(value)  # unix_seconds / unix_millis are BIGINT
+        seconds = float(value)  # unix_seconds / unix_millis are BIGINT
+        return seconds / 1000.0 if fmt == "unix_millis" else seconds
     raise TypeError(f"unexpected datetime value {value!r} ({type(value).__name__})")
 
 
@@ -439,21 +447,18 @@ class DateTimeLayout(LayoutPlugin):
         # cannot hold the rows, `strip_cell_side` shrinks the STRIP's own cells instead.
         box_h = 1.0
 
-        # Work in REAL UTC SECONDS: _to_epoch yields seconds for iso8601/unix_seconds but
-        # the RAW millis for unix_millis. Everything downstream — bucketing, `denom`,
-        # `k_time`, and the ISO `domain` rendered by `_sec_to_dt` — is in real seconds, so
-        # this is the ONLY place the format scaling is applied.
-        to_sec = (lambda e: e / 1000.0) if roles.datetime.format == "unix_millis" else float
+        # `times` are REAL UTC SECONDS under every format: `_to_epoch` is the ONLY place the
+        # format scaling is applied, and it applies it to integer values only. Everything
+        # downstream — bucketing, `denom`, `k_time`, and the ISO `domain` rendered by
+        # `_sec_to_dt` — reads them as they are.
         # Calendar bucketing needs floorable extremes (years 1..9999); a malformed role can
         # exceed that, so fall back to the legacy equal-time grid (axis declined below).
-        calendar_ok = have_span and all(
-            _MIN_SEC <= to_sec(t) <= _MAX_SEC for t in (t_min, t_max)
-        )
+        calendar_ok = have_span and all(_MIN_SEC <= t <= _MAX_SEC for t in (t_min, t_max))
 
         # bucket_x: the per-cell x BEFORE stacking; col_key groups cells into columns.
         if have_span and calendar_ok:
             box_h = STRIP_Y_MIN
-            sec_min, sec_max = to_sec(t_min), to_sec(t_max)
+            sec_min, sec_max = t_min, t_max
             # U1: the rung is chosen from the DATED count. `_bucket_budget` is 5*sqrt(count),
             # so passing `n` let undated images buy columns for dates that do not exist and
             # drag the ladder far finer than the dated cells can fill. Measured on this
@@ -470,7 +475,7 @@ class DateTimeLayout(LayoutPlugin):
             base_sec = (base_dt - _EPOCH).total_seconds()
             usable = 1.0 - 2 * margin
             bucket_sec: list[float | None] = [
-                (_floor_interval(_sec_to_dt(to_sec(t)), kind, step) - _EPOCH).total_seconds()
+                (_floor_interval(_sec_to_dt(t), kind, step) - _EPOCH).total_seconds()
                 if t is not None
                 else None
             for t in times
@@ -877,7 +882,7 @@ class DateTimeLayout(LayoutPlugin):
         # `deepest` the pitch was solved from). `slot` is the within-bin index `j` that H2
         # wraps: `col = j % bin_k`, `row = j // bin_k`.
         _LAST = float("inf")
-        order_t = [_LAST if t is None else to_sec(t) for t in times]
+        order_t = [_LAST if t is None else t for t in times]
         on_chart = [True] * n
         for k in strip_k:
             on_chart[k] = False
@@ -1039,4 +1044,13 @@ class DateTimeLayout(LayoutPlugin):
             # number is "images this layout could not date" — a property of the DATA — not
             # "images that reached the strip", a property of which branch ran.
             missing_count=n_undated,
+            # v2.9 provenance: the ONE timestamp column this layout arranges by. The role's
+            # `format` is a parsing knob, not a dependency — it lives in `column_roles` and
+            # changing it re-reads the same column — so only the column NAME is recorded.
+            source_columns=(roles.datetime.column,),
+            # v2.10: HOW it read that column — this entry's own tuple, which DOES carry the
+            # `format` knob, because a layout baked under `iso8601` no longer matches a
+            # declaration that says `unix_seconds`. Built from the same role entry the line
+            # above names, by the one tuple function, never by hand.
+            source_fingerprint=role_entry_fingerprints("datetime", roles.datetime),
         )

@@ -169,7 +169,7 @@ def test_ambiguous_freeform_columns_skips_well_named() -> None:
 
 def test_classify_default_tier_columns() -> None:
     scalar_cols = ["id", "filename", "title", "artist", "description"]
-    cols = search._classify_columns(_ROLES, scalar_cols, all_fields=False, avg_lengths={})
+    cols = search._classify_columns(_ROLES, scalar_cols, all_fields=False, avg_lengths={}, url_cols=set())
     by_col = {c.column: c for c in cols}
     # Default (tier-0) = id + filename + title-like freeform + categoricals; NOT
     # description (a description-like freeform → catch-all only).
@@ -183,7 +183,7 @@ def test_classify_default_tier_columns() -> None:
 
 def test_classify_all_tier_includes_every_scalar_column() -> None:
     scalar_cols = ["id", "filename", "title", "artist", "description"]
-    cols = search._classify_columns(_ROLES, scalar_cols, all_fields=True, avg_lengths={})
+    cols = search._classify_columns(_ROLES, scalar_cols, all_fields=True, avg_lengths={}, url_cols=set())
     by_col = {c.column: c for c in cols}
     assert set(by_col) == {"id", "filename", "title", "artist", "description"}
     assert by_col["description"].role == "freeform"  # the catch-all field
@@ -192,15 +192,22 @@ def test_classify_all_tier_includes_every_scalar_column() -> None:
 
 def test_classify_images_only_dataset_has_id_and_filename() -> None:
     # roles=None (images-only / no manifest): search still works over id + filename.
-    cols = search._classify_columns(None, ["id", "filename"], all_fields=False, avg_lengths={})
+    cols = search._classify_columns(None, ["id", "filename"], all_fields=False, avg_lengths={}, url_cols=set())
     assert {c.column for c in cols} == {"id", "filename"}
 
 
 def test_classify_excludes_url_columns_from_both_tiers() -> None:
-    # A `url` column (schema v2.8 column_roles.url) holds LINK TARGETS, not search text —
-    # and being short they classify title-like (tier-0), their `https` prefix matching
-    # nearly every row — so a column named there is dropped from EVERY tier, even though it
-    # ALSO carries a display role (freeform OR categorical) that stores its value.
+    # A url column holds LINK TARGETS, not search text — and being short they classify
+    # title-like (tier-0), their `https` prefix matching nearly every row — so a column
+    # named as one is dropped from EVERY tier, even though it ALSO carries a display role
+    # (freeform OR categorical) that stores its value.
+    #
+    # `url_cols` is now passed IN: schema v2.9 moved the fact out of `column_roles` into
+    # the presentation record (D-xvii), so the classifier is given the SET and
+    # `_url_columns` owns where it comes from. Where it comes from is pinned separately in
+    # test_presentation_serving.py (from `presentation.json`, and from a pre-2.9 manifest's
+    # `column_roles.url`) — which is the half that would otherwise have gone silently
+    # empty, because this dict is hand-built and never schema-validated.
     roles = {
         "filename": {"column": "filename", "label": "Filename"},
         "categorical": [
@@ -211,8 +218,8 @@ def test_classify_excludes_url_columns_from_both_tiers() -> None:
             {"column": "title", "label": "Title"},
             {"column": "source_url", "label": "Source"},  # freeform AND url
         ],
-        "url": ["source_url", "collection_url"],  # v2.8: bare column names
     }
+    url_cols = {"source_url", "collection_url"}
     scalar_cols = ["id", "filename", "title", "artist", "source_url", "collection_url"]
     # source_url has SHORT values → the D-2 length rule would otherwise make it a tier-0
     # title (the exact leak this excludes); collection_url is categorical (always tier-0).
@@ -220,14 +227,18 @@ def test_classify_excludes_url_columns_from_both_tiers() -> None:
 
     # Default (tier-0): both url columns are gone despite one being (length-)title-like and
     # the other categorical; the rest of the default set is unchanged.
-    default = search._classify_columns(roles, scalar_cols, all_fields=False, avg_lengths=avg_lengths)
+    default = search._classify_columns(
+        roles, scalar_cols, all_fields=False, avg_lengths=avg_lengths, url_cols=url_cols
+    )
     default_cols = {c.column for c in default}
     assert "source_url" not in default_cols
     assert "collection_url" not in default_cols
     assert default_cols == {"id", "filename", "title", "artist"}
 
     # all_fields (tier-2 catch-all): still excluded even though it scans EVERY other scalar.
-    all_tier = search._classify_columns(roles, scalar_cols, all_fields=True, avg_lengths=avg_lengths)
+    all_tier = search._classify_columns(
+        roles, scalar_cols, all_fields=True, avg_lengths=avg_lengths, url_cols=url_cols
+    )
     all_cols = {c.column for c in all_tier}
     assert "source_url" not in all_cols
     assert "collection_url" not in all_cols

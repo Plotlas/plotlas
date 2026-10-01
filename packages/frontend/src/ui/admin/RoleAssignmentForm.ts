@@ -255,13 +255,22 @@ export function RoleAssignmentForm(props: RoleAssignmentFormProps): ReactElement
                     }),
                   )
                 : null,
-              // Schema v2.8: "render as link" is an ORTHOGONAL modifier, offered only on a
-              // shown scalar column (freeform/categorical) — the value renders as an anchor
-              // when it is an absolute http(s) URL (sourceUrl), plain text otherwise.
+              // "Render as link" is an ORTHOGONAL modifier, offered only on a shown scalar
+              // column (freeform/categorical) — the value renders as an anchor when it is
+              // an absolute http(s) URL (sourceUrl), plain text otherwise.
+              //
+              // D-xvii: unlike every other control on this form, this one is NOT a bake
+              // input. It lands in `presentation.json`, so it can be changed afterwards
+              // without re-baking anything — "the only thing the 'decide a URL' needs is
+              // the CSV to exist". The title says so, because a form whose every other
+              // control is frozen at bake time teaches the user that this one is too.
               isLinkable(choice)
                 ? h(
                     "label",
-                    { className: "role-extra role-url-toggle" },
+                    {
+                      className: "role-extra role-url-toggle",
+                      title: "A display choice, not a bake input — you can change this later without re-baking.",
+                    },
                     h("input", {
                       type: "checkbox",
                       className: "role-url-checkbox",

@@ -60,6 +60,18 @@ class GridLayout(LayoutPlugin):
             cells=build_spatial_cells(ordered_ids, xs, ys, ws, hs),
             bbox=spatial_bbox(xs, ys, ws, hs),
             edges=None,
+            # v2.9 provenance: EMPTY, and stated rather than defaulted. Grid places cells by
+            # id (== sorted filename) and reads no metadata column at all — that is the whole
+            # reason it is the images-only floor and the reason D-viii can make it optional.
+            # So "depends on nothing" is grid's real, first-class answer, and a metadata
+            # change never stales it. Written out explicitly because the field's default is
+            # also `()`, and a silent default and a considered claim must not be the same
+            # keystroke.
+            source_columns=(),
+            # v2.10: the same claim, one level down. Grid has no role ENTRY at all, so
+            # there is no way-of-reading to record; `{}` is its honest value and it makes
+            # grid CHECKABLE and never stale, rather than unchecked forever.
+            source_fingerprint={},
         )
 
     def _ordered_ids(self, ids: list[int], meta: "pa.Table", config: dict) -> list[int]:

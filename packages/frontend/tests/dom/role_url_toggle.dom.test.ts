@@ -8,6 +8,7 @@ import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement as h } from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { readFileSync } from "node:fs";
 import { RoleAssignmentForm } from "../../src/ui/admin/RoleAssignmentForm.ts";
 import { emptyDraft, type RolesDraft } from "../../src/ui/admin/roles.ts";
 
@@ -50,4 +51,24 @@ test("moving a linked column to a non-linkable role drops its link flag", () => 
   });
   assert.equal(latest?.choice.homepage, "datetime");
   assert.deepEqual(latest?.url, []);
+});
+
+test("the intake wizard sends the toggle as PRESENTATION, never inside column_roles", () => {
+  // D-xvii. The full create flow (select → upload → finalize → createDataset) is driven
+  // in upload_wizard_honesty.dom.test.ts and needs a whole sealed bundle to reach the
+  // payload, so the ROUTING is pinned by reading the source instead — the same instrument
+  // ViewerScreen's layout-tap pin uses. Without it, the toggle above is collected into a
+  // draft nothing transmits, which is exactly how #251 shipped a dead feature.
+  const src = readFileSync(new URL("../../src/ui/admin/CreateDatasetWizard.ts", import.meta.url), "utf8");
+  assert.equal(src.split("presentation: csvFile !== null && draft !== null ? buildPresentation(draft) : undefined").length - 1, 1);
+  assert.equal(src.includes("draft.url"), false, "the wizard never reaches into the draft's url list itself");
+});
+
+test("the wizard tells the user this one is not frozen at bake time", () => {
+  // The operator's framing, in the UI: deciding a column is a URL "only needs the CSV to
+  // exist". Every OTHER control on this form is a bake input, which teaches the user that
+  // this one is too — so the difference has to be said, not implied.
+  render(h(RoleAssignmentForm, { draft: freeformDraft(), onChange: () => {} }));
+  const label = screen.getByLabelText("Render column homepage as a link").closest("label");
+  assert.match(label?.getAttribute("title") ?? "", /without re-baking/);
 });

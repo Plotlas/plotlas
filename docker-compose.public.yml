@@ -114,7 +114,7 @@ services:
   # frontend_dist volume with a locally-built dist/ and skip this service. The
   # frontend is same-origin / domain-agnostic, so no build-time API URL is needed.
   frontend:
-    image: node:22.22-bookworm-slim
+    image: node:26.7-bookworm-slim
     working_dir: /repo/packages/frontend
     command: sh -c "npm ci && npm run build"
     volumes:
@@ -139,7 +139,7 @@ services:
         max-file: "3"
 
   caddy:
-    image: caddy:2.8-alpine
+    image: caddy:2.11-alpine
     # Caddy needs ONLY ACME_EMAIL + DATA_ROOT — NOT the api's JWT_SECRET /
     # ALLOWED_ORIGINS. Pull ACME_EMAIL from the host .env via ${..} interpolation
     # (compose auto-loads ./.env) rather than env_file, so the identity-token

@@ -1,9 +1,21 @@
 """Collection presentation — display name + attribution (SCOPE_shareable-collections
 Part B).
 
-Both live in API app-state, never in schemas/v2, for the same reason as `owner` and
-`visibility`: they are mutable, per-instance and operator-editable. Putting them in the
-manifest would make renaming a collection require a re-bake.
+They have MOVED. This docstring used to justify keeping them in app-state with "putting
+them in the manifest would make renaming a collection require a re-bake" — which is
+false: `refresh-manifest` rewrites a committed manifest in place, no tiles touched, no
+`dataset_version` bump. The correction is kept because it is why they sat in the wrong
+place, but note what the fix turned out to be: they did not go INTO the manifest. They
+went into `presentation.json` BESIDE it (D-i/D-xv), because one file with a cheap-edit
+path would have had two writers. The API owns that file and still writes no manifest.
+
+What these tests assert is the API's BEHAVIOUR — every presentation value is written
+through `PATCH .../presentation` and read back through `GET`, never poked into storage
+directly. That is why this file needed no change when the storage moved: it passed
+unaltered across the move, which is the strongest available evidence that the wire
+contract did not shift. The fixture seeds app-state only with `owner`, which stays there
+permanently (D-ii). The new behaviour the move ADDED — the merge, the fallback, the round
+trips, the migration — is pinned in `test_presentation_serving.py`.
 
 The load-bearing property these tests exist for is that a rename is PRESENTATION ONLY.
 `dataset_id` stays the app-state primary key, the on-disk directory name, the tile path

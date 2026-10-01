@@ -84,3 +84,18 @@ playwright-report/
 !/data/app-state/
 /data/app-state/*
 !/data/app-state/.gitkeep
+
+# Scratch directories the stdlib test suites under scripts/ make INSIDE the work tree
+# (they resolve paths against the repository root, as production does). A case killed
+# before its cleanup -- Ctrl-C, a gate's bound, an agent's limit -- leaves one behind,
+# and some hold a nested `.git`: unignored, `git add -A` commits it as an embedded
+# repository. scripts/docstate/test_probe.py reads every suite's `mkdtemp(...,
+# dir=ROOT)` prefix and fails if one is missing here.
+/check-test-*/
+/daily-test-*/
+/docstate-items-*/
+/docstate-out-*/
+/docstate-probe-*/
+/docstate-test-*/
+/docstate-upstream-*/
+/status-test-*/
