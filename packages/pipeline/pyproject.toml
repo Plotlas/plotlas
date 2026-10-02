@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pipeline"
-version = "0.1.0"
+version = "0.9.0"
 description = "image-viz ingestion pipeline: ingest, thumbnail decode, layout plugins, spatial tile-pyramid baker (PMTiles), manifest emitter."
 requires-python = ">=3.12"
 # deps = the allowed pipeline dependency list (AGENT_GUIDE Allowed Dependencies).
